@@ -5,6 +5,7 @@ import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
 import "./photo-grid";
 import "./detail-panel";
+import "./full-view";
 
 @customElement("photoflow-app")
 export class PhotoflowApp extends LitElement {
@@ -27,6 +28,15 @@ export class PhotoflowApp extends LitElement {
       grid-template-areas:
         "header header header"
         "sidebar main detail";
+    }
+    :host(.sidebar-collapsed) {
+      grid-template-columns: 0 1fr;
+    }
+    :host(.sidebar-collapsed.has-detail) {
+      grid-template-columns: 0 1fr 380px;
+    }
+    :host(.sidebar-collapsed) aside.sidebar {
+      display: none;
     }
 
     header.app-header {
@@ -119,6 +129,12 @@ export class PhotoflowApp extends LitElement {
   @state()
   private selectedPhoto: Photo | null = null;
 
+  @state()
+  private fullViewIndex: number | null = null;
+
+  @state()
+  private sidebarCollapsed = false;
+
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
   }
@@ -166,15 +182,48 @@ export class PhotoflowApp extends LitElement {
     };
   }
 
+  private onPhotoOpen(
+    e: CustomEvent<{ path: string; filename: string }>
+  ) {
+    const idx = this.photos.findIndex((p) => p.path === e.detail.path);
+    if (idx >= 0) {
+      this.selectedPhoto = this.photos[idx];
+      this.fullViewIndex = idx;
+    }
+  }
+
+  private onFullViewNavigate(e: CustomEvent<{ index: number }>) {
+    const idx = e.detail.index;
+    if (idx < 0 || idx >= this.photos.length) return;
+    this.fullViewIndex = idx;
+    this.selectedPhoto = this.photos[idx];
+  }
+
+  private onFullViewClose = () => {
+    this.fullViewIndex = null;
+  };
+
+  private toggleSidebar = () => {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
+  };
+
   updated(changed: Map<string, unknown>): void {
     if (changed.has("selectedPhoto")) {
       this.classList.toggle("has-detail", this.selectedPhoto !== null);
+    }
+    if (changed.has("sidebarCollapsed")) {
+      this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
   }
 
   render() {
     return html`
       <header class="app-header">
+        <pf-icon-button
+          icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
+          label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          @click=${this.toggleSidebar}
+        ></pf-icon-button>
         <span class="brand">
           <span class="dot"></span>
           Photoflow
@@ -205,7 +254,11 @@ export class PhotoflowApp extends LitElement {
         </div>
       </aside>
 
-      <main class="content" @photo-selected=${this.onPhotoSelected}>
+      <main
+        class="content"
+        @photo-selected=${this.onPhotoSelected}
+        @photo-open=${this.onPhotoOpen}
+      >
         <h1>
           ${this.selectedFolderName
             ? `Photos in ${this.selectedFolderName}`
@@ -222,9 +275,18 @@ export class PhotoflowApp extends LitElement {
       </main>
 
       ${this.selectedPhoto
-        ? html`<aside class="detail">
+        ? html`<aside class="detail" @photo-open=${this.onPhotoOpen}>
             <pf-detail-panel .photo=${this.selectedPhoto}></pf-detail-panel>
           </aside>`
+        : null}
+
+      ${this.fullViewIndex !== null
+        ? html`<pf-full-view
+            .photos=${this.photos}
+            .index=${this.fullViewIndex}
+            @full-view-navigate=${this.onFullViewNavigate}
+            @full-view-close=${this.onFullViewClose}
+          ></pf-full-view>`
         : null}
     `;
   }

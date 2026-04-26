@@ -2,6 +2,7 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import type { Photo } from "./types";
+import "../ui/controls/pf-icon-button";
 
 @customElement("pf-detail-panel")
 export class PfDetailPanel extends LitElement {
@@ -22,6 +23,15 @@ export class PfDetailPanel extends LitElement {
       overflow: hidden;
       padding: var(--pf-space-3);
       background: var(--pf-surface-2);
+      position: relative;
+    }
+    .expand-btn {
+      position: absolute;
+      top: var(--pf-space-2);
+      right: var(--pf-space-2);
+      background: var(--pf-surface);
+      border-radius: var(--pf-radius-md);
+      box-shadow: var(--pf-shadow-md);
     }
     img {
       max-width: 100%;
@@ -107,6 +117,17 @@ export class PfDetailPanel extends LitElement {
     }
   }
 
+  private openFullView = () => {
+    if (!this.photo) return;
+    this.dispatchEvent(
+      new CustomEvent("photo-open", {
+        detail: { path: this.photo.path, filename: this.photo.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  };
+
   render() {
     if (!this.photo) return html``;
     return html`
@@ -118,6 +139,12 @@ export class PfDetailPanel extends LitElement {
           : html`<div class="status">
               ${this.loading ? "Loading…" : ""}
             </div>`}
+        <pf-icon-button
+          class="expand-btn"
+          icon="expand"
+          label="Open full view"
+          @click=${this.openFullView}
+        ></pf-icon-button>
       </div>
       <div class="meta">
         <div class="filename">${this.photo.filename}</div>
