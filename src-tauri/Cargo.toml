@@ -22,3 +22,5 @@ serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 kamadak-exif = "0.6"
 base64 = "0.22"
+jpeg-decoder = "0.3"
+fast_image_resize = { version = "5", features = ["image"] }

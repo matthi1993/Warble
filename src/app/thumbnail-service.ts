@@ -8,8 +8,8 @@ import { invoke } from "@tauri-apps/api/core";
  */
 
 const MAX_CONCURRENT = Math.min(
-  4,
-  Math.max(2, navigator.hardwareConcurrency ?? 4)
+  8,
+  Math.max(4, navigator.hardwareConcurrency ?? 4)
 );
 
 const CACHE_LIMIT = 500;
