@@ -112,6 +112,13 @@ export class PhotoflowApp extends LitElement {
       border-left: 1px solid var(--pf-border);
       overflow: hidden;
     }
+
+    pf-full-view {
+      grid-row: 2;
+      grid-column: 2 / -1;
+      min-width: 0;
+      min-height: 0;
+    }
   `;
 
   @state()

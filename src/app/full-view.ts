@@ -1,29 +1,40 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Photo } from "./types";
 import "../ui/controls/pf-icon-button";
+
+type BgColor = "black" | "grey" | "white";
+type FitMode = "normal" | "proof";
 
 @customElement("pf-full-view")
 export class PfFullView extends LitElement {
   static styles = css`
     :host {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--pf-fv-bg, #000);
+      color: var(--pf-fv-fg, #fff);
+      outline: none;
+    }
+    :host([fullscreen]) {
       position: fixed;
       inset: 0;
       z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      background: rgba(0, 0, 0, 0.92);
-      color: #fff;
-      outline: none;
+      width: 100vw;
+      height: 100vh;
     }
     .toolbar {
       display: flex;
       align-items: center;
       gap: var(--pf-space-2);
       padding: var(--pf-space-2) var(--pf-space-3);
-      background: rgba(0, 0, 0, 0.55);
-      backdrop-filter: blur(8px);
+      background: #111;
+      color: #fff;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
     .filename {
@@ -39,11 +50,46 @@ export class PfFullView extends LitElement {
       color: rgba(255, 255, 255, 0.7);
       font-variant-numeric: tabular-nums;
     }
-    .toolbar pf-icon-button {
-      color: #fff;
+    .group {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: var(--pf-radius-md);
     }
-    .toolbar pf-icon-button::part(button) {
+    .swatch {
+      width: 1.4rem;
+      height: 1.4rem;
+      border-radius: var(--pf-radius-sm);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      cursor: pointer;
+      padding: 0;
+    }
+    .swatch.black {
+      background: #000;
+    }
+    .swatch.grey {
+      background: #808080;
+    }
+    .swatch.white {
+      background: #fff;
+    }
+    .swatch[aria-pressed="true"] {
+      outline: 2px solid var(--pf-accent);
+      outline-offset: 1px;
+    }
+    .seg {
+      background: transparent;
       color: #fff;
+      border: none;
+      padding: 4px 10px;
+      font-size: var(--pf-text-xs);
+      border-radius: var(--pf-radius-sm);
+      cursor: pointer;
+    }
+    .seg[aria-pressed="true"] {
+      background: rgba(255, 255, 255, 0.18);
     }
     .stage {
       flex: 1;
@@ -52,6 +98,11 @@ export class PfFullView extends LitElement {
       align-items: center;
       justify-content: center;
       overflow: hidden;
+      background: var(--pf-fv-bg, #000);
+    }
+    .stage.proof img {
+      max-width: calc(100% - 96px);
+      max-height: calc(100% - 96px);
     }
     img {
       max-width: 100%;
@@ -109,6 +160,9 @@ export class PfFullView extends LitElement {
   @property({ type: Number })
   index = 0;
 
+  @property({ type: Boolean, reflect: true })
+  fullscreen = false;
+
   @state()
   private dataUrl: string | null = null;
 
@@ -119,18 +173,17 @@ export class PfFullView extends LitElement {
   private loading = false;
 
   @state()
-  private isFullscreen = false;
+  private bg: BgColor = "black";
+
+  @state()
+  private fitMode: FitMode = "normal";
 
   private loadedPath: string | null = null;
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
-  private onFullscreenChange = () => {
-    this.isFullscreen = document.fullscreenElement !== null;
-  };
 
   connectedCallback(): void {
     super.connectedCallback();
     window.addEventListener("keydown", this.onKeyDown);
-    document.addEventListener("fullscreenchange", this.onFullscreenChange);
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
   }
@@ -138,9 +191,8 @@ export class PfFullView extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onKeyDown);
-    document.removeEventListener("fullscreenchange", this.onFullscreenChange);
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => {});
+    if (this.fullscreen) {
+      void this.setWindowFullscreen(false).catch(() => {});
     }
   }
 
@@ -157,6 +209,17 @@ export class PfFullView extends LitElement {
         }
       }
     }
+    if (changed.has("bg")) {
+      this.style.setProperty("--pf-fv-bg", this.bgCss(this.bg));
+      this.style.setProperty(
+        "--pf-fv-fg",
+        this.bg === "white" ? "#000" : "#fff"
+      );
+    }
+  }
+
+  private bgCss(bg: BgColor): string {
+    return bg === "black" ? "#000" : bg === "white" ? "#fff" : "#808080";
   }
 
   private get currentPhoto(): Photo | null {
@@ -188,15 +251,15 @@ export class PfFullView extends LitElement {
       e.preventDefault();
       this.go(1);
     } else if (e.key === "Escape") {
-      if (document.fullscreenElement) {
-        // Let browser exit fullscreen first; don't close.
-        return;
-      }
       e.preventDefault();
-      this.close();
+      if (this.fullscreen) {
+        void this.toggleFullscreen();
+      } else {
+        this.close();
+      }
     } else if (e.key === "f" || e.key === "F") {
       e.preventDefault();
-      this.toggleFullscreen();
+      void this.toggleFullscreen();
     }
   }
 
@@ -218,16 +281,26 @@ export class PfFullView extends LitElement {
     );
   };
 
-  private toggleFullscreen = async () => {
+  private async setWindowFullscreen(enable: boolean) {
     try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await this.requestFullscreen();
-      }
+      await getCurrentWindow().setFullscreen(enable);
     } catch (err) {
-      console.error("Fullscreen toggle failed", err);
+      console.error("setFullscreen failed", err);
     }
+  }
+
+  private toggleFullscreen = async () => {
+    const next = !this.fullscreen;
+    this.fullscreen = next;
+    await this.setWindowFullscreen(next);
+  };
+
+  private setBg = (bg: BgColor) => {
+    this.bg = bg;
+  };
+
+  private setFit = (m: FitMode) => {
+    this.fitMode = m;
   };
 
   render() {
@@ -240,9 +313,45 @@ export class PfFullView extends LitElement {
       <div class="toolbar">
         <span class="filename" title=${photo.filename}>${photo.filename}</span>
         <span class="counter">${this.index + 1} / ${total}</span>
+        <span class="group" role="group" aria-label="Background color">
+          <button
+            class="swatch black"
+            aria-label="Black background"
+            aria-pressed=${this.bg === "black"}
+            @click=${() => this.setBg("black")}
+          ></button>
+          <button
+            class="swatch grey"
+            aria-label="Grey background"
+            aria-pressed=${this.bg === "grey"}
+            @click=${() => this.setBg("grey")}
+          ></button>
+          <button
+            class="swatch white"
+            aria-label="White background"
+            aria-pressed=${this.bg === "white"}
+            @click=${() => this.setBg("white")}
+          ></button>
+        </span>
+        <span class="group" role="group" aria-label="Fit mode">
+          <button
+            class="seg"
+            aria-pressed=${this.fitMode === "normal"}
+            @click=${() => this.setFit("normal")}
+          >
+            Normal
+          </button>
+          <button
+            class="seg"
+            aria-pressed=${this.fitMode === "proof"}
+            @click=${() => this.setFit("proof")}
+          >
+            Proof
+          </button>
+        </span>
         <pf-icon-button
-          icon=${this.isFullscreen ? "minimize" : "maximize"}
-          label=${this.isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          icon=${this.fullscreen ? "minimize" : "maximize"}
+          label=${this.fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           @click=${this.toggleFullscreen}
         ></pf-icon-button>
         <pf-icon-button
@@ -251,7 +360,7 @@ export class PfFullView extends LitElement {
           @click=${this.close}
         ></pf-icon-button>
       </div>
-      <div class="stage">
+      <div class="stage ${this.fitMode === "proof" ? "proof" : ""}">
         <button
           class="nav prev"
           aria-label="Previous"
