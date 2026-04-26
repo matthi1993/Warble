@@ -2,7 +2,7 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { Photo } from "./types";
-import "../ui/pf-thumbnail-card";
+import "../ui/photos/pf-thumbnail-card";
 
 @customElement("pf-photo-grid")
 export class PfPhotoGrid extends LitElement {
@@ -14,42 +14,44 @@ export class PfPhotoGrid extends LitElement {
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 0.75rem;
+      gap: var(--pf-space-3);
     }
     .status {
       position: sticky;
-      bottom: 1rem;
+      bottom: var(--pf-space-4);
       margin-left: auto;
       width: fit-content;
-      background: #222;
-      color: #fff;
-      padding: 0.5rem 0.75rem;
-      border-radius: 0.4rem;
-      font-size: 0.8rem;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
+      padding: var(--pf-space-2) var(--pf-space-3);
+      border-radius: var(--pf-radius-md);
+      font-size: var(--pf-text-xs);
+      box-shadow: var(--pf-shadow-md);
       display: flex;
       flex-direction: column;
-      gap: 0.35rem;
-      min-width: 200px;
+      gap: var(--pf-space-1);
+      min-width: 220px;
     }
     .status-row {
       display: flex;
       justify-content: space-between;
-      gap: 1rem;
+      gap: var(--pf-space-4);
+      color: var(--pf-text-muted);
     }
     .bar {
       height: 4px;
-      background: #444;
-      border-radius: 2px;
+      background: var(--pf-surface-2);
+      border-radius: 999px;
       overflow: hidden;
     }
     .bar-fill {
       height: 100%;
-      background: #4a9cff;
+      background: var(--pf-accent);
       transition: width 120ms ease-out;
     }
     .err {
-      color: #ff8a8a;
+      color: var(--pf-danger);
     }
   `;
 

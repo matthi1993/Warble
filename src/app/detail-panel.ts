@@ -10,8 +10,8 @@ export class PfDetailPanel extends LitElement {
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: #1c1c1c;
-      color: #eee;
+      background: var(--pf-surface);
+      color: var(--pf-text);
       overflow: hidden;
     }
     .image-wrap {
@@ -20,39 +20,42 @@ export class PfDetailPanel extends LitElement {
       align-items: center;
       justify-content: center;
       overflow: hidden;
-      padding: 0.75rem;
-      background: #111;
+      padding: var(--pf-space-3);
+      background: var(--pf-surface-2);
     }
     img {
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
       display: block;
+      border-radius: var(--pf-radius-sm);
     }
     .meta {
-      padding: 0.75rem 1rem;
-      border-top: 1px solid #333;
-      font-size: 0.8rem;
+      padding: var(--pf-space-3) var(--pf-space-4);
+      border-top: 1px solid var(--pf-border);
+      font-size: var(--pf-text-sm);
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
+      gap: var(--pf-space-1);
     }
     .filename {
       font-weight: 600;
-      font-size: 0.95rem;
+      font-size: var(--pf-text-base);
       word-break: break-all;
     }
     .path {
-      color: #999;
+      color: var(--pf-text-muted);
       word-break: break-all;
+      font-family: var(--pf-font-mono);
+      font-size: var(--pf-text-xs);
     }
     .status {
-      color: #888;
-      font-size: 0.85rem;
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-sm);
     }
     .error {
-      color: #ff8a8a;
-      font-size: 0.85rem;
+      color: var(--pf-danger);
+      font-size: var(--pf-text-sm);
     }
   `;
 

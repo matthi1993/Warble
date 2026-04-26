@@ -1,43 +1,57 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { Folder } from "../app/types";
+import type { Folder } from "../../app/types";
+import "../icons/pf-icon";
 
 @customElement("pf-folder-tree-item")
 export class PfFolderTreeItem extends LitElement {
   static styles = css`
     :host {
       display: block;
-      font-size: 0.9rem;
+      font-size: var(--pf-text-sm);
+      color: var(--pf-text);
     }
     .row {
       display: flex;
       align-items: center;
-      gap: 0.25rem;
-      padding: 0.2rem 0.25rem;
-      border-radius: 0.25rem;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-1) var(--pf-space-2);
+      border-radius: var(--pf-radius-sm);
       cursor: pointer;
       user-select: none;
+      transition: background var(--pf-transition), color var(--pf-transition);
     }
     .row:hover {
-      background: #ececec;
+      background: var(--pf-surface-hover);
     }
     .row.selected {
-      background: #d8e6ff;
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent-hover);
     }
     .row.root .name {
       font-weight: 600;
-      font-size: 0.8rem;
-      color: #444;
+      font-size: var(--pf-text-xs);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--pf-text-muted);
     }
     .chevron {
       width: 1rem;
       display: inline-flex;
       justify-content: center;
-      font-size: 0.7rem;
-      color: #666;
+      align-items: center;
+      font-size: 0.85rem;
+      color: var(--pf-text-subtle);
     }
     .chevron.placeholder {
       visibility: hidden;
+    }
+    .folder-icon {
+      font-size: 0.95rem;
+      color: var(--pf-text-muted);
+    }
+    .row.selected .folder-icon {
+      color: var(--pf-accent);
     }
     .name {
       flex: 1;
@@ -46,9 +60,10 @@ export class PfFolderTreeItem extends LitElement {
       white-space: nowrap;
     }
     .children {
-      padding-left: 1rem;
-      border-left: 1px dashed #ddd;
-      margin-left: 0.55rem;
+      padding-left: var(--pf-space-3);
+      border-left: 1px dashed var(--pf-border);
+      margin-left: 0.7rem;
+      margin-top: 2px;
     }
   `;
 
@@ -91,12 +106,16 @@ export class PfFolderTreeItem extends LitElement {
     const isSelected = this.selectedId === this.folder.id;
     const label = this.isRoot ? this.folder.path : this.folder.name;
     return html`
-      <div class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""}" @click=${this.select}>
+      <div
+        class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""}"
+        @click=${this.select}
+      >
         ${hasChildren
-          ? html`<span class="chevron" @click=${this.toggle}
-              >${this.expanded ? "▼" : "▶"}</span
-            >`
-          : html`<span class="chevron placeholder">•</span>`}
+          ? html`<span class="chevron" @click=${this.toggle}>
+              <pf-icon name=${this.expanded ? "chevron-down" : "chevron-right"}></pf-icon>
+            </span>`
+          : html`<span class="chevron placeholder">·</span>`}
+        <pf-icon class="folder-icon" name="folder"></pf-icon>
         <span class="name" title=${this.folder.path}>${label}</span>
       </div>
       ${this.expanded && hasChildren

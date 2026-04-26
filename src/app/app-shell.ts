@@ -11,50 +11,96 @@ export class PhotoflowApp extends LitElement {
   static styles = css`
     :host {
       display: grid;
+      grid-template-rows: auto 1fr;
       grid-template-columns: 260px 1fr;
+      grid-template-areas:
+        "header header"
+        "sidebar main";
       height: 100vh;
-      font-family: system-ui, sans-serif;
-      color: #222;
+      background: var(--pf-bg);
+      color: var(--pf-text);
+      font-family: var(--pf-font-sans);
+      font-size: var(--pf-text-base);
     }
     :host(.has-detail) {
       grid-template-columns: 260px 1fr 380px;
+      grid-template-areas:
+        "header header header"
+        "sidebar main detail";
     }
-    .detail {
-      border-left: 1px solid #333;
-      overflow: hidden;
+
+    header.app-header {
+      grid-area: header;
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-2) var(--pf-space-4);
+      border-bottom: 1px solid var(--pf-border);
+      background: var(--pf-surface);
+      height: 48px;
     }
-    aside {
-      border-right: 1px solid #ddd;
-      background: #fafafa;
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--pf-text);
+    }
+    .brand .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--pf-accent);
+      box-shadow: 0 0 0 3px var(--pf-accent-soft);
+    }
+    .header-spacer {
+      flex: 1;
+    }
+
+    aside.sidebar {
+      grid-area: sidebar;
+      border-right: 1px solid var(--pf-border);
+      background: var(--pf-surface);
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
     .sidebar-header {
-      padding: 0.75rem;
-      border-bottom: 1px solid #e5e5e5;
+      padding: var(--pf-space-3);
+      border-bottom: 1px solid var(--pf-border);
     }
     .tree {
       flex: 1;
       overflow-y: auto;
-      padding: 0.5rem;
+      padding: var(--pf-space-2);
     }
     .empty {
-      color: #888;
-      font-size: 0.85rem;
-      padding: 0.5rem;
+      color: var(--pf-text-subtle);
+      font-size: var(--pf-text-sm);
+      padding: var(--pf-space-2);
     }
-    main {
-      padding: 1rem;
+
+    main.content {
+      grid-area: main;
+      padding: var(--pf-space-4);
       overflow-y: auto;
     }
     h1 {
-      margin: 0 0 1rem;
-      font-size: 1.25rem;
+      margin: 0 0 var(--pf-space-4);
+      font-size: var(--pf-text-xl);
+      font-weight: 600;
+      letter-spacing: -0.01em;
     }
-    ul {
-      margin: 0;
-      padding-left: 1.25rem;
+    p {
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-sm);
+    }
+
+    aside.detail {
+      grid-area: detail;
+      border-left: 1px solid var(--pf-border);
+      overflow: hidden;
     }
   `;
 
@@ -116,9 +162,21 @@ export class PhotoflowApp extends LitElement {
 
   render() {
     return html`
-      <aside>
+      <header class="app-header">
+        <span class="brand">
+          <span class="dot"></span>
+          Photoflow
+        </span>
+        <span class="header-spacer"></span>
+        <pf-theme-toggle></pf-theme-toggle>
+      </header>
+
+      <aside class="sidebar">
         <div class="sidebar-header">
-          <pf-button @click=${() => this.importFolder()}>Add Folders</pf-button>
+          <pf-button variant="primary" @click=${() => this.importFolder()}>
+            <pf-icon name="folder-plus"></pf-icon>
+            Add Folders
+          </pf-button>
         </div>
         <div class="tree" @folder-select=${this.onFolderSelect}>
           ${this.folders.length === 0
@@ -134,7 +192,8 @@ export class PhotoflowApp extends LitElement {
               )}
         </div>
       </aside>
-      <main @photo-selected=${this.onPhotoSelected}>
+
+      <main class="content" @photo-selected=${this.onPhotoSelected}>
         <h1>
           ${this.selectedFolderName
             ? `Photos in ${this.selectedFolderName}`
@@ -149,6 +208,7 @@ export class PhotoflowApp extends LitElement {
               .selectedPath=${this.selectedPhoto?.path ?? null}
             ></pf-photo-grid>`}
       </main>
+
       ${this.selectedPhoto
         ? html`<aside class="detail">
             <pf-detail-panel .photo=${this.selectedPhoto}></pf-detail-panel>

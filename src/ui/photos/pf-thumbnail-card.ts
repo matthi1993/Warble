@@ -4,7 +4,8 @@ import {
   isCancellation,
   requestThumbnail,
   type ThumbnailHandle,
-} from "../app/thumbnail-service";
+} from "../../app/thumbnail-service";
+import "../icons/pf-icon";
 
 @customElement("pf-thumbnail-card")
 export class PfThumbnailCard extends LitElement {
@@ -16,20 +17,22 @@ export class PfThumbnailCard extends LitElement {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 0.35rem;
-      padding: 0.5rem;
-      border-radius: 0.4rem;
-      background: #fff;
-      border: 1px solid #e5e5e5;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-2);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface);
+      border: 1px solid var(--pf-border);
       cursor: pointer;
       user-select: none;
+      transition: border-color var(--pf-transition), box-shadow var(--pf-transition),
+        transform var(--pf-transition);
     }
     .card:hover {
-      border-color: #b8d4ff;
+      border-color: var(--pf-accent);
     }
     :host([selected]) .card {
-      border-color: #4a9cff;
-      box-shadow: 0 0 0 2px rgba(74, 156, 255, 0.35);
+      border-color: var(--pf-accent);
+      box-shadow: 0 0 0 2px var(--pf-accent-soft);
     }
     .thumb {
       width: 160px;
@@ -37,10 +40,11 @@ export class PfThumbnailCard extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      background: #f0f0f0;
-      border-radius: 0.25rem;
+      background: var(--pf-surface-2);
+      border-radius: var(--pf-radius-sm);
       overflow: hidden;
       position: relative;
+      color: var(--pf-text-subtle);
     }
     .thumb img {
       max-width: 100%;
@@ -48,39 +52,42 @@ export class PfThumbnailCard extends LitElement {
       display: block;
     }
     .placeholder {
-      font-size: 0.7rem;
-      color: #999;
+      font-size: 1.25rem;
+      color: var(--pf-text-subtle);
     }
     .filename {
-      font-size: 0.75rem;
-      color: #444;
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
       max-width: 160px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
     .error {
-      font-size: 0.7rem;
-      color: #b33;
-      padding: 0.25rem;
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-1);
+      font-size: var(--pf-text-xs);
+      color: var(--pf-danger);
+      padding: var(--pf-space-1);
       text-align: center;
     }
     .badge {
       position: absolute;
-      top: 0.25rem;
-      right: 0.25rem;
+      top: var(--pf-space-1);
+      right: var(--pf-space-1);
       display: flex;
-      gap: 0.15rem;
+      gap: 2px;
       pointer-events: none;
     }
     .badge span {
-      background: rgba(0, 0, 0, 0.7);
+      background: rgba(0, 0, 0, 0.65);
       color: #fff;
       font-size: 0.6rem;
       font-weight: 600;
-      letter-spacing: 0.03em;
-      padding: 0.1rem 0.3rem;
-      border-radius: 0.2rem;
+      letter-spacing: 0.04em;
+      padding: 1px 5px;
+      border-radius: 999px;
       text-transform: uppercase;
     }
   `;
@@ -125,7 +132,6 @@ export class PfThumbnailCard extends LitElement {
 
   willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("path") && this.path !== this.loadedPath) {
-      // Reset state when reused for a different photo.
       this.pending?.cancel();
       this.pending = null;
       this.dataUrl = null;
@@ -192,18 +198,18 @@ export class PfThumbnailCard extends LitElement {
           ${this.dataUrl
             ? html`<img src=${this.dataUrl} alt=${this.filename} loading="lazy" />`
             : this.error
-            ? html`<div class="error" title=${this.error}>!</div>`
+            ? html`<div class="error" title=${this.error}>
+                <pf-icon name="alert"></pf-icon>
+              </div>`
             : html`<div class="placeholder">
-                ${this.loading ? "…" : ""}
+                <pf-icon name="image"></pf-icon>
               </div>`}
           ${showBadge
             ? html`<div
                 class="badge"
                 title=${`Includes: ${this.extensions.join(", ")}`}
               >
-                ${this.extensions.map(
-                  (e) => html`<span>${e}</span>`
-                )}
+                ${this.extensions.map((e) => html`<span>${e}</span>`)}
               </div>`
             : null}
         </div>

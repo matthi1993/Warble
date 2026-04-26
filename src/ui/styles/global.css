@@ -1,0 +1,47 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--pf-bg);
+  color: var(--pf-text);
+  font-family: var(--pf-font-sans);
+  font-size: var(--pf-text-base);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  transition: background-color var(--pf-transition), color var(--pf-transition);
+}
+
+::selection {
+  background: var(--pf-accent-soft);
+  color: var(--pf-text);
+}
+
+/* Scrollbars (subtle, theme-aware) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--pf-border-strong);
+  border-radius: 999px;
+  border: 2px solid var(--pf-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--pf-text-subtle);
+}
