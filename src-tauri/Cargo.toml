@@ -24,3 +24,4 @@ kamadak-exif = "0.6"
 base64 = "0.22"
 jpeg-decoder = "0.3"
 fast_image_resize = { version = "5", features = ["image"] }
+rusqlite = { version = "0.32", features = ["bundled"] }

@@ -56,7 +56,15 @@ pub fn import_folder(path: String, state: State<'_, AppState>) -> Result<Folder,
     let mut inner = state.inner.lock().map_err(|e| e.to_string())?;
     let folder = walk_folder(&root, &mut inner.photos)?;
     inner.imported_folders.push(folder.clone());
+    drop(inner);
+    state.db()?.add_imported_folder(&path)?;
     Ok(folder)
+}
+
+#[tauri::command]
+pub fn list_imported_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, String> {
+    let inner = state.inner.lock().map_err(|e| e.to_string())?;
+    Ok(inner.imported_folders.clone())
 }
 
 #[tauri::command]
@@ -128,7 +136,10 @@ pub fn get_photos_in_folder(
     Ok(result)
 }
 
-fn walk_folder(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder, String> {
+pub(crate) fn walk_folder(
+    path: &Path,
+    photos: &mut HashMap<String, Photo>,
+) -> Result<Folder, String> {
     let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut children = Vec::new();
 

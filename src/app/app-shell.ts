@@ -123,6 +123,18 @@ export class PhotoflowApp extends LitElement {
     return buildFolderForest(this.imports);
   }
 
+  async connectedCallback() {
+    super.connectedCallback();
+    try {
+      const persisted = await invoke<Folder[]>("list_imported_folders");
+      if (persisted.length > 0) {
+        this.imports = persisted;
+      }
+    } catch (err) {
+      console.error("Failed to load imported folders", err);
+    }
+  }
+
   private async importFolder() {
     const paths = await invoke<string[]>("select_folders_dialog");
     if (!paths || paths.length === 0) return;
