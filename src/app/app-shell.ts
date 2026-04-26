@@ -1,38 +1,124 @@
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { router, type Route } from "./router";
+import { invoke } from "@tauri-apps/api/core";
+import type { Folder, Photo } from "./types";
+import { buildFolderForest } from "./folder-tree";
 
 @customElement("photoflow-app")
 export class PhotoflowApp extends LitElement {
   static styles = css`
     :host {
-      display: block;
-      font-family: system-ui, sans-serif;
+      display: grid;
+      grid-template-columns: 260px 1fr;
       height: 100vh;
+      font-family: system-ui, sans-serif;
+      color: #222;
+    }
+    aside {
+      border-right: 1px solid #ddd;
+      background: #fafafa;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-header {
+      padding: 0.75rem;
+      border-bottom: 1px solid #e5e5e5;
+    }
+    .tree {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+    }
+    .empty {
+      color: #888;
+      font-size: 0.85rem;
+      padding: 0.5rem;
     }
     main {
       padding: 1rem;
+      overflow-y: auto;
+    }
+    h1 {
+      margin: 0 0 1rem;
+      font-size: 1.25rem;
+    }
+    ul {
+      margin: 0;
+      padding-left: 1.25rem;
     }
   `;
 
   @state()
-  private route: Route = router.current();
+  private imports: Folder[] = [];
 
-  connectedCallback(): void {
-    super.connectedCallback();
-    router.subscribe((r) => {
-      this.route = r;
+  @state()
+  private photos: Photo[] = [];
+
+  @state()
+  private selectedFolderId: string | null = null;
+
+  @state()
+  private selectedFolderName: string | null = null;
+
+  private get folders(): Folder[] {
+    return buildFolderForest(this.imports);
+  }
+
+  private async importFolder() {
+    const paths = await invoke<string[]>("select_folders_dialog");
+    if (!paths || paths.length === 0) return;
+    const trees = await Promise.all(
+      paths.map((path) => invoke<Folder>("import_folder", { path }))
+    );
+    this.imports = [...this.imports, ...trees];
+  }
+
+  private async onFolderSelect(
+    e: CustomEvent<{ id: string; path: string }>
+  ) {
+    const { id, path } = e.detail;
+    this.selectedFolderId = id;
+    const name = id.split("/").filter(Boolean).pop() ?? path;
+    this.selectedFolderName = name;
+    this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+      folderPath: path,
     });
   }
 
   render() {
     return html`
+      <aside>
+        <div class="sidebar-header">
+          <pf-button @click=${() => this.importFolder()}>Add Folders</pf-button>
+        </div>
+        <div class="tree" @folder-select=${this.onFolderSelect}>
+          ${this.folders.length === 0
+            ? html`<div class="empty">No folders imported yet.</div>`
+            : this.folders.map(
+                (f) => html`
+                  <pf-folder-tree-item
+                    .folder=${f}
+                    is-root
+                    selected-id=${this.selectedFolderId ?? ""}
+                  ></pf-folder-tree-item>
+                `
+              )}
+        </div>
+      </aside>
       <main>
-        <h1>Photoflow</h1>
-        <p>Current route: ${this.route.path}</p>
-        <pf-button @click=${() => router.navigate("/library")}>
-          Go to library
-        </pf-button>
+        <h1>
+          ${this.selectedFolderName
+            ? `Photos in ${this.selectedFolderName}`
+            : "Photoflow"}
+        </h1>
+        ${this.selectedFolderId === null
+          ? html`<p>Select a folder from the sidebar to view its photos.</p>`
+          : this.photos.length === 0
+          ? html`<p>No photos in this folder.</p>`
+          : html`<ul>
+              ${this.photos.map((p) => html`<li>${p.filename}</li>`)}
+            </ul>`}
       </main>
     `;
   }
