@@ -21,6 +21,15 @@ export class PfThumbnailCard extends LitElement {
       border-radius: 0.4rem;
       background: #fff;
       border: 1px solid #e5e5e5;
+      cursor: pointer;
+      user-select: none;
+    }
+    .card:hover {
+      border-color: #b8d4ff;
+    }
+    :host([selected]) .card {
+      border-color: #4a9cff;
+      box-shadow: 0 0 0 2px rgba(74, 156, 255, 0.35);
     }
     .thumb {
       width: 160px;
@@ -63,6 +72,9 @@ export class PfThumbnailCard extends LitElement {
 
   @property({ type: String })
   filename = "";
+
+  @property({ type: Boolean, reflect: true })
+  selected = false;
 
   @state()
   private dataUrl: string | null = null;
@@ -153,7 +165,7 @@ export class PfThumbnailCard extends LitElement {
 
   render() {
     return html`
-      <div class="card">
+      <div class="card" @click=${this.onClick}>
         <div class="thumb">
           ${this.dataUrl
             ? html`<img src=${this.dataUrl} alt=${this.filename} loading="lazy" />`
@@ -167,6 +179,16 @@ export class PfThumbnailCard extends LitElement {
       </div>
     `;
   }
+
+  private onClick = () => {
+    this.dispatchEvent(
+      new CustomEvent("photo-selected", {
+        detail: { path: this.path, filename: this.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  };
 }
 
 declare global {

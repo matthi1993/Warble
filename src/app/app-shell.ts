@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
 import "./photo-grid";
+import "./detail-panel";
 
 @customElement("photoflow-app")
 export class PhotoflowApp extends LitElement {
@@ -14,6 +15,13 @@ export class PhotoflowApp extends LitElement {
       height: 100vh;
       font-family: system-ui, sans-serif;
       color: #222;
+    }
+    :host(.has-detail) {
+      grid-template-columns: 260px 1fr 380px;
+    }
+    .detail {
+      border-left: 1px solid #333;
+      overflow: hidden;
     }
     aside {
       border-right: 1px solid #ddd;
@@ -62,6 +70,9 @@ export class PhotoflowApp extends LitElement {
   @state()
   private selectedFolderName: string | null = null;
 
+  @state()
+  private selectedPhoto: Photo | null = null;
+
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
   }
@@ -85,6 +96,22 @@ export class PhotoflowApp extends LitElement {
     this.photos = await invoke<Photo[]>("get_photos_in_folder", {
       folderPath: path,
     });
+    this.selectedPhoto = null;
+  }
+
+  private onPhotoSelected(
+    e: CustomEvent<{ path: string; filename: string }>
+  ) {
+    this.selectedPhoto = {
+      path: e.detail.path,
+      filename: e.detail.filename,
+    };
+  }
+
+  updated(changed: Map<string, unknown>): void {
+    if (changed.has("selectedPhoto")) {
+      this.classList.toggle("has-detail", this.selectedPhoto !== null);
+    }
   }
 
   render() {
@@ -107,7 +134,7 @@ export class PhotoflowApp extends LitElement {
               )}
         </div>
       </aside>
-      <main>
+      <main @photo-selected=${this.onPhotoSelected}>
         <h1>
           ${this.selectedFolderName
             ? `Photos in ${this.selectedFolderName}`
@@ -117,8 +144,16 @@ export class PhotoflowApp extends LitElement {
           ? html`<p>Select a folder from the sidebar to view its photos.</p>`
           : this.photos.length === 0
           ? html`<p>No photos in this folder.</p>`
-          : html`<pf-photo-grid .photos=${this.photos}></pf-photo-grid>`}
+          : html`<pf-photo-grid
+              .photos=${this.photos}
+              .selectedPath=${this.selectedPhoto?.path ?? null}
+            ></pf-photo-grid>`}
       </main>
+      ${this.selectedPhoto
+        ? html`<aside class="detail">
+            <pf-detail-panel .photo=${this.selectedPhoto}></pf-detail-panel>
+          </aside>`
+        : null}
     `;
   }
 }

@@ -56,6 +56,9 @@ export class PfPhotoGrid extends LitElement {
   @property({ attribute: false })
   photos: Photo[] = [];
 
+  @property({ type: String })
+  selectedPath: string | null = null;
+
   @state()
   private loaded = 0;
 
@@ -95,6 +98,7 @@ export class PfPhotoGrid extends LitElement {
             <pf-thumbnail-card
               .path=${p.path}
               .filename=${p.filename}
+              ?selected=${this.selectedPath === p.path}
             ></pf-thumbnail-card>
           `
         )}
