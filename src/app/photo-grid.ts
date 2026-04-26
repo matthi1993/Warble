@@ -98,6 +98,7 @@ export class PfPhotoGrid extends LitElement {
             <pf-thumbnail-card
               .path=${p.path}
               .filename=${p.filename}
+              .extensions=${p.extensions ?? []}
               ?selected=${this.selectedPath === p.path}
             ></pf-thumbnail-card>
           `

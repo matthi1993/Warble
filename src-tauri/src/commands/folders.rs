@@ -13,6 +13,17 @@ const PHOTO_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "tiff", "raf", "raw", "arw", "cr2", "cr3", "nef",
 ];
 
+/// Viewable extensions, in preference order. Used to pick a primary file when
+/// multiple files share the same stem (e.g. a JPEG + RAW pair).
+const VIEWABLE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tiff"];
+
+fn extension_rank(ext: &str) -> usize {
+    VIEWABLE_EXTENSIONS
+        .iter()
+        .position(|e| *e == ext)
+        .unwrap_or(VIEWABLE_EXTENSIONS.len())
+}
+
 #[tauri::command]
 pub async fn select_folder_dialog(app: AppHandle) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -55,12 +66,64 @@ pub fn get_photos_in_folder(
 ) -> Result<Vec<Photo>, String> {
     let inner = state.inner.lock().map_err(|e| e.to_string())?;
     let folder = Path::new(&folder_path);
-    let mut result: Vec<Photo> = inner
-        .photos
-        .values()
-        .filter(|p| Path::new(&p.path).parent() == Some(folder))
-        .cloned()
+
+    // Collect all photos in the folder, then group entries that share a stem
+    // (case-insensitive) so a JPEG/RAW pair shows up as a single thumbnail.
+    let mut groups: HashMap<String, Vec<&Photo>> = HashMap::new();
+    for photo in inner.photos.values() {
+        let entry_path = Path::new(&photo.path);
+        if entry_path.parent() != Some(folder) {
+            continue;
+        }
+        let key = entry_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| photo.filename.to_ascii_lowercase());
+        groups.entry(key).or_default().push(photo);
+    }
+
+    let mut result: Vec<Photo> = groups
+        .into_values()
+        .map(|mut members| {
+            // Pick the primary entry: prefer viewable formats, then
+            // alphabetical extension as a stable tiebreaker.
+            members.sort_by(|a, b| {
+                let ea = Path::new(&a.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let eb = Path::new(&b.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .unwrap_or_default();
+                extension_rank(&ea)
+                    .cmp(&extension_rank(&eb))
+                    .then_with(|| ea.cmp(&eb))
+            });
+
+            let mut extensions: Vec<String> = members
+                .iter()
+                .filter_map(|p| {
+                    Path::new(&p.path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_ascii_lowercase())
+                })
+                .collect();
+            extensions.dedup();
+
+            let primary = members[0];
+            Photo {
+                path: primary.path.clone(),
+                filename: primary.filename.clone(),
+                extensions,
+            }
+        })
         .collect();
+
     result.sort_by(|a, b| a.filename.cmp(&b.filename));
     Ok(result)
 }
@@ -94,6 +157,7 @@ fn walk_folder(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folde
                 Photo {
                     path: photo_path,
                     filename,
+                    extensions: vec![ext_lower],
                 },
             );
         }

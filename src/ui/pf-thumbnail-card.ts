@@ -65,6 +65,24 @@ export class PfThumbnailCard extends LitElement {
       padding: 0.25rem;
       text-align: center;
     }
+    .badge {
+      position: absolute;
+      top: 0.25rem;
+      right: 0.25rem;
+      display: flex;
+      gap: 0.15rem;
+      pointer-events: none;
+    }
+    .badge span {
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      padding: 0.1rem 0.3rem;
+      border-radius: 0.2rem;
+      text-transform: uppercase;
+    }
   `;
 
   @property({ type: String })
@@ -72,6 +90,9 @@ export class PfThumbnailCard extends LitElement {
 
   @property({ type: String })
   filename = "";
+
+  @property({ attribute: false })
+  extensions: string[] = [];
 
   @property({ type: Boolean, reflect: true })
   selected = false;
@@ -164,6 +185,7 @@ export class PfThumbnailCard extends LitElement {
   }
 
   render() {
+    const showBadge = this.extensions && this.extensions.length > 1;
     return html`
       <div class="card" @click=${this.onClick}>
         <div class="thumb">
@@ -174,6 +196,16 @@ export class PfThumbnailCard extends LitElement {
             : html`<div class="placeholder">
                 ${this.loading ? "…" : ""}
               </div>`}
+          ${showBadge
+            ? html`<div
+                class="badge"
+                title=${`Includes: ${this.extensions.join(", ")}`}
+              >
+                ${this.extensions.map(
+                  (e) => html`<span>${e}</span>`
+                )}
+              </div>`
+            : null}
         </div>
         <div class="filename" title=${this.filename}>${this.filename}</div>
       </div>
