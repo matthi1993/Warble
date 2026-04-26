@@ -2,6 +2,8 @@
 
 mod folders;
 mod greet;
+mod photos;
 
 pub use folders::*;
 pub use greet::*;
+pub use photos::*;

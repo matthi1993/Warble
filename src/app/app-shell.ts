@@ -3,6 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
+import "./photo-grid";
 
 @customElement("photoflow-app")
 export class PhotoflowApp extends LitElement {
@@ -116,9 +117,7 @@ export class PhotoflowApp extends LitElement {
           ? html`<p>Select a folder from the sidebar to view its photos.</p>`
           : this.photos.length === 0
           ? html`<p>No photos in this folder.</p>`
-          : html`<ul>
-              ${this.photos.map((p) => html`<li>${p.filename}</li>`)}
-            </ul>`}
+          : html`<pf-photo-grid .photos=${this.photos}></pf-photo-grid>`}
       </main>
     `;
   }

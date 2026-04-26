@@ -16,6 +16,7 @@ pub fn run() {
             commands::select_folders_dialog,
             commands::import_folder,
             commands::get_photos_in_folder,
+            commands::get_thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
