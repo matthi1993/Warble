@@ -1,12 +1,26 @@
+/**
+ * Modal full-screen photo viewer.
+ *
+ * Loads encoded image bytes via {@link "../ui/photos/pf-image-canvas"} which
+ * paints a thumbnail first and then swaps in the full decoded bitmap, plus
+ * offers wheel zoom, drag-pan, and double-click 100%↔fit.
+ *
+ * Close is intentionally idempotent and bullet-proof:
+ *   - ESC always closes in one keypress (we never trap it on the way out).
+ *   - The toolbar X is a plain native `<button>` (no shadow-DOM custom
+ *     element layered on top), so click/touch events can't be eaten by a
+ *     web-component's internals.
+ */
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Photo } from "./types";
 import "../ui/controls/pf-icon-button";
+import "../ui/icons/pf-icon";
+import "../ui/photos/pf-image-canvas";
+import type { ImageFit, PfImageCanvas } from "../ui/photos/pf-image-canvas";
 
 type BgColor = "black" | "grey" | "white";
-type FitMode = "normal" | "proof";
 
 @customElement("pf-full-view")
 export class PfFullView extends LitElement {
@@ -37,6 +51,20 @@ export class PfFullView extends LitElement {
       color: #fff;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
+    /* Symmetric placeholder bar at the bottom — same vertical footprint
+       as the toolbar so the stage's centre lines up with the viewport's
+       centre. When the toolbar fades on idle, this bar fades with it,
+       keeping the image visually anchored. */
+    .bottombar {
+      display: flex;
+      align-items: center;
+      padding: var(--pf-space-2) var(--pf-space-3);
+      background: #111;
+      color: #fff;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      min-height: 32px;
+      box-sizing: border-box;
+    }
     .filename {
       font-size: var(--pf-text-sm);
       font-weight: 600;
@@ -57,6 +85,66 @@ export class PfFullView extends LitElement {
       padding: 2px;
       background: rgba(255, 255, 255, 0.06);
       border-radius: var(--pf-radius-md);
+    }
+    .menu-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+    .menu-trigger {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 4px 10px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      border-radius: var(--pf-radius-md);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .menu-trigger:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .menu-trigger .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+    }
+    .menu-popup {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      background: #1a1a1a;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      padding: 4px;
+      z-index: 5;
+      min-width: 140px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .menu-item {
+      background: transparent;
+      color: #fff;
+      border: none;
+      padding: 6px 10px;
+      text-align: left;
+      font-size: var(--pf-text-xs);
+      border-radius: var(--pf-radius-sm);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .menu-item:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .menu-item[aria-pressed="true"] {
+      background: rgba(255, 255, 255, 0.16);
     }
     .swatch {
       width: 1.4rem;
@@ -94,23 +182,13 @@ export class PfFullView extends LitElement {
     .stage {
       flex: 1;
       position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       overflow: hidden;
       background: var(--pf-fv-bg, #000);
+      min-height: 0;
     }
-    .stage.proof img {
-      max-width: calc(100% - 96px);
-      max-height: calc(100% - 96px);
-    }
-    img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      display: block;
-      user-select: none;
-      -webkit-user-drag: none;
+    pf-image-canvas {
+      position: absolute;
+      inset: 0;
     }
     .nav {
       position: absolute;
@@ -127,6 +205,7 @@ export class PfFullView extends LitElement {
       align-items: center;
       justify-content: center;
       transition: background var(--pf-transition);
+      z-index: 2;
     }
     .nav:hover {
       background: rgba(0, 0, 0, 0.75);
@@ -144,13 +223,63 @@ export class PfFullView extends LitElement {
     .nav pf-icon {
       font-size: 1.5rem;
     }
-    .status,
-    .error {
-      color: rgba(255, 255, 255, 0.75);
-      font-size: var(--pf-text-sm);
+    /* Native close button, never a custom element — guarantees clicks
+       reach this handler even if shadow-DOM children get weird. */
+    .close-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
     }
-    .error {
-      color: #ff8080;
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .close-btn svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+    .hint {
+      position: absolute;
+      bottom: var(--pf-space-3);
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.6);
+      color: rgba(255, 255, 255, 0.85);
+      font-size: var(--pf-text-xs);
+      padding: 4px 10px;
+      border-radius: var(--pf-radius-sm);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 200ms ease;
+    }
+    .stage:hover .hint {
+      opacity: 1;
+    }
+    :host([fullscreen][idle]) .toolbar,
+    :host([fullscreen][idle]) .bottombar,
+    :host([fullscreen][idle]) .nav,
+    :host([fullscreen][idle]) .hint {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .toolbar,
+    .bottombar,
+    .nav,
+    .hint {
+      transition: opacity 200ms ease;
+    }
+    :host([fullscreen][idle]) {
+      cursor: none;
     }
   `;
 
@@ -164,51 +293,67 @@ export class PfFullView extends LitElement {
   fullscreen = false;
 
   @state()
-  private dataUrl: string | null = null;
-
-  @state()
-  private error: string | null = null;
-
-  @state()
-  private loading = false;
-
-  @state()
   private bg: BgColor = "black";
 
   @state()
-  private fitMode: FitMode = "normal";
+  private fit: ImageFit = "contain";
 
-  private loadedPath: string | null = null;
+  @state()
+  private openMenu: "bg" | "fit" | null = null;
+
+  @property({ type: Boolean, reflect: true })
+  idle = false;
+
+  private idleTimer: number | null = null;
+
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
+  private onMouseMoveGlobal = () => this.bumpIdle();
+  private onDocClick = (e: MouseEvent) => {
+    if (!this.openMenu) return;
+    const path = e.composedPath();
+    if (!path.includes(this)) return;
+    // If click is outside any menu-wrap, close.
+    const insideMenu = path.some(
+      (n) => n instanceof HTMLElement && n.classList?.contains("menu-wrap")
+    );
+    if (!insideMenu) this.openMenu = null;
+  };
 
   connectedCallback(): void {
     super.connectedCallback();
-    window.addEventListener("keydown", this.onKeyDown);
+    // Listen on capture so nothing in our own subtree can swallow ESC.
+    window.addEventListener("keydown", this.onKeyDown, { capture: true });
+    window.addEventListener("mousemove", this.onMouseMoveGlobal);
+    window.addEventListener("click", this.onDocClick, { capture: true });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
-    window.removeEventListener("keydown", this.onKeyDown);
+    window.removeEventListener("keydown", this.onKeyDown, { capture: true } as unknown as EventListenerOptions);
+    window.removeEventListener("mousemove", this.onMouseMoveGlobal);
+    window.removeEventListener("click", this.onDocClick, { capture: true } as unknown as EventListenerOptions);
+    if (this.idleTimer !== null) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     if (this.fullscreen) {
       void this.setWindowFullscreen(false).catch(() => {});
     }
   }
 
+  private bumpIdle() {
+    if (this.idle) this.idle = false;
+    if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
+    if (!this.fullscreen) return;
+    this.idleTimer = window.setTimeout(() => {
+      this.idle = true;
+      this.openMenu = null;
+    }, 1000);
+  }
+
   willUpdate(changed: Map<string, unknown>): void {
-    if (changed.has("photos") || changed.has("index")) {
-      const photo = this.currentPhoto;
-      const path = photo?.path ?? null;
-      if (path !== this.loadedPath) {
-        this.dataUrl = null;
-        this.error = null;
-        this.loadedPath = null;
-        if (path) {
-          void this.load(path);
-        }
-      }
-    }
     if (changed.has("bg")) {
       this.style.setProperty("--pf-fv-bg", this.bgCss(this.bg));
       this.style.setProperty(
@@ -227,39 +372,33 @@ export class PfFullView extends LitElement {
     return this.photos[this.index] ?? null;
   }
 
-  private async load(path: string) {
-    this.loading = true;
-    try {
-      const b64 = await invoke<string>("get_full_image", { photoPath: path });
-      if (this.currentPhoto?.path !== path) return;
-      this.dataUrl = `data:image/jpeg;base64,${b64}`;
-      this.loadedPath = path;
-    } catch (e) {
-      if (this.currentPhoto?.path !== path) return;
-      this.error = String(e);
-      this.loadedPath = path;
-    } finally {
-      if (this.currentPhoto?.path === path) this.loading = false;
-    }
-  }
-
   private handleKey(e: KeyboardEvent) {
+    // ESC always closes, regardless of fullscreen state. We exit the
+    // window's fullscreen as part of teardown in disconnectedCallback.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.close();
+      return;
+    }
     if (e.key === "ArrowLeft") {
       e.preventDefault();
       this.go(-1);
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       this.go(1);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      if (this.fullscreen) {
-        void this.toggleFullscreen();
-      } else {
-        this.close();
-      }
     } else if (e.key === "f" || e.key === "F") {
       e.preventDefault();
       void this.toggleFullscreen();
+    } else if (e.key === "0") {
+      e.preventDefault();
+      this.fit = "contain";
+    } else if (e.key === "1") {
+      e.preventDefault();
+      this.fit = "tight";
+    } else if (e.key === "2") {
+      e.preventDefault();
+      this.fit = "proof";
     }
   }
 
@@ -276,8 +415,13 @@ export class PfFullView extends LitElement {
   }
 
   private close = () => {
+    // Dispatch on the host element. `composed: true` so the event escapes
+    // shadow DOM; `bubbles: true` so app-shell sees it.
     this.dispatchEvent(
-      new CustomEvent("full-view-close", { bubbles: true, composed: true })
+      new CustomEvent("full-view-close", {
+        bubbles: true,
+        composed: true,
+      })
     );
   };
 
@@ -293,15 +437,45 @@ export class PfFullView extends LitElement {
     const next = !this.fullscreen;
     this.fullscreen = next;
     await this.setWindowFullscreen(next);
+    if (next) {
+      this.bumpIdle();
+    } else {
+      if (this.idleTimer !== null) {
+        window.clearTimeout(this.idleTimer);
+        this.idleTimer = null;
+      }
+      this.idle = false;
+    }
   };
 
   private setBg = (bg: BgColor) => {
     this.bg = bg;
+    this.openMenu = null;
   };
 
-  private setFit = (m: FitMode) => {
-    this.fitMode = m;
+  private setFit = (m: ImageFit) => {
+    const same = this.fit === m;
+    this.fit = m;
+    this.openMenu = null;
+    if (same) {
+      const cv = this.renderRoot.querySelector(
+        "pf-image-canvas"
+      ) as PfImageCanvas | null;
+      cv?.resetView();
+    }
   };
+
+  private toggleMenu = (which: "bg" | "fit") => {
+    this.openMenu = this.openMenu === which ? null : which;
+  };
+
+  private fitLabel(m: ImageFit): string {
+    return m === "contain" ? "Fit" : m === "tight" ? "Tight" : "Proof";
+  }
+
+  private bgLabel(bg: BgColor): string {
+    return bg.charAt(0).toUpperCase() + bg.slice(1);
+  }
 
   render() {
     const photo = this.currentPhoto;
@@ -313,54 +487,104 @@ export class PfFullView extends LitElement {
       <div class="toolbar">
         <span class="filename" title=${photo.filename}>${photo.filename}</span>
         <span class="counter">${this.index + 1} / ${total}</span>
-        <span class="group" role="group" aria-label="Background color">
+        <span class="menu-wrap">
           <button
-            class="swatch black"
-            aria-label="Black background"
-            aria-pressed=${this.bg === "black"}
-            @click=${() => this.setBg("black")}
-          ></button>
-          <button
-            class="swatch grey"
-            aria-label="Grey background"
-            aria-pressed=${this.bg === "grey"}
-            @click=${() => this.setBg("grey")}
-          ></button>
-          <button
-            class="swatch white"
-            aria-label="White background"
-            aria-pressed=${this.bg === "white"}
-            @click=${() => this.setBg("white")}
-          ></button>
+            class="menu-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded=${this.openMenu === "bg"}
+            @click=${() => this.toggleMenu("bg")}
+          >
+            <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
+            ${this.bgLabel(this.bg)}
+            <pf-icon name="chevron-down"></pf-icon>
+          </button>
+          ${this.openMenu === "bg"
+            ? html`<div class="menu-popup" role="menu">
+                ${(["black", "grey", "white"] as BgColor[]).map(
+                  (b) => html`<button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.bg === b}
+                    @click=${() => this.setBg(b)}
+                  >
+                    <span
+                      class="swatch"
+                      style="background:${this.bgCss(b)}"
+                    ></span>
+                    ${this.bgLabel(b)}
+                  </button>`
+                )}
+              </div>`
+            : null}
         </span>
-        <span class="group" role="group" aria-label="Fit mode">
+        <span class="menu-wrap">
           <button
-            class="seg"
-            aria-pressed=${this.fitMode === "normal"}
-            @click=${() => this.setFit("normal")}
+            class="menu-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded=${this.openMenu === "fit"}
+            @click=${() => this.toggleMenu("fit")}
           >
-            Normal
+            ${this.fitLabel(this.fit)}
+            <pf-icon name="chevron-down"></pf-icon>
           </button>
-          <button
-            class="seg"
-            aria-pressed=${this.fitMode === "proof"}
-            @click=${() => this.setFit("proof")}
-          >
-            Proof
-          </button>
+          ${this.openMenu === "fit"
+            ? html`<div class="menu-popup" role="menu">
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.fit === "contain"}
+                  @click=${() => this.setFit("contain")}
+                  title="Fit to panel (0)"
+                >
+                  Fit
+                </button>
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.fit === "tight"}
+                  @click=${() => this.setFit("tight")}
+                  title="Tight proof — small margin (1)"
+                >
+                  Tight
+                </button>
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.fit === "proof"}
+                  @click=${() => this.setFit("proof")}
+                  title="Proof — generous margin (2)"
+                >
+                  Proof
+                </button>
+              </div>`
+            : null}
         </span>
         <pf-icon-button
           icon=${this.fullscreen ? "minimize" : "maximize"}
           label=${this.fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           @click=${this.toggleFullscreen}
         ></pf-icon-button>
-        <pf-icon-button
-          icon="x"
-          label="Exit full view"
+        <button
+          class="close-btn"
+          type="button"
+          aria-label="Close full view"
+          title="Close (Esc)"
           @click=${this.close}
-        ></pf-icon-button>
+          @pointerdown=${(e: Event) => e.stopPropagation()}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6 L18 18 M18 6 L6 18" stroke-linecap="round" />
+          </svg>
+        </button>
       </div>
-      <div class="stage ${this.fitMode === "proof" ? "proof" : ""}">
+      <div class="stage">
+        <pf-image-canvas
+          .path=${photo.path}
+          .fit=${this.fit}
+          background=${this.bgCss(this.bg)}
+        ></pf-image-canvas>
         <button
           class="nav prev"
           aria-label="Previous"
@@ -369,13 +593,6 @@ export class PfFullView extends LitElement {
         >
           <pf-icon name="chevron-left"></pf-icon>
         </button>
-        ${this.dataUrl
-          ? html`<img src=${this.dataUrl} alt=${photo.filename} />`
-          : this.error
-          ? html`<div class="error">Failed to load: ${this.error}</div>`
-          : html`<div class="status">
-              ${this.loading ? "Loading…" : ""}
-            </div>`}
         <button
           class="nav next"
           aria-label="Next"
@@ -384,7 +601,11 @@ export class PfFullView extends LitElement {
         >
           <pf-icon name="chevron-right"></pf-icon>
         </button>
+        <div class="hint">
+          Scroll to zoom · drag to pan · double-click to toggle 100% · Esc to close
+        </div>
       </div>
+      <div class="bottombar" aria-hidden="true"></div>
     `;
   }
 }

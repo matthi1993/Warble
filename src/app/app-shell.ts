@@ -13,26 +13,17 @@ export class PhotoflowApp extends LitElement {
     :host {
       display: grid;
       grid-template-rows: auto 1fr;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 260px 1fr 380px;
       grid-template-areas:
-        "header header"
-        "sidebar main";
+        "header header header"
+        "sidebar main detail";
       height: 100vh;
       background: var(--pf-bg);
       color: var(--pf-text);
       font-family: var(--pf-font-sans);
       font-size: var(--pf-text-base);
     }
-    :host(.has-detail) {
-      grid-template-columns: 260px 1fr 380px;
-      grid-template-areas:
-        "header header header"
-        "sidebar main detail";
-    }
     :host(.sidebar-collapsed) {
-      grid-template-columns: 0 1fr;
-    }
-    :host(.sidebar-collapsed.has-detail) {
       grid-template-columns: 0 1fr 380px;
     }
     :host(.sidebar-collapsed) aside.sidebar {
@@ -215,9 +206,6 @@ export class PhotoflowApp extends LitElement {
   };
 
   updated(changed: Map<string, unknown>): void {
-    if (changed.has("selectedPhoto")) {
-      this.classList.toggle("has-detail", this.selectedPhoto !== null);
-    }
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
@@ -281,11 +269,12 @@ export class PhotoflowApp extends LitElement {
             ></pf-photo-grid>`}
       </main>
 
-      ${this.selectedPhoto
-        ? html`<aside class="detail" @photo-open=${this.onPhotoOpen}>
-            <pf-detail-panel .photo=${this.selectedPhoto}></pf-detail-panel>
-          </aside>`
-        : null}
+      <aside class="detail" @photo-open=${this.onPhotoOpen}>
+        <pf-detail-panel
+          .photo=${this.selectedPhoto}
+          ?fullViewOpen=${this.fullViewIndex !== null}
+        ></pf-detail-panel>
+      </aside>
 
       ${this.fullViewIndex !== null
         ? html`<pf-full-view

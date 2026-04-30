@@ -1,8 +1,14 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { invoke } from "@tauri-apps/api/core";
 import type { Photo } from "./types";
+import {
+  availableVariants,
+  primaryVariant,
+  variantPath,
+  type PhotoVariant,
+} from "./photo-variant";
 import "../ui/controls/pf-icon-button";
+import "../ui/photos/pf-image-canvas";
 
 @customElement("pf-detail-panel")
 export class PfDetailPanel extends LitElement {
@@ -17,13 +23,16 @@ export class PfDetailPanel extends LitElement {
     }
     .image-wrap {
       flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      padding: var(--pf-space-3);
-      background: var(--pf-surface-2);
       position: relative;
+      background: var(--pf-surface-2);
+      padding: var(--pf-space-3);
+      min-height: 0;
+    }
+    pf-image-canvas {
+      width: 100%;
+      height: 100%;
+      border-radius: var(--pf-radius-sm);
+      overflow: hidden;
     }
     .expand-btn {
       position: absolute;
@@ -32,13 +41,36 @@ export class PfDetailPanel extends LitElement {
       background: var(--pf-surface);
       border-radius: var(--pf-radius-md);
       box-shadow: var(--pf-shadow-md);
+      z-index: 1;
     }
-    img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      display: block;
+    .variant-toggle {
+      position: absolute;
+      top: var(--pf-space-2);
+      left: var(--pf-space-2);
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      background: var(--pf-surface);
+      box-shadow: var(--pf-shadow-md);
+      border-radius: var(--pf-radius-md);
+      z-index: 1;
+    }
+    .variant-toggle button {
+      background: transparent;
+      color: var(--pf-text);
+      border: none;
+      padding: 2px 8px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
       border-radius: var(--pf-radius-sm);
+      cursor: pointer;
+    }
+    .variant-toggle button[aria-pressed="true"] {
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent);
     }
     .meta {
       padding: var(--pf-space-3) var(--pf-space-4);
@@ -59,63 +91,33 @@ export class PfDetailPanel extends LitElement {
       font-family: var(--pf-font-mono);
       font-size: var(--pf-text-xs);
     }
-    .status {
-      color: var(--pf-text-muted);
-      font-size: var(--pf-text-sm);
-    }
-    .error {
-      color: var(--pf-danger);
-      font-size: var(--pf-text-sm);
-    }
   `;
 
   @property({ attribute: false })
   photo: Photo | null = null;
 
+  @property({ type: Boolean, attribute: "fullviewopen", reflect: true })
+  fullViewOpen = false;
+
+  /** Per-photo override of which variant (jpg/raw) to render. */
+  private variantOverrides = new Map<string, PhotoVariant>();
   @state()
-  private dataUrl: string | null = null;
+  private variantTick = 0;
 
-  @state()
-  private error: string | null = null;
-
-  @state()
-  private loading = false;
-
-  private loadedPath: string | null = null;
-
-  willUpdate(changed: Map<string, unknown>): void {
-    if (changed.has("photo")) {
-      const path = this.photo?.path ?? null;
-      if (path !== this.loadedPath) {
-        this.dataUrl = null;
-        this.error = null;
-        this.loadedPath = null;
-        if (path) {
-          void this.load(path);
-        }
-      }
-    }
+  private currentVariant(photo: Photo): PhotoVariant | null {
+    return this.variantOverrides.get(photo.path) ?? primaryVariant(photo);
   }
 
-  private async load(path: string) {
-    this.loading = true;
-    try {
-      const b64 = await invoke<string>("get_full_image", {
-        photoPath: path,
-      });
-      if (this.photo?.path !== path) return;
-      this.dataUrl = `data:image/jpeg;base64,${b64}`;
-      this.loadedPath = path;
-    } catch (e) {
-      if (this.photo?.path !== path) return;
-      this.error = String(e);
-      this.loadedPath = path;
-    } finally {
-      if (this.photo?.path === path) {
-        this.loading = false;
-      }
-    }
+  private currentPath(photo: Photo): string {
+    const variant = this.currentVariant(photo);
+    return (variant && variantPath(photo, variant)) ?? photo.path;
   }
+
+  private setVariant = (variant: PhotoVariant) => {
+    if (!this.photo) return;
+    this.variantOverrides.set(this.photo.path, variant);
+    this.variantTick++;
+  };
 
   private openFullView = () => {
     if (!this.photo) return;
@@ -129,26 +131,58 @@ export class PfDetailPanel extends LitElement {
   };
 
   render() {
-    if (!this.photo) return html``;
+    void this.variantTick;
+    const photo = this.photo;
+    if (!photo) {
+      return html`
+        <div class="image-wrap">
+          <pf-image-canvas
+            .path=${null}
+            fit="contain"
+            background="transparent"
+          ></pf-image-canvas>
+        </div>
+        <div class="meta">
+          <div class="filename" style="color: var(--pf-text-muted); font-weight: 400;">
+            No photo selected
+          </div>
+        </div>
+      `;
+    }
+    const variants = availableVariants(photo);
+    const activeVariant = this.currentVariant(photo);
+    const path = this.currentPath(photo);
     return html`
       <div class="image-wrap">
-        ${this.dataUrl
-          ? html`<img src=${this.dataUrl} alt=${this.photo.filename} />`
-          : this.error
-          ? html`<div class="error">Failed to load: ${this.error}</div>`
-          : html`<div class="status">
-              ${this.loading ? "Loading…" : ""}
-            </div>`}
-        <pf-icon-button
-          class="expand-btn"
-          icon="expand"
-          label="Open full view"
-          @click=${this.openFullView}
-        ></pf-icon-button>
+        ${variants.length > 1
+          ? html`<div class="variant-toggle" role="group" aria-label="File variant">
+              ${variants.map(
+                (v) => html`<button
+                  aria-pressed=${activeVariant === v}
+                  @click=${() => this.setVariant(v)}
+                >
+                  ${v}
+                </button>`
+              )}
+            </div>`
+          : null}
+        <pf-image-canvas
+          .path=${path}
+          fit="contain"
+          background="transparent"
+        ></pf-image-canvas>
+        ${this.fullViewOpen
+          ? null
+          : html`<pf-icon-button
+              class="expand-btn"
+              icon="expand"
+              label="Open full view"
+              @click=${this.openFullView}
+            ></pf-icon-button>`}
       </div>
       <div class="meta">
-        <div class="filename">${this.photo.filename}</div>
-        <div class="path">${this.photo.path}</div>
+        <div class="filename">${photo.filename}</div>
+        <div class="path">${photo.path}</div>
       </div>
     `;
   }

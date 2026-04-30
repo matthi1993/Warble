@@ -26,6 +26,9 @@ use image::{DynamicImage, ImageFormat, ImageReader};
 
 const TARGET_WIDTH: u32 = 320;
 const JPEG_QUALITY: u8 = 80;
+/// Bumped when the thumbnail pipeline changes in a way that invalidates
+/// existing on-disk cache entries (e.g. EXIF-orientation rotation added).
+const CACHE_VERSION: u32 = 2;
 
 const RAW_EXTS: &[&str] = &[
     "raf", "raw", "arw", "cr2", "cr3", "nef", "dng", "orf", "rw2",
@@ -66,10 +69,11 @@ pub fn generate_thumbnail(path: &str) -> Result<String, String> {
     let jpeg_bytes = if RAW_EXTS.iter().any(|e| *e == ext) {
         thumbnail_from_raw(p)?
     } else if JPEG_EXTS.iter().any(|e| *e == ext) {
-        thumbnail_from_jpeg_bytes(&fs::read(p).map_err(|e| e.to_string())?)
-            .or_else(|_| thumbnail_from_image(p))?
+        let raw = fs::read(p).map_err(|e| e.to_string())?;
+        let orient = read_exif_orientation(&raw);
+        thumbnail_from_jpeg_bytes(&raw, orient).or_else(|_| thumbnail_from_image(p, orient))?
     } else {
-        thumbnail_from_image(p)?
+        thumbnail_from_image(p, 1)?
     };
 
     if let Some(ref cp) = cache_path {
@@ -88,6 +92,11 @@ fn thumbnail_from_raw(path: &Path) -> Result<Vec<u8>, String> {
     let exif = exif::Reader::new()
         .read_from_container(&mut Cursor::new(&bytes))
         .map_err(|e| format!("EXIF read failed: {e}"))?;
+
+    let orient = exif
+        .get_field(Tag::Orientation, In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .unwrap_or(1);
 
     // Look for an embedded JPEG preview in any IFD. Many RAW files are
     // TIFF-based, so the offsets are relative to the start of the file.
@@ -117,17 +126,53 @@ fn thumbnail_from_raw(path: &Path) -> Result<Vec<u8>, String> {
 
     // Try the fast DCT-scaled path first; on failure, fall back to a full
     // decode via the `image` crate, then to the raw preview bytes.
-    if let Ok(out) = thumbnail_from_jpeg_bytes(preview) {
+    if let Ok(out) = thumbnail_from_jpeg_bytes(preview, orient) {
         return Ok(out);
     }
     match ImageReader::with_format(Cursor::new(preview), ImageFormat::Jpeg).decode() {
-        Ok(img) => encode_resized(img),
+        Ok(img) => encode_resized(apply_orientation_dyn(img, orient)),
         Err(_) => Ok(preview.to_vec()),
     }
 }
 
+fn read_exif_orientation(bytes: &[u8]) -> u32 {
+    exif::Reader::new()
+        .read_from_container(&mut Cursor::new(bytes))
+        .ok()
+        .and_then(|exif| {
+            exif.get_field(Tag::Orientation, In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+        })
+        .unwrap_or(1)
+}
+
+fn apply_orientation_dyn(img: DynamicImage, orient: u32) -> DynamicImage {
+    match orient {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
+fn apply_orientation_rgb(rgb: Vec<u8>, w: u32, h: u32, orient: u32) -> (Vec<u8>, u32, u32) {
+    if orient <= 1 || orient > 8 {
+        return (rgb, w, h);
+    }
+    let Some(img) = image::RgbImage::from_raw(w, h, rgb) else {
+        return (Vec::new(), w, h);
+    };
+    let out = apply_orientation_dyn(DynamicImage::ImageRgb8(img), orient).to_rgb8();
+    let (ow, oh) = out.dimensions();
+    (out.into_raw(), ow, oh)
+}
+
 /// Fast path for JPEG sources (regular JPEG files and embedded RAW previews).
-fn thumbnail_from_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn thumbnail_from_jpeg_bytes(bytes: &[u8], orient: u32) -> Result<Vec<u8>, String> {
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     decoder
         .read_info()
@@ -175,17 +220,18 @@ fn thumbnail_from_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
         _ => return Err("Unsupported JPEG pixel format".to_string()),
     };
 
+    let (rgb, w, h) = apply_orientation_rgb(rgb, w, h, orient);
     resize_rgb_and_encode(&rgb, w, h)
 }
 
-fn thumbnail_from_image(path: &Path) -> Result<Vec<u8>, String> {
+fn thumbnail_from_image(path: &Path, orient: u32) -> Result<Vec<u8>, String> {
     let img = ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
         .map_err(|e| e.to_string())?
         .decode()
         .map_err(|e| format!("Decode failed: {e}"))?;
-    encode_resized(img)
+    encode_resized(apply_orientation_dyn(img, orient))
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +309,7 @@ fn cache_path_for(path: &Path) -> Option<PathBuf> {
     mtime_ns.hash(&mut h);
     TARGET_WIDTH.hash(&mut h);
     JPEG_QUALITY.hash(&mut h);
+    CACHE_VERSION.hash(&mut h);
     let hex = format!("{:016x}", h.finish());
 
     // 2-char shard to keep directory sizes reasonable.
