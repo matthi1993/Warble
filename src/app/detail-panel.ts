@@ -43,6 +43,15 @@ export class PfDetailPanel extends LitElement {
       box-shadow: var(--pf-shadow-md);
       z-index: 1;
     }
+    .fullscreen-btn {
+      position: absolute;
+      top: var(--pf-space-2);
+      right: calc(var(--pf-space-2) + 40px);
+      background: var(--pf-surface);
+      border-radius: var(--pf-radius-md);
+      box-shadow: var(--pf-shadow-md);
+      z-index: 1;
+    }
     .variant-toggle {
       position: absolute;
       top: var(--pf-space-2);
@@ -99,6 +108,9 @@ export class PfDetailPanel extends LitElement {
   @property({ type: Boolean, attribute: "fullviewopen", reflect: true })
   fullViewOpen = false;
 
+  @property({ type: Boolean, attribute: "windowfullscreen", reflect: true })
+  windowFullscreen = false;
+
   /** Per-photo override of which variant (jpg/raw) to render. */
   private variantOverrides = new Map<string, PhotoVariant>();
   @state()
@@ -124,6 +136,15 @@ export class PfDetailPanel extends LitElement {
     this.dispatchEvent(
       new CustomEvent("photo-open", {
         detail: { path: this.photo.path, filename: this.photo.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  };
+
+  private toggleFullscreen = () => {
+    this.dispatchEvent(
+      new CustomEvent("toggle-window-fullscreen", {
         bubbles: true,
         composed: true,
       })
@@ -178,6 +199,16 @@ export class PfDetailPanel extends LitElement {
               icon="expand"
               label="Open full view"
               @click=${this.openFullView}
+            ></pf-icon-button>`}
+        ${this.fullViewOpen
+          ? null
+          : html`<pf-icon-button
+              class="fullscreen-btn"
+              icon=${this.windowFullscreen ? "minimize" : "maximize"}
+              label=${this.windowFullscreen
+                ? "Exit fullscreen (F)"
+                : "Enter fullscreen (F)"}
+              @click=${this.toggleFullscreen}
             ></pf-icon-button>`}
       </div>
       <div class="meta">

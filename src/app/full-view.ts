@@ -13,7 +13,6 @@
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Photo } from "./types";
 import "../ui/controls/pf-icon-button";
 import "../ui/icons/pf-icon";
@@ -190,6 +189,28 @@ export class PfFullView extends LitElement {
       position: absolute;
       inset: 0;
     }
+    /* In fullscreen, the toolbar and bottombar overlay the stage so that
+       fit/proof calculations operate on the full viewport, not the
+       reduced area left between the bars. The bars still fade out on
+       idle but never resize the canvas underneath. */
+    :host([fullscreen]) .toolbar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 3;
+      background: rgba(17, 17, 17, 0.85);
+      backdrop-filter: blur(6px);
+    }
+    :host([fullscreen]) .bottombar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 3;
+      background: rgba(17, 17, 17, 0.85);
+      backdrop-filter: blur(6px);
+    }
     .nav {
       position: absolute;
       top: 50%;
@@ -338,9 +359,6 @@ export class PfFullView extends LitElement {
       window.clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
-    if (this.fullscreen) {
-      void this.setWindowFullscreen(false).catch(() => {});
-    }
   }
 
   private bumpIdle() {
@@ -361,6 +379,17 @@ export class PfFullView extends LitElement {
         this.bg === "white" ? "#000" : "#fff"
       );
     }
+    if (changed.has("fullscreen")) {
+      if (this.fullscreen) {
+        this.bumpIdle();
+      } else {
+        if (this.idleTimer !== null) {
+          window.clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+        this.idle = false;
+      }
+    }
   }
 
   private bgCss(bg: BgColor): string {
@@ -373,23 +402,21 @@ export class PfFullView extends LitElement {
   }
 
   private handleKey(e: KeyboardEvent) {
-    // ESC always closes, regardless of fullscreen state. We exit the
-    // window's fullscreen as part of teardown in disconnectedCallback.
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      this.close();
-      return;
-    }
+    // `f`, `Escape`, and `g` are owned by the app shell so it can
+    // coordinate window fullscreen + view stack across grid and full
+    // views. We deliberately do not handle them here.
     if (e.key === "ArrowLeft") {
       e.preventDefault();
       this.go(-1);
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       this.go(1);
-    } else if (e.key === "f" || e.key === "F") {
+    } else if (e.key === "p" || e.key === "P") {
       e.preventDefault();
-      void this.toggleFullscreen();
+      this.cycleFit();
+    } else if (e.key === "b" || e.key === "B") {
+      e.preventDefault();
+      this.cycleBg();
     } else if (e.key === "0") {
       e.preventDefault();
       this.fit = "contain";
@@ -400,6 +427,20 @@ export class PfFullView extends LitElement {
       e.preventDefault();
       this.fit = "proof";
     }
+  }
+
+  private cycleFit() {
+    const order: ImageFit[] = ["contain", "tight", "proof"];
+    const idx = order.indexOf(this.fit);
+    this.fit = order[(idx + 1) % order.length];
+    this.openMenu = null;
+  }
+
+  private cycleBg() {
+    const order: BgColor[] = ["black", "grey", "white"];
+    const idx = order.indexOf(this.bg);
+    this.bg = order[(idx + 1) % order.length];
+    this.openMenu = null;
   }
 
   private go(delta: number) {
@@ -425,27 +466,13 @@ export class PfFullView extends LitElement {
     );
   };
 
-  private async setWindowFullscreen(enable: boolean) {
-    try {
-      await getCurrentWindow().setFullscreen(enable);
-    } catch (err) {
-      console.error("setFullscreen failed", err);
-    }
-  }
-
-  private toggleFullscreen = async () => {
-    const next = !this.fullscreen;
-    this.fullscreen = next;
-    await this.setWindowFullscreen(next);
-    if (next) {
-      this.bumpIdle();
-    } else {
-      if (this.idleTimer !== null) {
-        window.clearTimeout(this.idleTimer);
-        this.idleTimer = null;
-      }
-      this.idle = false;
-    }
+  private toggleFullscreen = () => {
+    this.dispatchEvent(
+      new CustomEvent("toggle-window-fullscreen", {
+        bubbles: true,
+        composed: true,
+      })
+    );
   };
 
   private setBg = (bg: BgColor) => {
@@ -602,7 +629,8 @@ export class PfFullView extends LitElement {
           <pf-icon name="chevron-right"></pf-icon>
         </button>
         <div class="hint">
-          Scroll to zoom · drag to pan · double-click to toggle 100% · Esc to close
+          Scroll to zoom · drag to pan · double-click to toggle 100% ·
+          P proof · B background · F fullscreen · G grid · Esc to close
         </div>
       </div>
       <div class="bottombar" aria-hidden="true"></div>

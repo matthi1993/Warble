@@ -1,6 +1,7 @@
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
 import "./photo-grid";
@@ -133,12 +134,19 @@ export class PhotoflowApp extends LitElement {
   @state()
   private sidebarCollapsed = false;
 
+  /** Mirror of the OS window's fullscreen state. Toggled by the `f`
+   * shortcut and the maximize buttons in the detail panel and full
+   * view. Drives `pf-full-view`'s overlay styling. */
+  @state()
+  private windowFullscreen = false;
+
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
   }
 
   async connectedCallback() {
     super.connectedCallback();
+    window.addEventListener("keydown", this.onGlobalKey);
     try {
       const persisted = await invoke<Folder[]>("list_imported_folders");
       if (persisted.length > 0) {
@@ -148,6 +156,142 @@ export class PhotoflowApp extends LitElement {
       console.error("Failed to load imported folders", err);
     }
   }
+
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    window.removeEventListener("keydown", this.onGlobalKey);
+  }
+
+  /**
+   * App-level keyboard shortcuts. Routes a small set of "always on" keys
+   * (`f`, `g`, `Escape`) regardless of which view is active, then falls
+   * through to grid-only keys when the full view is closed. The full
+   * view installs its own capture-phase listener for navigation/fit/bg
+   * keys; we run after it on the bubble phase, so this code never
+   * fights with the full view over arrow/p/b/0/1/2.
+   */
+  private onGlobalKey = (e: KeyboardEvent) => {
+    // Ignore when typing in inputs/contenteditable.
+    const target = e.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+
+    // `f` toggles window fullscreen from any view.
+    if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      void this.toggleWindowFullscreen();
+      return;
+    }
+
+    // `Esc` always returns to the most recent non-fullscreen view:
+    //   - if the OS window is fullscreen → exit fullscreen first
+    //     (whatever view we were in stays put)
+    //   - else if the full view is open → close it back to the grid
+    //   - else → no-op
+    if (e.key === "Escape") {
+      if (this.windowFullscreen) {
+        e.preventDefault();
+        e.stopPropagation();
+        void this.setWindowFullscreen(false);
+        return;
+      }
+      if (this.fullViewIndex !== null) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onFullViewClose();
+        return;
+      }
+      return;
+    }
+
+    // `g` toggles between grid and full-image view.
+    if (e.key === "g" || e.key === "G") {
+      if (this.fullViewIndex !== null) {
+        e.preventDefault();
+        this.onFullViewClose();
+        return;
+      }
+      const idx = this.selectedPhoto
+        ? this.photos.findIndex((p) => p.path === this.selectedPhoto!.path)
+        : 0;
+      if (idx >= 0 && idx < this.photos.length) {
+        e.preventDefault();
+        this.selectedPhoto = this.photos[idx];
+        this.fullViewIndex = idx;
+      }
+      return;
+    }
+
+    // While the full view is open, let it handle its own remaining keys.
+    if (this.fullViewIndex !== null) return;
+
+    if (
+      e.key === "ArrowLeft" ||
+      e.key === "ArrowRight" ||
+      e.key === "ArrowUp" ||
+      e.key === "ArrowDown"
+    ) {
+      const grid = this.renderRoot.querySelector(
+        "pf-photo-grid"
+      ) as import("./photo-grid").PfPhotoGrid | null;
+      if (!grid) return;
+      const dx = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+      const dy = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+      if (grid.moveSelection(dx, dy)) e.preventDefault();
+      return;
+    }
+
+    if (e.key === "Enter") {
+      const grid = this.renderRoot.querySelector(
+        "pf-photo-grid"
+      ) as import("./photo-grid").PfPhotoGrid | null;
+      if (grid && this.selectedPhoto) {
+        e.preventDefault();
+        grid.openSelected();
+      }
+    }
+  };
+
+  private async setWindowFullscreen(enable: boolean) {
+    try {
+      await getCurrentWindow().setFullscreen(enable);
+      this.windowFullscreen = enable;
+    } catch (err) {
+      console.error("setFullscreen failed", err);
+      return;
+    }
+    // Exiting fullscreen on macOS sometimes leaves the webview without
+    // keyboard focus, which silently breaks every shortcut until the
+    // user clicks back into the window. Force focus back to the Tauri
+    // window AND to this element so the global keydown listener keeps
+    // firing.
+    if (!enable) {
+      try {
+        await getCurrentWindow().setFocus();
+      } catch (err) {
+        console.warn("setFocus failed", err);
+      }
+      // Defer until after the OS animation settles.
+      window.setTimeout(() => {
+        this.tabIndex = -1;
+        this.focus();
+      }, 50);
+    }
+  }
+
+  private toggleWindowFullscreen = async () => {
+    await this.setWindowFullscreen(!this.windowFullscreen);
+  };
+
+  private onToggleFullscreenRequest = () => {
+    void this.toggleWindowFullscreen();
+  };
 
   private async importFolder() {
     const paths = await invoke<string[]>("select_folders_dialog");
@@ -269,10 +413,15 @@ export class PhotoflowApp extends LitElement {
             ></pf-photo-grid>`}
       </main>
 
-      <aside class="detail" @photo-open=${this.onPhotoOpen}>
+      <aside
+        class="detail"
+        @photo-open=${this.onPhotoOpen}
+        @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
+      >
         <pf-detail-panel
           .photo=${this.selectedPhoto}
           ?fullViewOpen=${this.fullViewIndex !== null}
+          ?windowFullscreen=${this.windowFullscreen}
         ></pf-detail-panel>
       </aside>
 
@@ -280,8 +429,10 @@ export class PhotoflowApp extends LitElement {
         ? html`<pf-full-view
             .photos=${this.photos}
             .index=${this.fullViewIndex}
+            ?fullscreen=${this.windowFullscreen}
             @full-view-navigate=${this.onFullViewNavigate}
             @full-view-close=${this.onFullViewClose}
+            @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
         : null}
     `;
