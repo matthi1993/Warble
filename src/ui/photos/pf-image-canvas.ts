@@ -338,7 +338,7 @@ export class PfImageCanvas extends LitElement {
         );
         ctx.clip();
       }
-      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingEnabled = false;
       // "high" triggers a CPU-bound resampler on macOS WebKit that can
       // stall the main thread for hundreds of ms when downscaling a
       // 24 MP bitmap into the viewport. "medium" stays on the GPU
