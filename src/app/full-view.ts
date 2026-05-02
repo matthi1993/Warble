@@ -599,11 +599,14 @@ export class PfFullView extends LitElement {
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
   private onMouseMoveGlobal = (e: MouseEvent) => {
     // While controls are visible, any mouse movement resets the idle timer.
-    // Once hidden (idle), only movement within the upper area of the viewport
-    // brings them back, so casual movement over the image doesn't reveal them.
+    // Once hidden (idle), only movement within the upper or lower area of the
+    // viewport brings them back, so casual movement over the image doesn't
+    // reveal them.
     if (this.idle) {
-      const threshold = Math.max(120, window.innerHeight * 0.2);
-      if (e.clientY > threshold) return;
+      const margin = Math.max(120, window.innerHeight * 0.2);
+      const inTop = e.clientY < margin;
+      const inBottom = e.clientY > window.innerHeight - margin;
+      if (!inTop && !inBottom) return;
     }
     this.bumpIdle();
   };
