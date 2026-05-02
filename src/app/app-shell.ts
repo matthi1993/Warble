@@ -4,6 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
+import {
+  clearThumbnailBatch,
+  getThumbnailProgress,
+  onThumbnailProgress,
+  startThumbnailBatch,
+  type ThumbnailBatchProgress,
+} from "./thumbnail-service";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
@@ -13,11 +20,12 @@ export class PhotoflowApp extends LitElement {
   static styles = css`
     :host {
       display: grid;
-      grid-template-rows: auto 1fr;
+      grid-template-rows: auto 1fr auto;
       grid-template-columns: 260px 1fr 380px;
       grid-template-areas:
         "header header header"
-        "sidebar main detail";
+        "sidebar main detail"
+        "footer footer footer";
       height: 100vh;
       background: var(--pf-bg);
       color: var(--pf-text);
@@ -111,6 +119,45 @@ export class PhotoflowApp extends LitElement {
       min-width: 0;
       min-height: 0;
     }
+
+    footer.app-footer {
+      grid-area: footer;
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-2) var(--pf-space-4);
+      border-top: 1px solid var(--pf-border);
+      background: var(--pf-surface);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      min-height: 32px;
+    }
+    .footer-label {
+      flex-shrink: 0;
+    }
+    .footer-bar {
+      flex: 1;
+      height: 4px;
+      background: var(--pf-surface-2);
+      border-radius: 999px;
+      overflow: hidden;
+      max-width: 320px;
+    }
+    .footer-bar-fill {
+      height: 100%;
+      background: var(--pf-accent);
+      transition: width 120ms ease-out;
+    }
+    .footer-count {
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .footer-failed {
+      color: var(--pf-danger);
+    }
+    .footer-spacer {
+      flex: 1;
+    }
   `;
 
   @state()
@@ -140,6 +187,11 @@ export class PhotoflowApp extends LitElement {
   @state()
   private windowFullscreen = false;
 
+  @state()
+  private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
+
+  private unsubscribeProgress: (() => void) | null = null;
+
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
   }
@@ -147,6 +199,9 @@ export class PhotoflowApp extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener("keydown", this.onGlobalKey);
+    this.unsubscribeProgress = onThumbnailProgress((state) => {
+      this.thumbProgress = state;
+    });
     try {
       const persisted = await invoke<Folder[]>("list_imported_folders");
       if (persisted.length > 0) {
@@ -160,6 +215,9 @@ export class PhotoflowApp extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onGlobalKey);
+    this.unsubscribeProgress?.();
+    this.unsubscribeProgress = null;
+    clearThumbnailBatch();
   }
 
   /**
@@ -313,6 +371,7 @@ export class PhotoflowApp extends LitElement {
       folderPath: path,
     });
     this.selectedPhoto = null;
+    startThumbnailBatch(this.photos.map((p) => p.path));
   }
 
   private onPhotoSelected(
@@ -435,6 +494,33 @@ export class PhotoflowApp extends LitElement {
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
         : null}
+
+      ${this.renderFooter()}
+    `;
+  }
+
+  private renderFooter() {
+    const p = this.thumbProgress;
+    const done = p.loaded + p.failed;
+    const pct = p.total === 0 ? 0 : Math.round((done / p.total) * 100);
+    return html`
+      <footer class="app-footer" role="status" aria-live="polite">
+        ${p.total === 0
+          ? html`<span class="footer-label">Ready</span>
+              <span class="footer-spacer"></span>`
+          : html`
+              <span class="footer-label">
+                ${p.inProgress ? "Generating thumbnails…" : "Thumbnails ready"}
+              </span>
+              <div class="footer-bar">
+                <div class="footer-bar-fill" style="width: ${pct}%"></div>
+              </div>
+              <span class="footer-count">${done} / ${p.total}</span>
+              ${p.failed > 0
+                ? html`<span class="footer-failed">${p.failed} failed</span>`
+                : null}
+            `}
+      </footer>
     `;
   }
 }
