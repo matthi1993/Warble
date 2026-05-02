@@ -1,4 +1,4 @@
-//! SQLite-backed persistence for imported folders and (later) edits/ratings.
+//! SQLite-backed persistence for the library (imported folder roots).
 //!
 //! The database stores only metadata — image files themselves stay on disk
 //! and are referenced by absolute path.
@@ -9,26 +9,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 
-pub struct Database {
+pub struct LibraryRepository {
     conn: Mutex<Connection>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ImportedFolderRow {
-    pub path: String,
-}
-
-impl Database {
+impl LibraryRepository {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
-        let db = Self {
+        let repo = Self {
             conn: Mutex::new(conn),
         };
-        db.migrate()?;
-        Ok(db)
+        repo.migrate()?;
+        Ok(repo)
     }
 
     fn migrate(&self) -> Result<(), String> {
@@ -49,7 +44,6 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
 
-        // Migration 1: imported folder roots picked by the user.
         if current < 1 {
             conn.execute_batch(
                 "CREATE TABLE imported_folders (
@@ -64,7 +58,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn add_imported_folder(&self, path: &str) -> Result<(), String> {
+    pub fn record_imported_root(&self, path: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -79,13 +73,13 @@ impl Database {
         Ok(())
     }
 
-    pub fn list_imported_folders(&self) -> Result<Vec<ImportedFolderRow>, String> {
+    pub fn imported_root_paths(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare("SELECT path FROM imported_folders ORDER BY imported_at ASC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok(ImportedFolderRow { path: row.get(0)? }))
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for r in rows {
@@ -94,4 +88,3 @@ impl Database {
         Ok(out)
     }
 }
-

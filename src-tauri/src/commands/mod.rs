@@ -1,10 +1,7 @@
 //! Tauri command handlers exposed to the frontend.
 
-mod folders;
-mod greet;
-mod photos;
+mod images;
+mod library;
 
-pub use folders::*;
-pub(crate) use folders::walk_folder;
-pub use greet::*;
-pub use photos::*;
+pub use images::*;
+pub use library::*;
