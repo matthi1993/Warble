@@ -14,6 +14,13 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { Photo } from "./types";
+import {
+  availableFormats,
+  availableVariants,
+  fileForSelection,
+  primarySelection,
+  type PhotoFormat,
+} from "./photo-variant";
 import { prefetchFullImages } from "./full-image-cache";
 import "../ui/controls/pf-icon-button";
 import "../ui/icons/pf-icon";
@@ -321,7 +328,12 @@ export class PfFullView extends LitElement {
   private fit: ImageFit = "contain";
 
   @state()
-  private openMenu: "bg" | "fit" | null = null;
+  private openMenu: "bg" | "fit" | "format" | "variant" | null = null;
+
+  /** Per-photo override of which format (jpg/raw) to render. */
+  private formatOverrides = new Map<string, PhotoFormat>();
+  /** Per-photo+format override of which variant to render. */
+  private variantOverrides = new Map<string, string>();
 
   @property({ type: Boolean, reflect: true })
   idle = false;
@@ -520,8 +532,51 @@ export class PfFullView extends LitElement {
     }
   };
 
-  private toggleMenu = (which: "bg" | "fit") => {
+  private toggleMenu = (which: "bg" | "fit" | "format" | "variant") => {
     this.openMenu = this.openMenu === which ? null : which;
+  };
+
+  private currentSelection(
+    photo: Photo
+  ): { format: PhotoFormat; variant: string } | null {
+    const formats = availableFormats(photo);
+    if (formats.length === 0) return null;
+    const primary = primarySelection(photo);
+    const format =
+      this.formatOverrides.get(photo.path) ?? primary?.format ?? formats[0];
+    const variants = availableVariants(photo, format);
+    if (variants.length === 0) return null;
+    const requested =
+      this.variantOverrides.get(`${photo.path}|${format}`) ??
+      (primary && primary.format === format ? primary.variant : null) ??
+      variants[0].key;
+    const final =
+      variants.find((v) => v.key === requested)?.key ?? variants[0].key;
+    return { format, variant: final };
+  }
+
+  private resolvedPath(photo: Photo): string {
+    const sel = this.currentSelection(photo);
+    if (!sel) return photo.path;
+    return fileForSelection(photo, sel.format, sel.variant) ?? photo.path;
+  }
+
+  private setFormat = (format: PhotoFormat) => {
+    const photo = this.currentPhoto;
+    if (!photo) return;
+    this.formatOverrides.set(photo.path, format);
+    this.openMenu = null;
+    this.requestUpdate();
+  };
+
+  private setVariant = (variantKey: string) => {
+    const photo = this.currentPhoto;
+    if (!photo) return;
+    const sel = this.currentSelection(photo);
+    if (!sel) return;
+    this.variantOverrides.set(`${photo.path}|${sel.format}`, variantKey);
+    this.openMenu = null;
+    this.requestUpdate();
   };
 
   private fitLabel(m: ImageFit): string {
@@ -538,6 +593,11 @@ export class PfFullView extends LitElement {
     const total = this.photos.length;
     const hasPrev = this.index > 0;
     const hasNext = this.index < total - 1;
+    const sel = this.currentSelection(photo);
+    const formats = availableFormats(photo);
+    const variants =
+      sel !== null ? availableVariants(photo, sel.format) : [];
+    const path = this.resolvedPath(photo);
     return html`
       <div class="toolbar">
         <span class="filename" title=${photo.filename}>${photo.filename}</span>
@@ -616,6 +676,63 @@ export class PfFullView extends LitElement {
               </div>`
             : null}
         </span>
+        ${sel !== null && formats.length > 1
+          ? html`<span class="menu-wrap">
+              <button
+                class="menu-trigger"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded=${this.openMenu === "format"}
+                @click=${() => this.toggleMenu("format")}
+              >
+                ${sel.format.toUpperCase()}
+                <pf-icon name="chevron-down"></pf-icon>
+              </button>
+              ${this.openMenu === "format"
+                ? html`<div class="menu-popup" role="menu">
+                    ${formats.map(
+                      (f) => html`<button
+                        class="menu-item"
+                        role="menuitemradio"
+                        aria-pressed=${sel.format === f}
+                        @click=${() => this.setFormat(f)}
+                      >
+                        ${f.toUpperCase()}
+                      </button>`
+                    )}
+                  </div>`
+                : null}
+            </span>`
+          : null}
+        ${sel !== null && variants.length > 1
+          ? html`<span class="menu-wrap">
+              <button
+                class="menu-trigger"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded=${this.openMenu === "variant"}
+                @click=${() => this.toggleMenu("variant")}
+              >
+                ${variants.find((v) => v.key === sel.variant)?.label ??
+                sel.variant}
+                <pf-icon name="chevron-down"></pf-icon>
+              </button>
+              ${this.openMenu === "variant"
+                ? html`<div class="menu-popup" role="menu">
+                    ${variants.map(
+                      (v) => html`<button
+                        class="menu-item"
+                        role="menuitemradio"
+                        aria-pressed=${sel.variant === v.key}
+                        @click=${() => this.setVariant(v.key)}
+                      >
+                        ${v.label}
+                      </button>`
+                    )}
+                  </div>`
+                : null}
+            </span>`
+          : null}
         <pf-icon-button
           icon=${this.fullscreen ? "minimize" : "maximize"}
           label=${this.fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
@@ -636,7 +753,7 @@ export class PfFullView extends LitElement {
       </div>
       <div class="stage">
         <pf-image-canvas
-          .path=${photo.path}
+          .path=${path}
           .fit=${this.fit}
           background=${this.bgCss(this.bg)}
         ></pf-image-canvas>

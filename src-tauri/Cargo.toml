@@ -1,12 +1,12 @@
 [package]
-name = "photoflow"
+name = "warble"
 version = "0.1.0"
-description = "Photoflow desktop app"
+description = "Warble photo viewer"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "photoflow_lib"
+name = "warble_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

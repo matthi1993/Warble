@@ -17,8 +17,8 @@ import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
 
-@customElement("photoflow-app")
-export class PhotoflowApp extends LitElement {
+@customElement("warble-app")
+export class WarbleApp extends LitElement {
   static styles = css`
     :host {
       display: grid;
@@ -49,22 +49,21 @@ export class PhotoflowApp extends LitElement {
       padding: var(--pf-space-2) var(--pf-space-4);
       border-bottom: 1px solid var(--pf-border);
       background: var(--pf-surface);
-      height: 48px;
+      height: 28px;
     }
     .brand {
       display: inline-flex;
       align-items: center;
       gap: var(--pf-space-2);
       font-weight: 600;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.04em;
       color: var(--pf-text);
     }
-    .brand .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--pf-accent);
-      box-shadow: 0 0 0 3px var(--pf-accent-soft);
+    .brand-mark {
+      width: 22px;
+      height: 22px;
+      color: var(--pf-text);
+      filter: drop-shadow(0 0 0 transparent);
     }
     .header-spacer {
       flex: 1;
@@ -160,6 +159,41 @@ export class PhotoflowApp extends LitElement {
     .footer-spacer {
       flex: 1;
     }
+
+    .ctx-menu-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+    }
+    .ctx-menu {
+      position: fixed;
+      min-width: 180px;
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      padding: var(--pf-space-1);
+      font-size: var(--pf-text-sm);
+      z-index: 1001;
+    }
+    .ctx-menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: inherit;
+      border: 0;
+      padding: var(--pf-space-2) var(--pf-space-3);
+      border-radius: var(--pf-radius-sm);
+      font: inherit;
+      cursor: pointer;
+    }
+    .ctx-menu button:hover,
+    .ctx-menu button:focus-visible {
+      background: var(--pf-surface-2);
+      outline: none;
+    }
   `;
 
   @state()
@@ -191,6 +225,14 @@ export class PhotoflowApp extends LitElement {
 
   @state()
   private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
+
+  @state()
+  private contextMenu: {
+    path: string;
+    filename: string;
+    x: number;
+    y: number;
+  } | null = null;
 
   private unsubscribeProgress: (() => void) | null = null;
   private unsubscribeCacheCleared: UnlistenFn | null = null;
@@ -288,6 +330,12 @@ export class PhotoflowApp extends LitElement {
     //   - else if the full view is open → close it back to the grid
     //   - else → no-op
     if (e.key === "Escape") {
+      if (this.contextMenu) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.contextMenu = null;
+        return;
+      }
       if (this.windowFullscreen) {
         e.preventDefault();
         e.stopPropagation();
@@ -428,6 +476,33 @@ export class PhotoflowApp extends LitElement {
     }
   }
 
+  private onPhotoContextMenu(
+    e: CustomEvent<{ path: string; filename: string; x: number; y: number }>
+  ) {
+    this.contextMenu = { ...e.detail };
+  }
+
+  private dismissContextMenu = () => {
+    if (this.contextMenu) this.contextMenu = null;
+  };
+
+  private async revealInFileManager(path: string) {
+    this.contextMenu = null;
+    try {
+      await invoke("reveal_in_file_manager", { path });
+    } catch (err) {
+      console.error("reveal_in_file_manager failed", err);
+    }
+  }
+
+  private revealLabel(): string {
+    const ua =
+      typeof navigator !== "undefined" ? navigator.userAgent ?? "" : "";
+    if (/Mac|iPhone|iPad/i.test(ua)) return "Show in Finder";
+    if (/Win/i.test(ua)) return "Show in Explorer";
+    return "Show in File Manager";
+  }
+
   private onFullViewNavigate(e: CustomEvent<{ index: number }>) {
     const idx = e.detail.index;
     if (idx < 0 || idx >= this.photos.length) return;
@@ -457,10 +532,6 @@ export class PhotoflowApp extends LitElement {
           label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
           @click=${this.toggleSidebar}
         ></pf-icon-button>
-        <span class="brand">
-          <span class="dot"></span>
-          Photoflow
-        </span>
         <span class="header-spacer"></span>
         <pf-theme-toggle></pf-theme-toggle>
       </header>
@@ -491,11 +562,12 @@ export class PhotoflowApp extends LitElement {
         class="content"
         @photo-selected=${this.onPhotoSelected}
         @photo-open=${this.onPhotoOpen}
+        @photo-context-menu=${this.onPhotoContextMenu}
       >
         <h1>
           ${this.selectedFolderName
             ? `Photos in ${this.selectedFolderName}`
-            : "Photoflow"}
+            : "Warble"}
         </h1>
         ${this.selectedFolderId === null
           ? html`<p>Select a folder from the sidebar to view its photos.</p>`
@@ -531,6 +603,34 @@ export class PhotoflowApp extends LitElement {
         : null}
 
       ${this.renderFooter()}
+      ${this.renderContextMenu()}
+    `;
+  }
+
+  private renderContextMenu() {
+    const cm = this.contextMenu;
+    if (!cm) return null;
+    return html`
+      <div
+        class="ctx-menu-backdrop"
+        @click=${this.dismissContextMenu}
+        @contextmenu=${(e: MouseEvent) => {
+          e.preventDefault();
+          this.dismissContextMenu();
+        }}
+      ></div>
+      <div
+        class="ctx-menu"
+        role="menu"
+        style="left: ${cm.x}px; top: ${cm.y}px;"
+      >
+        <button
+          role="menuitem"
+          @click=${() => this.revealInFileManager(cm.path)}
+        >
+          ${this.revealLabel()}
+        </button>
+      </div>
     `;
   }
 
@@ -562,6 +662,6 @@ export class PhotoflowApp extends LitElement {
 
 declare global {
   interface HTMLElementTagNameMap {
-    "photoflow-app": PhotoflowApp;
+    "warble-app": WarbleApp;
   }
 }

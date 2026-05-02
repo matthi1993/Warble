@@ -210,7 +210,12 @@ export class PfThumbnailCard extends LitElement {
   render() {
     const showBadge = this.extensions && this.extensions.length > 1;
     return html`
-      <div class="card" @click=${this.onClick} @dblclick=${this.onDblClick}>
+      <div
+        class=\"card\"
+        @click=${this.onClick}
+        @dblclick=${this.onDblClick}
+        @contextmenu=${this.onContextMenu}
+      >
         <div class="thumb">
           ${this.dataUrl
             ? html`<img src=${this.dataUrl} alt=${this.filename} loading="lazy" />`
@@ -250,6 +255,29 @@ export class PfThumbnailCard extends LitElement {
     this.dispatchEvent(
       new CustomEvent("photo-open", {
         detail: { path: this.path, filename: this.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  };
+
+  private onContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+    this.dispatchEvent(
+      new CustomEvent("photo-selected", {
+        detail: { path: this.path, filename: this.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    this.dispatchEvent(
+      new CustomEvent("photo-context-menu", {
+        detail: {
+          path: this.path,
+          filename: this.filename,
+          x: e.clientX,
+          y: e.clientY,
+        },
         bubbles: true,
         composed: true,
       })

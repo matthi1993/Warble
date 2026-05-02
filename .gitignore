@@ -36,3 +36,5 @@ coverage
 *.njsproj
 *.sln
 *.sw?
+
+./ui/

@@ -42,6 +42,7 @@ pub fn run() {
             commands::set_full_image_bitmap_cache_max,
             commands::clear_thumbnail_cache,
             commands::clear_full_image_memory_cache,
+            commands::reveal_in_file_manager,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -85,7 +86,7 @@ fn init_library_repository(app: &tauri::App) {
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."));
-    db_path.push("photoflow.db");
+    db_path.push("warble.db");
 
     let state = app.state::<AppState>();
     match LibraryRepository::open(&db_path) {

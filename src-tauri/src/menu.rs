@@ -62,13 +62,13 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
 
 fn build_app_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
     let about_meta = AboutMetadataBuilder::new()
-        .name(Some("photoflow"))
+        .name(Some("Warble"))
         .version(Some(env!("CARGO_PKG_VERSION")))
         .build();
-    SubmenuBuilder::new(app, "photoflow")
+    SubmenuBuilder::new(app, "Warble")
         .item(&PredefinedMenuItem::about(
             app,
-            Some("About photoflow"),
+            Some("About Warble"),
             Some(about_meta),
         )?)
         .separator()

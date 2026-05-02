@@ -353,8 +353,8 @@ export class PfImageCanvas extends LitElement {
         );
         ctx.clip();
       }
-      ctx.imageSmoothingEnabled = false;
-      ctx.imageSmoothingQuality = "medium";
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
       ctx.drawImage(bm, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
     }
     ctx.restore();

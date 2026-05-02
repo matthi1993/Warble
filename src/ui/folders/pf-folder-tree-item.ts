@@ -104,7 +104,7 @@ export class PfFolderTreeItem extends LitElement {
   render() {
     const hasChildren = this.folder.children.length > 0;
     const isSelected = this.selectedId === this.folder.id;
-    const label = this.isRoot ? this.folder.path : this.folder.name;
+    const label = this.folder.name;
     return html`
       <div
         class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""}"

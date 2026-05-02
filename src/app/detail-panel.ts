@@ -2,10 +2,11 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { Photo } from "./types";
 import {
+  availableFormats,
   availableVariants,
-  primaryVariant,
-  variantPath,
-  type PhotoVariant,
+  fileForSelection,
+  primarySelection,
+  type PhotoFormat,
 } from "./photo-variant";
 import "../ui/controls/pf-icon-button";
 import "../ui/photos/pf-image-canvas";
@@ -58,14 +59,19 @@ export class PfDetailPanel extends LitElement {
       left: var(--pf-space-2);
       display: inline-flex;
       align-items: center;
+      gap: var(--pf-space-1);
+      z-index: 1;
+    }
+    .toggle-group {
+      display: inline-flex;
+      align-items: center;
       gap: 2px;
       padding: 2px;
       background: var(--pf-surface);
       box-shadow: var(--pf-shadow-md);
       border-radius: var(--pf-radius-md);
-      z-index: 1;
     }
-    .variant-toggle button {
+    .toggle-group button {
       background: transparent;
       color: var(--pf-text);
       border: none;
@@ -76,8 +82,9 @@ export class PfDetailPanel extends LitElement {
       text-transform: uppercase;
       border-radius: var(--pf-radius-sm);
       cursor: pointer;
+      white-space: nowrap;
     }
-    .variant-toggle button[aria-pressed="true"] {
+    .toggle-group button[aria-pressed="true"] {
       background: var(--pf-accent-soft);
       color: var(--pf-accent);
     }
@@ -111,23 +118,57 @@ export class PfDetailPanel extends LitElement {
   @property({ type: Boolean, attribute: "windowfullscreen", reflect: true })
   windowFullscreen = false;
 
-  /** Per-photo override of which variant (jpg/raw) to render. */
-  private variantOverrides = new Map<string, PhotoVariant>();
+  /** Per-photo override of which format (jpg/raw) to render. */
+  private formatOverrides = new Map<string, PhotoFormat>();
+  /** Per-photo+format override of which variant to render. Keyed by
+   *  `${photo.path}|${format}` so switching formats remembers the
+   *  variant choice for each independently. */
+  private variantOverrides = new Map<string, string>();
   @state()
   private variantTick = 0;
 
-  private currentVariant(photo: Photo): PhotoVariant | null {
-    return this.variantOverrides.get(photo.path) ?? primaryVariant(photo);
+  private currentSelection(
+    photo: Photo
+  ): { format: PhotoFormat; variant: string } | null {
+    const formats = availableFormats(photo);
+    if (formats.length === 0) return null;
+    const primary = primarySelection(photo);
+    const format =
+      this.formatOverrides.get(photo.path) ??
+      primary?.format ??
+      formats[0];
+    const variants = availableVariants(photo, format);
+    if (variants.length === 0) return null;
+    const overrideKey = `${photo.path}|${format}`;
+    const requested =
+      this.variantOverrides.get(overrideKey) ??
+      (primary && primary.format === format ? primary.variant : null) ??
+      variants[0].key;
+    const final =
+      variants.find((v) => v.key === requested)?.key ?? variants[0].key;
+    return { format, variant: final };
   }
 
   private currentPath(photo: Photo): string {
-    const variant = this.currentVariant(photo);
-    return (variant && variantPath(photo, variant)) ?? photo.path;
+    const sel = this.currentSelection(photo);
+    if (!sel) return photo.path;
+    return fileForSelection(photo, sel.format, sel.variant) ?? photo.path;
   }
 
-  private setVariant = (variant: PhotoVariant) => {
+  private setFormat = (format: PhotoFormat) => {
     if (!this.photo) return;
-    this.variantOverrides.set(this.photo.path, variant);
+    this.formatOverrides.set(this.photo.path, format);
+    this.variantTick++;
+  };
+
+  private setVariant = (variantKey: string) => {
+    if (!this.photo) return;
+    const sel = this.currentSelection(this.photo);
+    if (!sel) return;
+    this.variantOverrides.set(
+      `${this.photo.path}|${sel.format}`,
+      variantKey
+    );
     this.variantTick++;
   };
 
@@ -170,21 +211,47 @@ export class PfDetailPanel extends LitElement {
         </div>
       `;
     }
-    const variants = availableVariants(photo);
-    const activeVariant = this.currentVariant(photo);
+    const formats = availableFormats(photo);
+    const sel = this.currentSelection(photo);
+    const variants =
+      sel !== null ? availableVariants(photo, sel.format) : [];
     const path = this.currentPath(photo);
     return html`
       <div class="image-wrap">
-        ${variants.length > 1
-          ? html`<div class="variant-toggle" role="group" aria-label="File variant">
-              ${variants.map(
-                (v) => html`<button
-                  aria-pressed=${activeVariant === v}
-                  @click=${() => this.setVariant(v)}
-                >
-                  ${v}
-                </button>`
-              )}
+        ${sel !== null && (formats.length > 1 || variants.length > 1)
+          ? html`<div class="variant-toggle">
+              ${formats.length > 1
+                ? html`<div
+                    class="toggle-group"
+                    role="group"
+                    aria-label="File format"
+                  >
+                    ${formats.map(
+                      (f) => html`<button
+                        aria-pressed=${sel.format === f}
+                        @click=${() => this.setFormat(f)}
+                      >
+                        ${f}
+                      </button>`
+                    )}
+                  </div>`
+                : null}
+              ${variants.length > 1
+                ? html`<div
+                    class="toggle-group"
+                    role="group"
+                    aria-label="Variant"
+                  >
+                    ${variants.map(
+                      (v) => html`<button
+                        aria-pressed=${sel.variant === v.key}
+                        @click=${() => this.setVariant(v.key)}
+                      >
+                        ${v.label}
+                      </button>`
+                    )}
+                  </div>`
+                : null}
             </div>`
           : null}
         <pf-image-canvas
