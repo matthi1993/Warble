@@ -92,6 +92,11 @@ export class PfImageCanvas extends LitElement {
 
   private resizeObserver?: ResizeObserver;
   private loadAbort: AbortController | null = null;
+  /** Defers the expensive full-image fetch+decode so quickly skipping
+   * past photos doesn't pile up parallel decodes that starve the photo
+   * the user actually settles on. */
+  private fullLoadTimer: number | null = null;
+  private static FULL_LOAD_DELAY_MS = 250;
   private dragging = false;
   private dragStartX = 0;
   private dragStartY = 0;
@@ -112,6 +117,10 @@ export class PfImageCanvas extends LitElement {
     super.disconnectedCallback();
     this.resizeObserver?.disconnect();
     this.loadAbort?.abort();
+    if (this.fullLoadTimer !== null) {
+      window.clearTimeout(this.fullLoadTimer);
+      this.fullLoadTimer = null;
+    }
     this.bitmap?.close?.();
     this.thumbBitmap?.close?.();
     this.bitmap = null;
@@ -142,6 +151,10 @@ export class PfImageCanvas extends LitElement {
 
   private async startLoad() {
     this.loadAbort?.abort();
+    if (this.fullLoadTimer !== null) {
+      window.clearTimeout(this.fullLoadTimer);
+      this.fullLoadTimer = null;
+    }
     const ac = new AbortController();
     this.loadAbort = ac;
 
@@ -174,7 +187,8 @@ export class PfImageCanvas extends LitElement {
     }
     this.draw();
 
-    // Phase 1: thumbnail (cached → near-instant).
+    // Phase 1: thumbnail (cached → near-instant). Always kick this off
+    // immediately so even rapid arrow-key navigation shows something.
     const thumbHandle = requestThumbnail(path);
     void thumbHandle.promise
       .then((b64) => decodeBase64Jpeg(b64))
@@ -198,7 +212,18 @@ export class PfImageCanvas extends LitElement {
         if (!isCancellation(err)) console.warn("thumbnail preview failed", err);
       });
 
-    // Phase 2: full encoded bytes → createImageBitmap.
+    // Phase 2: full encoded bytes → createImageBitmap. Defer by 250 ms so
+    // that flicking past photos doesn't queue up expensive decodes for
+    // every intermediate frame; only the photo the user actually settles
+    // on pays the full-render cost.
+    this.fullLoadTimer = window.setTimeout(() => {
+      this.fullLoadTimer = null;
+      if (ac.signal.aborted || this.path !== path) return;
+      void this.loadFullImage(path, ac);
+    }, PfImageCanvas.FULL_LOAD_DELAY_MS);
+  }
+
+  private async loadFullImage(path: string, ac: AbortController) {
     try {
       const buf = await invoke<ArrayBuffer>("get_full_image_bytes", {
         photoPath: path,
