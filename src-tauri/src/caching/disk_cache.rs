@@ -15,24 +15,51 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Run a full LRU sweep at most every N successful puts, to bound the
+/// per-write cost while keeping overshoot small (~N entries above the cap).
+const PUTS_PER_SWEEP: usize = 64;
 
 pub struct DiskCache {
     root: PathBuf,
     file_extension: &'static str,
+    /// 0 means "unbounded" (no eviction).
+    max_entries: Mutex<usize>,
+    puts_since_sweep: AtomicUsize,
 }
 
 impl DiskCache {
     /// Create a cache rooted at `root`. Stored entries get the file
-    /// extension `file_extension` (e.g. `"jpg"`, `"bin"`).
+    /// extension `file_extension` (e.g. `"jpg"`, `"bin"`). The cache is
+    /// unbounded until `set_max_entries` is called.
     pub fn new(root: PathBuf, file_extension: &'static str) -> Self {
         Self {
             root,
             file_extension,
+            max_entries: Mutex::new(0),
+            puts_since_sweep: AtomicUsize::new(0),
         }
     }
 
+    /// Update the count limit. `0` disables eviction. Triggers an immediate
+    /// sweep so the new limit is enforced even if no further puts happen.
+    pub fn set_max_entries(&self, max: usize) {
+        if let Ok(mut guard) = self.max_entries.lock() {
+            *guard = max;
+        }
+        self.enforce_limit();
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries.lock().map(|g| *g).unwrap_or(0)
+    }
+
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+        // Reading the file updates its atime on macOS APFS, which is
+        // what `enforce_limit` uses as the recency signal for the LRU.
         fs::read(self.path_for(key)).ok()
     }
 
@@ -57,8 +84,52 @@ impl DiskCache {
         })();
         if wrote.is_ok() {
             let _ = fs::rename(&tmp, &target);
+            // Periodically enforce the size limit. This bounds the
+            // per-put cost: we only walk the cache directory tree once
+            // every PUTS_PER_SWEEP writes.
+            let n = self.puts_since_sweep.fetch_add(1, Ordering::Relaxed) + 1;
+            if n >= PUTS_PER_SWEEP {
+                self.puts_since_sweep.store(0, Ordering::Relaxed);
+                self.enforce_limit();
+            }
         } else {
             let _ = fs::remove_file(&tmp);
+        }
+    }
+
+    /// Delete every cached entry. Best-effort; preserves the root dir.
+    pub fn clear(&self) {
+        let Ok(shards) = fs::read_dir(&self.root) else {
+            return;
+        };
+        for shard in shards.flatten() {
+            let p = shard.path();
+            if p.is_dir() {
+                let _ = fs::remove_dir_all(&p);
+            } else {
+                let _ = fs::remove_file(&p);
+            }
+        }
+        self.puts_since_sweep.store(0, Ordering::Relaxed);
+    }
+
+    /// Walk every cache file, drop the oldest (by mtime) until the entry
+    /// count is at or below `max_entries`. No-op when unbounded.
+    pub fn enforce_limit(&self) {
+        let cap = self.max_entries();
+        if cap == 0 {
+            return;
+        }
+        let mut entries: Vec<(SystemTime, PathBuf)> = Vec::new();
+        collect_entries(&self.root, self.file_extension, &mut entries);
+        if entries.len() <= cap {
+            return;
+        }
+        // Oldest first.
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let to_remove = entries.len() - cap;
+        for (_, p) in entries.into_iter().take(to_remove) {
+            let _ = fs::remove_file(&p);
         }
     }
 
@@ -70,6 +141,44 @@ impl DiskCache {
         p.push(shard);
         p.push(format!("{hex}.{}", self.file_extension));
         p
+    }
+}
+
+/// Walk shard subdirectories and collect (mtime, path) for every file
+/// matching `extension`. Best-effort; unreadable entries are skipped.
+fn collect_entries(root: &Path, extension: &str, out: &mut Vec<(SystemTime, PathBuf)>) {
+    let Ok(shards) = fs::read_dir(root) else { return };
+    for shard in shards.flatten() {
+        let shard_path = shard.path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&shard_path) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            let matches_ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case(extension))
+                .unwrap_or(false);
+            if !matches_ext {
+                continue;
+            }
+            let mtime = file
+                .metadata()
+                .map(|m| {
+                    // Use the most recent of (modified, accessed) so a
+                    // recent read protects an old entry. Falls back to
+                    // UNIX_EPOCH if neither is available.
+                    let modified = m.modified().unwrap_or(UNIX_EPOCH);
+                    let accessed = m.accessed().unwrap_or(UNIX_EPOCH);
+                    modified.max(accessed)
+                })
+                .unwrap_or(UNIX_EPOCH);
+            out.push((mtime, path));
+        }
     }
 }
 

@@ -38,6 +38,22 @@ pub fn init_cache_dir(dir: PathBuf) {
     let _ = DISK_CACHE.set(DiskCache::new(dir, "jpg"));
 }
 
+/// Update the maximum number of cached thumbnail files. `0` disables
+/// eviction. Triggers an immediate sweep so the new limit is applied even
+/// if no further thumbnails are written.
+pub fn set_disk_cache_max_entries(max: usize) {
+    if let Some(c) = DISK_CACHE.get() {
+        c.set_max_entries(max);
+    }
+}
+
+/// Drop every cached thumbnail file from disk.
+pub fn clear_disk_cache() {
+    if let Some(c) = DISK_CACHE.get() {
+        c.clear();
+    }
+}
+
 /// Generate a base64-encoded JPEG thumbnail for the given photo path.
 pub fn render(path: &str) -> Result<String, String> {
     let p = Path::new(path);

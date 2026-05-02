@@ -1,11 +1,13 @@
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
 import {
   clearThumbnailBatch,
+  dropAllThumbnailState,
   getThumbnailProgress,
   onThumbnailProgress,
   startThumbnailBatch,
@@ -191,6 +193,7 @@ export class PhotoflowApp extends LitElement {
   private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
 
   private unsubscribeProgress: (() => void) | null = null;
+  private unsubscribeCacheCleared: UnlistenFn | null = null;
 
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
@@ -201,6 +204,16 @@ export class PhotoflowApp extends LitElement {
     window.addEventListener("keydown", this.onGlobalKey);
     this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
+    });
+    // Menu-driven "Clear Thumbnail Cache" wipes the disk cache; here we
+    // also drop the renderer-side base64 LRU and re-issue the active
+    // batch so on-screen cards re-decode from source.
+    void listen<string>("cache-cleared", (event) => {
+      if (event.payload === "thumbnail_disk") {
+        this.refreshAfterThumbnailCacheClear();
+      }
+    }).then((unlisten) => {
+      this.unsubscribeCacheCleared = unlisten;
     });
     try {
       const persisted = await invoke<Folder[]>("list_imported_folders");
@@ -217,7 +230,29 @@ export class PhotoflowApp extends LitElement {
     window.removeEventListener("keydown", this.onGlobalKey);
     this.unsubscribeProgress?.();
     this.unsubscribeProgress = null;
+    this.unsubscribeCacheCleared?.();
+    this.unsubscribeCacheCleared = null;
     clearThumbnailBatch();
+  }
+
+  private refreshAfterThumbnailCacheClear(): void {
+    dropAllThumbnailState();
+    // Force every thumbnail card to forget its current image and
+    // re-request via the empty cache. Re-keying photos by reassigning a
+    // fresh array makes Lit's `repeat` rerun, but identity-stable keys
+    // would short-circuit; instead we walk the live cards and reset
+    // them.
+    const grid = this.renderRoot.querySelector(
+      "pf-photo-grid"
+    ) as import("./photo-grid").PfPhotoGrid | null;
+    grid?.renderRoot
+      .querySelectorAll("pf-thumbnail-card")
+      .forEach((card) => {
+        (card as HTMLElement & { reload?: () => void }).reload?.();
+      });
+    if (this.photos.length > 0) {
+      startThumbnailBatch(this.photos.map((p) => p.path));
+    }
   }
 
   /**

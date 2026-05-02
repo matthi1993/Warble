@@ -55,6 +55,17 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         }
 
+        if current < 2 {
+            conn.execute_batch(
+                "CREATE TABLE app_settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (2);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
         Ok(())
     }
 
@@ -86,5 +97,36 @@ impl LibraryRepository {
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// Read a single key from the `app_settings` table. Returns `None`
+    /// if the row is absent.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })?;
+        Ok(value)
+    }
+
+    /// Upsert a key/value setting. Stored values are opaque to the DB —
+    /// callers typically serialize structured data as JSON.
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }

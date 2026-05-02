@@ -47,6 +47,21 @@ fn cache() -> &'static Mutex<MemoryLru<Vec<u8>>> {
     CACHE.get_or_init(|| Mutex::new(MemoryLru::new(8)))
 }
 
+/// Resize the in-memory cache to `max` entries. Shrinks the current set
+/// immediately if it is over the new cap.
+pub fn set_memory_cache_capacity(max: usize) {
+    if let Ok(mut c) = cache().lock() {
+        c.set_capacity(max);
+    }
+}
+
+/// Drop every cached full-image byte buffer.
+pub fn clear_memory_cache() {
+    if let Ok(mut c) = cache().lock() {
+        c.clear();
+    }
+}
+
 fn lowercase_extension(p: &Path) -> String {
     p.extension()
         .and_then(|e| e.to_str())

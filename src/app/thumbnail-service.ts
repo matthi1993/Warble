@@ -221,3 +221,27 @@ export function clearThumbnailBatch() {
   };
   emitProgress();
 }
+
+/**
+ * Drop every cached/inflight thumbnail in the renderer process. Pending
+ * jobs are cancelled so callers waiting on them get an `AbortError`.
+ * After this returns, subsequent `requestThumbnail` calls will go all
+ * the way back to the Rust backend (and, with the disk cache also
+ * cleared, all the way back to source decoding).
+ */
+export function dropAllThumbnailState(): void {
+  cache.clear();
+  for (const job of queue) job.cancelled = true;
+  queue.length = 0;
+  inflight.clear();
+  for (const h of activeBatchHandles) h.cancel();
+  activeBatchHandles = [];
+  progressState = {
+    batchId: 0,
+    total: 0,
+    loaded: 0,
+    failed: 0,
+    inProgress: false,
+  };
+  emitProgress();
+}

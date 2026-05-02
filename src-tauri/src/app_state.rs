@@ -1,11 +1,13 @@
 use std::sync::{Mutex, OnceLock};
 
 use crate::library::{LibraryCatalog, LibraryRepository};
+use crate::settings::SettingsStore;
 
 #[derive(Default)]
 pub struct AppState {
     pub catalog: Mutex<LibraryCatalog>,
     pub repository: OnceLock<LibraryRepository>,
+    pub settings: SettingsStore,
 }
 
 impl AppState {

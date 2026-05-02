@@ -122,6 +122,23 @@ export class PfThumbnailCard extends LitElement {
     this.startObserving();
   }
 
+  /**
+   * Forget the currently-displayed thumbnail and re-fetch it. Used after
+   * a global cache-clear so on-screen cards drop their stale base64 and
+   * re-decode from source instead of reusing the renderer-side cache.
+   */
+  reload(): void {
+    this.pending?.cancel();
+    this.pending = null;
+    this.dataUrl = null;
+    this.error = null;
+    this.loading = false;
+    this.loadedPath = null;
+    if (this.isConnected) {
+      this.startObserving();
+    }
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.observer?.disconnect();
