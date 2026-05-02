@@ -14,6 +14,7 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { Photo } from "./types";
+import { prefetchFullImages } from "./full-image-cache";
 import "../ui/controls/pf-icon-button";
 import "../ui/icons/pf-icon";
 import "../ui/photos/pf-image-canvas";
@@ -390,6 +391,33 @@ export class PfFullView extends LitElement {
         this.idle = false;
       }
     }
+    if (changed.has("photos") || changed.has("index")) {
+      this.schedulePrefetch();
+    }
+  }
+
+  /**
+   * Ask the shared full-image LRU to keep the current photo and its
+   * neighbours warm. Priority radiates outwards from the active index
+   * (current, +1, -1, +2, -2, …) so forward scrolling — the common
+   * case — is favoured slightly. The cache caps total entries on its
+   * own; we just request more than the cache can hold and let it pick.
+   */
+  private schedulePrefetch() {
+    const total = this.photos.length;
+    if (total === 0) return;
+    const i = this.index;
+    if (i < 0 || i >= total) return;
+    const order: string[] = [this.photos[i].path];
+    // Up to 19 neighbours — cache holds 20 entries total.
+    for (let d = 1; d < total && order.length < 20; d++) {
+      const fwd = i + d;
+      if (fwd < total) order.push(this.photos[fwd].path);
+      if (order.length >= 20) break;
+      const back = i - d;
+      if (back >= 0) order.push(this.photos[back].path);
+    }
+    prefetchFullImages(order);
   }
 
   private bgCss(bg: BgColor): string {

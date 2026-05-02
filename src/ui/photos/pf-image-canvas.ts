@@ -19,8 +19,12 @@
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { invoke } from "@tauri-apps/api/core";
 import { requestThumbnail, isCancellation } from "../../app/thumbnail-service";
+import {
+  getFullImage,
+  loadFullImage,
+  setFullImageDecoder,
+} from "../../app/full-image-cache";
 
 export type ImageFit = "contain" | "proof" | "tight";
 
@@ -75,6 +79,11 @@ export class PfImageCanvas extends LitElement {
 
   private canvas?: HTMLCanvasElement;
   private ctx?: CanvasRenderingContext2D;
+  /**
+   * Reference to the cached full bitmap currently being painted. The
+   * cache (`full-image-cache`) owns the bitmap's lifecycle — we never
+   * call `close()` on it; eviction is the cache's responsibility.
+   */
   private bitmap: ImageBitmap | null = null;
   private bitmapForPath: string | null = null;
   private thumbBitmap: ImageBitmap | null = null;
@@ -121,7 +130,7 @@ export class PfImageCanvas extends LitElement {
       window.clearTimeout(this.fullLoadTimer);
       this.fullLoadTimer = null;
     }
-    this.bitmap?.close?.();
+    // Full bitmap is owned by `full-image-cache`; do NOT close it here.
     this.thumbBitmap?.close?.();
     this.bitmap = null;
     this.thumbBitmap = null;
@@ -161,7 +170,7 @@ export class PfImageCanvas extends LitElement {
     const path = this.path;
     if (!path) {
       this.status = "idle";
-      this.bitmap?.close?.();
+      // Cached bitmaps are owned by full-image-cache; don't close them.
       this.bitmap = null;
       this.bitmapForPath = null;
       this.thumbBitmap?.close?.();
@@ -175,8 +184,8 @@ export class PfImageCanvas extends LitElement {
     this.errorMsg = "";
 
     // Drop any stale full bitmap so we don't paint the previous photo.
+    // The cache still owns it; we just stop referencing it here.
     if (this.bitmapForPath !== path) {
-      this.bitmap?.close?.();
       this.bitmap = null;
       this.bitmapForPath = null;
     }
@@ -185,6 +194,20 @@ export class PfImageCanvas extends LitElement {
       this.thumbBitmap = null;
       this.thumbForPath = null;
     }
+
+    // Fast path: full image already in the cross-instance LRU cache.
+    // Skip the thumbnail roundtrip and the deferred-decode entirely so
+    // navigating between recently-viewed photos is instant.
+    const cached = getFullImage(path);
+    if (cached) {
+      this.bitmap = cached;
+      this.bitmapForPath = path;
+      this.status = "ready";
+      this.recomputeFit();
+      this.draw();
+      return;
+    }
+
     this.draw();
 
     // Phase 1: thumbnail (cached → near-instant). Always kick this off
@@ -225,20 +248,12 @@ export class PfImageCanvas extends LitElement {
 
   private async loadFullImage(path: string, ac: AbortController) {
     try {
-      const buf = await invoke<ArrayBuffer>("get_full_image_bytes", {
-        photoPath: path,
-      });
+      // Goes through the shared LRU cache: dedupes concurrent requests,
+      // returns instantly if another canvas already decoded this photo,
+      // and stores the result for future hits / neighbour preloads.
+      const bm = await loadFullImage(path);
       if (ac.signal.aborted || this.path !== path) return;
-      // Decode off the main thread. `createImageBitmap` does meaningful
-      // synchronous JPEG work on macOS WebKit when invoked here, which
-      // freezes input handling for 24 MP previews. The worker also gets
-      // ownership of `buf` via transfer, avoiding a copy.
-      const bm = await decodeInWorker(buf);
-      if (ac.signal.aborted || this.path !== path) {
-        bm.close?.();
-        return;
-      }
-      this.bitmap?.close?.();
+      // Cache owns the bitmap; just take a reference.
       this.bitmap = bm;
       this.bitmapForPath = path;
       // Drop the thumb once the full is in.
@@ -339,11 +354,6 @@ export class PfImageCanvas extends LitElement {
         ctx.clip();
       }
       ctx.imageSmoothingEnabled = false;
-      // "high" triggers a CPU-bound resampler on macOS WebKit that can
-      // stall the main thread for hundreds of ms when downscaling a
-      // 24 MP bitmap into the viewport. "medium" stays on the GPU
-      // bilinear path and is visually indistinguishable for photo
-      // content at fit/proof scales.
       ctx.imageSmoothingQuality = "medium";
       ctx.drawImage(bm, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
     }
@@ -571,6 +581,12 @@ function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
     getDecoderWorker().postMessage({ id, buffer }, [buffer]);
   });
 }
+
+// Hand the worker-backed decoder to the shared full-image cache so it
+// can fetch+decode entries on cache misses (and prefetches from
+// `pf-full-view`). Registering at module load means any code path that
+// imports the cache after this module is wired up.
+setFullImageDecoder(decodeInWorker);
 
 /** CSS-pixel margin used by each named fit mode. Smaller values pull the
  * proof/tight views closer to the panel edges. */
