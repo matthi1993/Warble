@@ -29,15 +29,48 @@ pub struct CropEdit {
     pub height: f32,
 }
 
+/// Tonal adjustments grouped under the frontend's "Basic" card.
+///
+/// All values are in the range [-100.0, 100.0] with `0.0` meaning "no
+/// change". The frontend applies them at draw time via a WebGL tone
+/// shader (so the original bitmap is never mutated and nothing on
+/// disk is touched).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneEdit {
+    #[serde(default)]
+    pub exposure: f32,
+    #[serde(default)]
+    pub contrast: f32,
+    #[serde(default)]
+    pub saturation: f32,
+    #[serde(default)]
+    pub whites: f32,
+    #[serde(default)]
+    pub highlights: f32,
+    #[serde(default)]
+    pub shadows: f32,
+    #[serde(default)]
+    pub blacks: f32,
+}
+
+impl ToneEdit {
+    pub fn is_zero(&self) -> bool {
+        self == &ToneEdit::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PhotoEdits {
     #[serde(default)]
     pub crop: Option<CropEdit>,
+    #[serde(default)]
+    pub tone: Option<ToneEdit>,
 }
 
 impl PhotoEdits {
     pub fn is_empty(&self) -> bool {
-        self.crop.is_none()
+        self.crop.is_none() && self.tone.map_or(true, |t| t.is_zero())
     }
 }

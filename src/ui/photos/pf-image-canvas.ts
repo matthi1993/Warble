@@ -27,8 +27,10 @@ import {
 } from "../../app/full-image-cache";
 import {
   getPhotoEdit,
+  isToneZero,
   subscribePhotoEdits,
   type CropEdit,
+  type ToneEdit,
 } from "../../app/edit-store";
 
 export type ImageFit = "contain" | "proof" | "tight";
@@ -182,7 +184,20 @@ export class PfImageCanvas extends LitElement {
    * edit store. Applied at draw time when NOT in crop mode. */
   @state()
   private savedCrop: CropEdit | null = null;
+  /** Saved (persisted) tonal adjustments for the current photo. Applied
+   * at draw time as a `ctx.filter` chain on the bitmap. */
+  @state()
+  private savedTone: ToneEdit | null = null;
   private editsUnsubscribe: (() => void) | null = null;
+  /** GPU pipeline for tone (brightness/contrast/saturation) adjustments.
+   * Lazy-initialised on first use so photos with no edits never pay for
+   * WebGL context creation. */
+  private tonePipeline = new TonePipeline();
+  /** rAF guard: coalesces multiple `scheduleDraw()` calls within a
+   * single frame into one paint. Critical for slider drags, which
+   * fire ~60 events/s — without this, draws pile up faster than they
+   * can complete and the UI appears to stall. */
+  private drawScheduled = false;
 
   firstUpdated() {
     this.canvas = this.renderRoot.querySelector("canvas") as HTMLCanvasElement;
@@ -204,22 +219,39 @@ export class PfImageCanvas extends LitElement {
     this.editsUnsubscribe = subscribePhotoEdits((path) => {
       if (path && path !== this.path) return;
       if (!this.path) return;
+      const prevCrop = this.savedCrop;
       this.refreshSavedCrop();
-      this.userInteracted = false;
-      this.forceFitOnNextRecompute = true;
-      this.recomputeFit();
-      this.draw();
+      // Only reset pan/zoom when the crop rectangle changed — tone-only
+      // edits should keep the user's current viewport so they can watch
+      // an adjustment land on the area they care about.
+      const cropChanged =
+        !!prevCrop !== !!this.savedCrop ||
+        (prevCrop != null &&
+          this.savedCrop != null &&
+          (prevCrop.x !== this.savedCrop.x ||
+            prevCrop.y !== this.savedCrop.y ||
+            prevCrop.width !== this.savedCrop.width ||
+            prevCrop.height !== this.savedCrop.height));
+      if (cropChanged) {
+        this.userInteracted = false;
+        this.forceFitOnNextRecompute = true;
+        this.recomputeFit();
+      }
+      this.scheduleDraw();
     });
   }
 
-  /** Pull the latest persisted crop for the current photo into
-   * `savedCrop`. Cheap (synchronous map lookup). */
+  /** Pull the latest persisted crop + tone for the current photo into
+   * `savedCrop` / `savedTone`. Cheap (synchronous map lookup). */
   private refreshSavedCrop() {
     if (!this.path) {
       this.savedCrop = null;
+      this.savedTone = null;
       return;
     }
-    this.savedCrop = getPhotoEdit(this.path)?.crop ?? null;
+    const edit = getPhotoEdit(this.path);
+    this.savedCrop = edit?.crop ?? null;
+    this.savedTone = edit?.tone ?? null;
   }
 
   disconnectedCallback(): void {
@@ -236,6 +268,7 @@ export class PfImageCanvas extends LitElement {
     this.thumbBitmap = null;
     this.editsUnsubscribe?.();
     this.editsUnsubscribe = null;
+    this.tonePipeline.dispose();
   }
 
   willUpdate(changed: Map<string, unknown>) {
@@ -518,7 +551,17 @@ export class PfImageCanvas extends LitElement {
     return this.fitScale;
   }
 
+  /** Coalesce multiple repaint requests into one rAF-scheduled draw.
+   * Use this everywhere except `onResize` (which paints synchronously
+   * to avoid a one-frame flash on layout changes). */
+  private scheduleDraw() {
+    if (this.drawScheduled) return;
+    this.drawScheduled = true;
+    requestAnimationFrame(() => this.draw());
+  }
+
   private draw() {
+    this.drawScheduled = false;
     const ctx = this.ctx;
     const cv = this.canvas;
     if (!ctx || !cv) return;
@@ -539,7 +582,71 @@ export class PfImageCanvas extends LitElement {
       const y = cy - drawH / 2;
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(bm, sx, sy, sw, sh, x, y, drawW, drawH);
+      // Apply tonal adjustments via WebGL: the bitmap is rendered into
+      // an offscreen canvas at *display* resolution (capped at the
+      // cropped source region size) with a fragment shader applying
+      // brightness, contrast, and saturation. Crop mode shows the
+      // unedited image so the user can re-frame.
+      //
+      // Rendering at display size, not bitmap size, is the key
+      // performance trick: a 40 MP bitmap would otherwise be re-shaded
+      // and copied each slider tick. By having the shader sample the
+      // cropped sub-rect into a viewport-sized output, the per-tick
+      // cost stays proportional to what's actually visible.
+      const applyTone = !this.cropMode && !isToneZero(this.savedTone);
+      if (applyTone) {
+        // Compute the *visible* portion of the displayed image so the
+        // GL pipeline only shades pixels that actually land on the
+        // canvas. Without this, zooming in to e.g. 4× on a 40 MP
+        // image asks the shader to render the full 40 MP cropped
+        // source even though only a few MP are on screen — the
+        // remainder is just thrown away by `drawImage`'s clip.
+        const visX0 = Math.max(0, x);
+        const visY0 = Math.max(0, y);
+        const visX1 = Math.min(cv.width, x + drawW);
+        const visY1 = Math.min(cv.height, y + drawH);
+        const visW = Math.max(0, visX1 - visX0);
+        const visH = Math.max(0, visY1 - visY0);
+        if (visW > 0 && visH > 0) {
+          // Map the visible canvas rectangle back into the cropped
+          // source image's pixel space. This is the sub-rect we need
+          // the shader to sample.
+          const u0 = (visX0 - x) / drawW;
+          const v0 = (visY0 - y) / drawH;
+          const u1 = (visX1 - x) / drawW;
+          const v1 = (visY1 - y) / drawH;
+          const subSx = sx + u0 * sw;
+          const subSy = sy + v0 * sh;
+          const subSw = (u1 - u0) * sw;
+          const subSh = (v1 - v0) * sh;
+          // Render at viewport resolution capped at source resolution
+          // — both axes — so we never shade more fragments than will
+          // land on screen, and never upscale in the shader (the 2D
+          // canvas does the cheap upscale on `drawImage`).
+          const outW = Math.max(
+            1,
+            Math.min(Math.ceil(visW), Math.ceil(subSw))
+          );
+          const outH = Math.max(
+            1,
+            Math.min(Math.ceil(visH), Math.ceil(subSh))
+          );
+          const toned = this.tonePipeline.render(
+            bm,
+            this.savedTone!,
+            { sx: subSx, sy: subSy, sw: subSw, sh: subSh },
+            outW,
+            outH
+          );
+          if (toned) {
+            ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
+          } else {
+            ctx.drawImage(bm, sx, sy, sw, sh, x, y, drawW, drawH);
+          }
+        }
+      } else {
+        ctx.drawImage(bm, sx, sy, sw, sh, x, y, drawW, drawH);
+      }
       if (this.cropMode && this.cropFrame) {
         this.drawCropOverlay(ctx, x, y, drawW, drawH);
       }
@@ -637,7 +744,7 @@ export class PfImageCanvas extends LitElement {
     const newScale = Math.min(maxScale, Math.max(minScale, this.scale * factor));
     this.zoomAround(px, py, newScale);
     this.userInteracted = true;
-    this.draw();
+    this.scheduleDraw();
   };
 
   private zoomAround(px: number, py: number, newScale: number) {
@@ -711,7 +818,7 @@ export class PfImageCanvas extends LitElement {
     this.offsetY = this.dragOffY + (e.clientY - this.dragStartY) * dpr;
     this.clampOffsets();
     this.userInteracted = true;
-    this.draw();
+    this.scheduleDraw();
   };
 
   private onPointerUp = (e: PointerEvent) => {
@@ -1152,6 +1259,348 @@ function enforceAspect(
     width: clamp(w, 0.02, 1),
     height: clamp(h, 0.02, 1),
   };
+}
+
+/**
+ * Resolve a `ToneEdit` to the uniforms that drive the WebGL tone
+ * shader. Each slider is in `[-100, 100]`; we normalise to `[-1, 1]`
+ * (sometimes scaled) here so the shader can stay simple. Mappings:
+ *
+ *   - **Exposure** → photographic stops, applied as a `2^(e/100)`
+ *     multiplier. ±100 ≈ ±1 stop. Acts on every pixel uniformly.
+ *
+ *   - **Contrast** → S-curve around 0.5 in the shader, scaled by
+ *     `c/200` (half as sensitive as a naïve `c/100`). The slider was
+ *     previously much too aggressive — at +50 the image clipped hard.
+ *
+ *   - **Saturation** → `1 + s/100` interpolation between luminance
+ *     and the original colour.
+ *
+ *   - **Blacks / Shadows / Highlights / Whites** → genuine tonal-
+ *     region adjustments, applied per-pixel in the shader as a
+ *     luminance-weighted RGB offset. Blacks/whites are *endpoint*
+ *     pulls (steep falloff into pure black / pure white, the way
+ *     Capture One's Levels-style "Black"/"White" sliders behave),
+ *     while shadows/highlights are smooth bumps centred on the
+ *     lower / upper midtones. The four regions are designed so a
+ *     single slider only nudges its own zone — e.g. dragging Blacks
+ *     leaves the highlights untouched.
+ */
+function toneCoefficients(t: ToneEdit): {
+  exposure: number;
+  contrast: number;
+  saturation: number;
+  blacks: number;
+  shadows: number;
+  highlights: number;
+  whites: number;
+} {
+  return {
+    exposure: Math.pow(2, t.exposure / 100),
+    // Halved sensitivity — slider [-100,100] → contrast factor [0.5, 1.5].
+    contrast: Math.max(0, 1 + t.contrast / 200),
+    saturation: Math.max(0, 1 + t.saturation / 100),
+    // Region sliders pass through normalised; the shader scales them
+    // by per-region max-offset constants.
+    blacks: t.blacks / 100,
+    shadows: t.shadows / 100,
+    highlights: t.highlights / 100,
+    whites: t.whites / 100,
+  };
+}
+
+/**
+ * GPU pipeline that renders an `ImageBitmap` with brightness/contrast/
+ * saturation applied by a fragment shader, into an internal canvas
+ * that the main 2D canvas can `drawImage()` from.
+ *
+ * We use this instead of Canvas2D's `ctx.filter` because that property
+ * is unsupported (or unreliable) in older WebKit versions — including
+ * the WKWebView Tauri ships against on macOS — which is why the
+ * sliders previously appeared to do nothing.
+ *
+ * Caching: the source texture is uploaded once per bitmap (a 40 MP
+ * upload is the expensive part). Re-rendering with new tone uniforms
+ * is essentially free.
+ */
+class TonePipeline {
+  readonly canvas: HTMLCanvasElement;
+  private gl: WebGL2RenderingContext | null = null;
+  private program: WebGLProgram | null = null;
+  private vao: WebGLVertexArrayObject | null = null;
+  private texture: WebGLTexture | null = null;
+  private uploadedBitmap: ImageBitmap | null = null;
+  private uniforms: {
+    exposure: WebGLUniformLocation | null;
+    contrast: WebGLUniformLocation | null;
+    saturation: WebGLUniformLocation | null;
+    blacks: WebGLUniformLocation | null;
+    shadows: WebGLUniformLocation | null;
+    highlights: WebGLUniformLocation | null;
+    whites: WebGLUniformLocation | null;
+    srcOffset: WebGLUniformLocation | null;
+    srcScale: WebGLUniformLocation | null;
+  } = {
+    exposure: null,
+    contrast: null,
+    saturation: null,
+    blacks: null,
+    shadows: null,
+    highlights: null,
+    whites: null,
+    srcOffset: null,
+    srcScale: null,
+  };
+  private failed = false;
+
+  constructor() {
+    this.canvas = document.createElement("canvas");
+  }
+
+  /**
+   * Render the sub-rectangle `(srcRect.sx, sy)..(+sw, +sh)` of `bm`
+   * with `tone` applied, into an internal canvas of size `outW × outH`.
+   * The output canvas can then be copied with `drawImage()`. Returns
+   * `null` if WebGL initialisation failed.
+   *
+   * Rendering at the *display* size (rather than the bitmap's native
+   * size) keeps the per-frame cost proportional to what's visible: a
+   * 40 MP source feeding a 2 MP viewport processes 2 MP fragments,
+   * not 40 MP, and the subsequent `drawImage` copy is cheap.
+   */
+  render(
+    bm: ImageBitmap,
+    tone: ToneEdit,
+    srcRect: { sx: number; sy: number; sw: number; sh: number },
+    outW: number,
+    outH: number
+  ): HTMLCanvasElement | null {
+    if (this.failed) return null;
+    if (!this.gl) {
+      const gl = this.canvas.getContext("webgl2", {
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: false,
+      }) as WebGL2RenderingContext | null;
+      if (!gl) {
+        this.failed = true;
+        console.warn("WebGL2 unavailable — tone adjustments disabled");
+        return null;
+      }
+      this.gl = gl;
+      if (!this.initProgram()) {
+        this.failed = true;
+        return null;
+      }
+    }
+    const gl = this.gl;
+    if (this.canvas.width !== outW) this.canvas.width = outW;
+    if (this.canvas.height !== outH) this.canvas.height = outH;
+    if (this.uploadedBitmap !== bm) {
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        bm
+      );
+      this.uploadedBitmap = bm;
+    }
+    const c = toneCoefficients(tone);
+    const sx = srcRect.sx / bm.width;
+    const sy = srcRect.sy / bm.height;
+    const sw = srcRect.sw / bm.width;
+    const sh = srcRect.sh / bm.height;
+    gl.viewport(0, 0, outW, outH);
+    gl.useProgram(this.program);
+    gl.bindVertexArray(this.vao);
+    gl.uniform1f(this.uniforms.exposure, c.exposure);
+    gl.uniform1f(this.uniforms.contrast, c.contrast);
+    gl.uniform1f(this.uniforms.saturation, c.saturation);
+    gl.uniform1f(this.uniforms.blacks, c.blacks);
+    gl.uniform1f(this.uniforms.shadows, c.shadows);
+    gl.uniform1f(this.uniforms.highlights, c.highlights);
+    gl.uniform1f(this.uniforms.whites, c.whites);
+    gl.uniform2f(this.uniforms.srcOffset, sx, sy);
+    gl.uniform2f(this.uniforms.srcScale, sw, sh);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    return this.canvas;
+  }
+
+  /** Drop the cached texture upload so the next `render()` re-uploads.
+   * Called when the canvas swaps to a different bitmap. */
+  invalidate() {
+    this.uploadedBitmap = null;
+  }
+
+  dispose() {
+    const gl = this.gl;
+    if (!gl) return;
+    if (this.program) gl.deleteProgram(this.program);
+    if (this.texture) gl.deleteTexture(this.texture);
+    if (this.vao) gl.deleteVertexArray(this.vao);
+    this.program = null;
+    this.texture = null;
+    this.vao = null;
+    this.gl = null;
+    this.uploadedBitmap = null;
+  }
+
+  private initProgram(): boolean {
+    const gl = this.gl!;
+    // Y is flipped in clip space so the GL framebuffer's bottom-left
+    // origin lines up with `drawImage`'s top-left read order: without
+    // this flip, copying the GL canvas into a 2D canvas produces an
+    // upside-down image.
+    const vsSource = `#version 300 es
+      in vec2 a_pos;
+      uniform vec2 u_srcOffset;
+      uniform vec2 u_srcScale;
+      out vec2 v_uv;
+      void main() {
+        vec2 q = a_pos * 0.5 + 0.5;
+        v_uv = u_srcOffset + q * u_srcScale;
+        gl_Position = vec4(a_pos.x, -a_pos.y, 0.0, 1.0);
+      }
+    `;
+    // Pipeline (in order):
+    //   1. Exposure       — global multiply.
+    //   2. Region offsets — Capture-One-style Blacks/Shadows/
+    //      Highlights/Whites sliders. Each is a luminance-weighted
+    //      additive offset using bumps that don't overlap much, so
+    //      e.g. dragging Blacks only moves the dark end.
+    //         w_blacks    = (1-L)^6           — endpoint, sharp at L≈0
+    //         w_whites    = L^6               — endpoint, sharp at L≈1
+    //         w_shadows   = 4·L·(1-L)^3·norm  — bump centred ~L=0.25
+    //         w_highlights= 4·L^3·(1-L)·norm  — bump centred ~L=0.75
+    //      Endpoint sliders move ±0.5 luminance at peak; midtone
+    //      sliders move ±0.4 (mild — they affect a wider band).
+    //   3. Contrast — S-curve around 0.5.
+    //   4. Saturation — interpolate towards luminance.
+    const fsSource = `#version 300 es
+      precision highp float;
+      uniform sampler2D u_tex;
+      uniform float u_exposure;
+      uniform float u_contrast;
+      uniform float u_saturation;
+      uniform float u_blacks;
+      uniform float u_shadows;
+      uniform float u_highlights;
+      uniform float u_whites;
+      in vec2 v_uv;
+      out vec4 outColor;
+
+      const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+      void main() {
+        vec4 src = texture(u_tex, v_uv);
+        vec3 col = src.rgb * u_exposure;
+
+        // Per-tonal-region adjustments. Compute luminance once, derive
+        // four non-overlapping weights, and add a uniform-RGB offset
+        // so chroma is preserved. Using clamped luminance for weights
+        // keeps the highlight bump effective even after Exposure has
+        // pushed the brightest pixels above 1.0.
+        float L = clamp(dot(col, LUMA), 0.0, 1.0);
+        float oneMinusL = 1.0 - L;
+
+        float wBlacks    = pow(oneMinusL, 6.0);
+        float wWhites    = pow(L, 6.0);
+        // 4·L·(1-L)^3 peaks at L = 0.25, value 27/64. Normalise to 1.
+        float wShadows   = (4.0 * L * pow(oneMinusL, 3.0)) * (64.0 / 27.0);
+        // 4·L^3·(1-L) peaks at L = 0.75, value 27/64. Normalise to 1.
+        float wHighlights= (4.0 * pow(L, 3.0) * oneMinusL) * (64.0 / 27.0);
+
+        float offset =
+            u_blacks     * 0.5 * wBlacks
+          + u_shadows    * 0.4 * wShadows
+          + u_highlights * 0.4 * wHighlights
+          + u_whites     * 0.5 * wWhites;
+        col += vec3(offset);
+
+        // S-curve around 0.5.
+        col = (col - 0.5) * u_contrast + 0.5;
+
+        // Saturation: interpolate between greyscale and colour.
+        float postLuma = dot(col, LUMA);
+        col = mix(vec3(postLuma), col, u_saturation);
+
+        outColor = vec4(col, src.a);
+      }
+    `;
+    const vs = this.compile(gl.VERTEX_SHADER, vsSource);
+    const fs = this.compile(gl.FRAGMENT_SHADER, fsSource);
+    if (!vs || !fs) return false;
+    const program = gl.createProgram();
+    if (!program) return false;
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.error("tone shader link failed:", gl.getProgramInfoLog(program));
+      gl.deleteProgram(program);
+      return false;
+    }
+    this.program = program;
+    this.uniforms.exposure = gl.getUniformLocation(program, "u_exposure");
+    this.uniforms.contrast = gl.getUniformLocation(program, "u_contrast");
+    this.uniforms.saturation = gl.getUniformLocation(program, "u_saturation");
+    this.uniforms.blacks = gl.getUniformLocation(program, "u_blacks");
+    this.uniforms.shadows = gl.getUniformLocation(program, "u_shadows");
+    this.uniforms.highlights = gl.getUniformLocation(program, "u_highlights");
+    this.uniforms.whites = gl.getUniformLocation(program, "u_whites");
+    this.uniforms.srcOffset = gl.getUniformLocation(program, "u_srcOffset");
+    this.uniforms.srcScale = gl.getUniformLocation(program, "u_srcScale");
+
+    // Fullscreen quad as two triangles in clip space.
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    // prettier-ignore
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([
+        -1, -1,  1, -1,  -1,  1,
+        -1,  1,  1, -1,   1,  1,
+      ]),
+      gl.STATIC_DRAW
+    );
+    const posLoc = gl.getAttribLocation(program, "a_pos");
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    this.vao = vao;
+
+    // Texture: linear filtering, clamp.
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.texture = tex;
+    return true;
+  }
+
+  private compile(type: number, src: string): WebGLShader | null {
+    const gl = this.gl!;
+    const shader = gl.createShader(type);
+    if (!shader) return null;
+    gl.shaderSource(shader, src);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.error("tone shader compile failed:", gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
 }
 
 declare global {

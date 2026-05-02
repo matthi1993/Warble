@@ -32,10 +32,9 @@ export class WarbleApp extends LitElement {
   static styles = css`
     :host {
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: 1fr auto;
       grid-template-columns: 260px 1fr 380px;
       grid-template-areas:
-        "header header header"
         "sidebar main detail"
         "footer footer footer";
       height: 100vh;
@@ -51,32 +50,18 @@ export class WarbleApp extends LitElement {
       display: none;
     }
 
-    header.app-header {
-      grid-area: header;
-      display: flex;
-      align-items: center;
-      gap: var(--pf-space-3);
-      padding: var(--pf-space-2) var(--pf-space-4);
-      border-bottom: 1px solid var(--pf-border);
+    /* When the sidebar is collapsed, the toggle has no obvious home,
+       so we float it as a small floating chip over the top-left of the
+       main content. Re-opens the sidebar with one click. */
+    .floating-sidebar-toggle {
+      position: fixed;
+      top: var(--pf-space-2);
+      left: var(--pf-space-2);
+      z-index: 100;
       background: var(--pf-surface);
-      height: 28px;
-    }
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--pf-space-2);
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      color: var(--pf-text);
-    }
-    .brand-mark {
-      width: 22px;
-      height: 22px;
-      color: var(--pf-text);
-      filter: drop-shadow(0 0 0 transparent);
-    }
-    .header-spacer {
-      flex: 1;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     }
 
     aside.sidebar {
@@ -90,6 +75,19 @@ export class WarbleApp extends LitElement {
     .sidebar-header {
       padding: var(--pf-space-3);
       border-bottom: 1px solid var(--pf-border);
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+    }
+    .sidebar-header pf-button {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .sidebar-header .header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-1);
+      flex: 0 0 auto;
     }
     .tree {
       flex: 1;
@@ -125,7 +123,7 @@ export class WarbleApp extends LitElement {
     }
 
     pf-full-view {
-      grid-row: 2;
+      grid-row: 1;
       grid-column: 2 / -1;
       min-width: 0;
       min-height: 0;
@@ -605,15 +603,14 @@ export class WarbleApp extends LitElement {
 
   render() {
     return html`
-      <header class="app-header">
-        <pf-icon-button
-          icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
-          label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-          @click=${this.toggleSidebar}
-        ></pf-icon-button>
-        <span class="header-spacer"></span>
-        <pf-theme-toggle></pf-theme-toggle>
-      </header>
+      ${this.sidebarCollapsed
+        ? html`<pf-icon-button
+            class="floating-sidebar-toggle"
+            icon="panel-left-open"
+            label="Show sidebar"
+            @click=${this.toggleSidebar}
+          ></pf-icon-button>`
+        : null}
 
       <aside class="sidebar">
         <div class="sidebar-header">
@@ -621,6 +618,14 @@ export class WarbleApp extends LitElement {
             <pf-icon name="folder-plus"></pf-icon>
             Add Folders
           </pf-button>
+          <span class="header-actions">
+            <pf-theme-toggle></pf-theme-toggle>
+            <pf-icon-button
+              icon="panel-left-close"
+              label="Hide sidebar"
+              @click=${this.toggleSidebar}
+            ></pf-icon-button>
+          </span>
         </div>
         <div class="tree" @folder-select=${this.onFolderSelect}>
           ${this.folders.length === 0

@@ -31,15 +31,22 @@ import { prefetchFullImages } from "./full-image-cache";
 import {
   ASPECT_RATIO_LABELS,
   ASPECT_RATIO_VALUES,
+  defaultTone,
+  flushPhotoEdit,
   getPhotoEdit,
   hasEdits,
+  isToneZero,
   setPhotoCrop,
+  setPhotoTone,
   subscribePhotoEdits,
+  TONE_KEYS,
   type AspectRatioKey,
   type CropEdit,
   type Orientation,
+  type ToneEdit,
 } from "./edit-store";
 import "../ui/controls/pf-icon-button";
+import "../ui/controls/pf-slider";
 import "../ui/icons/pf-icon";
 import "../ui/photos/pf-image-canvas";
 import type {
@@ -266,6 +273,15 @@ export class PfFullView extends LitElement {
       overflow: hidden;
       background: var(--pf-fv-bg, #000);
       min-height: 0;
+    }
+    /* Row that holds the stage and (when editing) the side panel.
+       The stage is "flex: 1" so the image area shrinks when the panel
+       is mounted next to it, instead of being hidden behind. */
+    .stage-row {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      min-width: 0;
     }
     pf-image-canvas {
       position: absolute;
@@ -533,6 +549,107 @@ export class PfFullView extends LitElement {
     .edit-btn {
       transition: opacity 200ms ease;
     }
+    /* Right-side editor panel: laid out as a sibling of the stage in
+       a flex row so the image area shrinks to make room for it,
+       rather than being covered. In windowed mode the column-flex
+       host already gives us the right vertical extent; in fullscreen
+       the panel still sits flush against the right edge while the
+       toolbar/bottombar overlay the stage as before. */
+    .edit-side-panel {
+      flex: 0 0 300px;
+      background: var(--pf-surface, #181818);
+      border-left: 1px solid rgba(255, 255, 255, 0.08);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: var(--pf-space-2);
+      gap: var(--pf-space-2);
+      transition: opacity 200ms ease;
+    }
+    :host([fullscreen][idle]) .edit-side-panel {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .edit-card {
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: var(--pf-radius-md);
+      background: rgba(255, 255, 255, 0.03);
+      overflow: hidden;
+    }
+    .edit-card-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      background: transparent;
+      color: #fff;
+      border: none;
+      padding: 8px 10px;
+      font-size: var(--pf-text-sm);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      text-align: left;
+    }
+    .edit-card-header:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .edit-card-header pf-icon {
+      font-size: 0.9rem;
+      transition: transform 150ms ease;
+    }
+    .edit-card[data-open="false"] .edit-card-header pf-icon {
+      transform: rotate(-90deg);
+    }
+    .edit-card-body {
+      padding: 6px 10px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .edit-card[data-open="false"] .edit-card-body {
+      display: none;
+    }
+    .slider-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      column-gap: 8px;
+      row-gap: 2px;
+      align-items: center;
+    }
+    .slider-row .slider-label {
+      font-size: var(--pf-text-xs);
+      color: rgba(255, 255, 255, 0.85);
+      grid-column: 1;
+    }
+    .slider-row .slider-value {
+      font-size: var(--pf-text-xs);
+      color: rgba(255, 255, 255, 0.7);
+      font-variant-numeric: tabular-nums;
+      grid-column: 2;
+      min-width: 3ch;
+      text-align: right;
+      cursor: pointer;
+    }
+    .slider-row .slider-value:hover {
+      color: #fff;
+    }
+    .slider-row input[type="range"] {
+      grid-column: 1 / span 2;
+      width: 100%;
+      margin: 0;
+      accent-color: var(--pf-accent, #4a90e2);
+    }
+    .slider-row input[type="range"]:focus-visible {
+      outline: 1px solid var(--pf-accent, #4a90e2);
+      outline-offset: 2px;
+    }
+    .slider-row .slider-input {
+      grid-column: 1 / span 2;
+      width: 100%;
+    }
   `;
 
   @property({ attribute: false })
@@ -592,6 +709,22 @@ export class PfFullView extends LitElement {
   @state()
   private editsTick = 0;
 
+  /** Live tonal-edit state mirrored from the edit store. The slider
+   * UI binds to this directly so the user sees immediate feedback;
+   * each change is also pushed straight back to the store, which
+   * triggers a canvas redraw via the same subscription path. */
+  @state()
+  private tone: ToneEdit = defaultTone();
+
+  /** Path the `tone` mirror was hydrated from, so we can refresh it
+   * when the active photo or its variant changes. */
+  private toneForPath: string | null = null;
+
+  /** Whether the "Basic" disclosure card is open. Persisted only in
+   * memory — opens by default each session. */
+  @state()
+  private basicCardOpen = true;
+
   private unsubscribeEdits: (() => void) | null = null;
 
   private idleTimer: number | null = null;
@@ -630,8 +763,14 @@ export class PfFullView extends LitElement {
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
-    this.unsubscribeEdits = subscribePhotoEdits(() => {
+    this.unsubscribeEdits = subscribePhotoEdits((path) => {
       this.editsTick++;
+      // Broadcast notifications (path === "") fire after the initial
+      // store load — re-pull the tone for the active photo so the
+      // sliders reflect what was persisted from a previous session.
+      if (path === "") {
+        this.toneForPath = null;
+      }
     });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
@@ -640,6 +779,8 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    // Flush any pending tone edit before tearing down.
+    if (this.toneForPath) void flushPhotoEdit(this.toneForPath);
     window.removeEventListener("keydown", this.onKeyDown, { capture: true } as unknown as EventListenerOptions);
     window.removeEventListener("mousemove", this.onMouseMoveGlobal);
     window.removeEventListener("click", this.onDocClick, { capture: true } as unknown as EventListenerOptions);
@@ -688,6 +829,10 @@ export class PfFullView extends LitElement {
       }
     }
     if (changed.has("photos") || changed.has("index")) {
+      // Flush any debounced tone edit for the photo we're leaving so
+      // the last slider tick doesn't get dropped on navigation.
+      const prevTarget = this.toneForPath;
+      if (prevTarget) void flushPhotoEdit(prevTarget);
       this.schedulePrefetch();
       // Navigation cancels any active edit session.
       if (this.editMode) {
@@ -695,6 +840,30 @@ export class PfFullView extends LitElement {
         this.activeEditTool = null;
       }
     }
+    // Keep the local tone mirror in sync with whatever photo+variant
+    // we're now showing (handles navigation, variant switches, and
+    // edit-store change notifications via `editsTick`).
+    this.syncToneFromStore();
+  }
+
+  /** Refresh `this.tone` from the edit store when the active edit
+   * target changes (navigation or variant switch). Crucially we do
+   * NOT re-pull on every edit-store notification: while the user is
+   * dragging a slider we already own the canonical value, and echoing
+   * the store would race and snap the slider to a stale write. */
+  private syncToneFromStore() {
+    const target = this.editTargetPath();
+    if (target == null) {
+      if (this.toneForPath !== null) {
+        this.tone = defaultTone();
+        this.toneForPath = null;
+      }
+      return;
+    }
+    if (target === this.toneForPath) return;
+    const persisted = getPhotoEdit(target)?.tone ?? null;
+    this.tone = persisted ? { ...defaultTone(), ...persisted } : defaultTone();
+    this.toneForPath = target;
   }
 
   /**
@@ -1081,9 +1250,103 @@ export class PfFullView extends LitElement {
     const target = this.editTargetPath();
     if (!target) return;
     if (!hasEdits(target)) return;
+    setPhotoTone(target, null);
     await setPhotoCrop(target, null);
+    this.tone = defaultTone();
     this.activeEditTool = null;
   };
+
+  // --- Tone slider handlers --------------------------------------------
+
+  private setToneValue = (key: keyof ToneEdit, value: number) => {
+    const target = this.editTargetPath();
+    if (!target) return;
+    const next: ToneEdit = { ...this.tone, [key]: value };
+    this.tone = next;
+    this.toneForPath = target;
+    // The in-memory store update + subscriber notification are
+    // synchronous so the canvas redraws with the new tone uniforms
+    // immediately; the backend SQLite write is debounced inside the
+    // store so a 60 Hz slider drag doesn't queue 60 IPC round-trips.
+    setPhotoTone(target, isToneZero(next) ? null : next);
+  };
+
+  private resetToneValue = (key: keyof ToneEdit) => {
+    if (this.tone[key] === 0) return;
+    this.setToneValue(key, 0);
+  };
+
+  private toggleBasicCard = () => {
+    this.basicCardOpen = !this.basicCardOpen;
+  };
+
+  private renderEditSidePanel() {
+    return html`
+      <aside
+        class="edit-side-panel"
+        aria-label="Edit panel"
+        @click=${(e: Event) => e.stopPropagation()}
+      >
+        ${this.renderBasicCard()}
+      </aside>
+    `;
+  }
+
+  private renderBasicCard() {
+    const open = this.basicCardOpen;
+    const labels: Record<keyof ToneEdit, string> = {
+      exposure: "Exposure",
+      contrast: "Contrast",
+      saturation: "Saturation",
+      whites: "Whites",
+      highlights: "Highlights",
+      shadows: "Shadows",
+      blacks: "Blacks",
+    };
+    return html`
+      <section class="edit-card" data-open=${open ? "true" : "false"}>
+        <button
+          type="button"
+          class="edit-card-header"
+          aria-expanded=${open}
+          @click=${this.toggleBasicCard}
+        >
+          <pf-icon name="chevron-down"></pf-icon>
+          <span>Basic</span>
+        </button>
+        <div class="edit-card-body">
+          ${TONE_KEYS.map((key) => this.renderToneSlider(key, labels[key]))}
+        </div>
+      </section>
+    `;
+  }
+
+  private renderToneSlider(key: keyof ToneEdit, label: string) {
+    const value = this.tone[key];
+    return html`
+      <div class="slider-row">
+        <span class="slider-label">${label}</span>
+        <span
+          class="slider-value"
+          title="Double-click to reset"
+          @dblclick=${() => this.resetToneValue(key)}
+        >
+          ${value > 0 ? `+${value}` : value}
+        </span>
+        <pf-slider
+          class="slider-input"
+          min="-100"
+          max="100"
+          step="1"
+          .value=${value}
+          .label=${label}
+          fill-from="0"
+          @change=${(e: CustomEvent<number>) =>
+            this.setToneValue(key, e.detail)}
+        ></pf-slider>
+      </div>
+    `;
+  }
 
   private renderEditToolbar() {
     void this.editsTick;
@@ -1299,37 +1562,40 @@ export class PfFullView extends LitElement {
         </div>
       </div>
       ${this.editMode ? this.renderEditToolbar() : null}
-      <div class="stage">
-        <pf-image-canvas
-          .path=${path}
-          .fit=${this.fit}
-          .sizing=${this.editMode ? "fit" : this.sizing}
-          .cropMode=${this.editMode && this.activeEditTool === "crop"}
-          .cropAspect=${this.editMode && this.activeEditTool === "crop"
-            ? this.effectiveAspect()
-            : null}
-          background=${this.bgCss(this.bg)}
-        ></pf-image-canvas>
-        <button
-          class="nav prev"
-          aria-label="Previous"
-          ?disabled=${!hasPrev}
-          @click=${() => this.go(-1)}
-        >
-          <pf-icon name="chevron-left"></pf-icon>
-        </button>
-        <button
-          class="nav next"
-          aria-label="Next"
-          ?disabled=${!hasNext}
-          @click=${() => this.go(1)}
-        >
-          <pf-icon name="chevron-right"></pf-icon>
-        </button>
-        <div class="hint">
-          Scroll to zoom · drag to pan · double-click to toggle 100% ·
-          P proof · B background · F fullscreen · G grid · Esc to close
+      <div class="stage-row">
+        <div class="stage">
+          <pf-image-canvas
+            .path=${path}
+            .fit=${this.fit}
+            .sizing=${this.editMode ? "fit" : this.sizing}
+            .cropMode=${this.editMode && this.activeEditTool === "crop"}
+            .cropAspect=${this.editMode && this.activeEditTool === "crop"
+              ? this.effectiveAspect()
+              : null}
+            background=${this.bgCss(this.bg)}
+          ></pf-image-canvas>
+          <button
+            class="nav prev"
+            aria-label="Previous"
+            ?disabled=${!hasPrev}
+            @click=${() => this.go(-1)}
+          >
+            <pf-icon name="chevron-left"></pf-icon>
+          </button>
+          <button
+            class="nav next"
+            aria-label="Next"
+            ?disabled=${!hasNext}
+            @click=${() => this.go(1)}
+          >
+            <pf-icon name="chevron-right"></pf-icon>
+          </button>
+          <div class="hint">
+            Scroll to zoom · drag to pan · double-click to toggle 100% ·
+            P proof · B background · F fullscreen · G grid · Esc to close
+          </div>
         </div>
+        ${this.editMode ? this.renderEditSidePanel() : null}
       </div>
       <div class="bottombar">
         <span class="menu-wrap">

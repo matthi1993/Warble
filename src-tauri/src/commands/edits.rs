@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::imaging::edits::{CropEdit, PhotoEdits};
+use crate::imaging::edits::{CropEdit, PhotoEdits, ToneEdit};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +16,8 @@ pub struct PhotoEditDto {
     pub path: String,
     #[serde(default)]
     pub crop: Option<CropEdit>,
+    #[serde(default)]
+    pub tone: Option<ToneEdit>,
 }
 
 #[tauri::command]
@@ -29,6 +31,7 @@ pub fn get_photo_edits(state: State<'_, AppState>) -> Result<Vec<PhotoEditDto>, 
         out.push(PhotoEditDto {
             path,
             crop: edits.crop,
+            tone: edits.tone,
         });
     }
     Ok(out)
@@ -38,10 +41,11 @@ pub fn get_photo_edits(state: State<'_, AppState>) -> Result<Vec<PhotoEditDto>, 
 pub fn set_photo_edit(
     path: String,
     crop: Option<CropEdit>,
+    tone: Option<ToneEdit>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let repo = state.repository()?;
-    let edits = PhotoEdits { crop };
+    let edits = PhotoEdits { crop, tone };
     if edits.is_empty() {
         repo.delete_photo_edit(&path)
     } else {
