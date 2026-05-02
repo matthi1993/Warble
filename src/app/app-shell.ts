@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
+import { loadVariantOverrides } from "./variant-store";
 import {
   clearThumbnailBatch,
   dropAllThumbnailState,
@@ -16,6 +17,15 @@ import {
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
+
+function findFolderByPath(roots: Folder[], path: string): Folder | null {
+  for (const r of roots) {
+    if (r.path === path) return r;
+    const child = findFolderByPath(r.children, path);
+    if (child) return child;
+  }
+  return null;
+}
 
 @customElement("warble-app")
 export class WarbleApp extends LitElement {
@@ -265,6 +275,23 @@ export class WarbleApp extends LitElement {
     } catch (err) {
       console.error("Failed to load imported folders", err);
     }
+
+    // Hydrate per-photo variant preferences before any thumbnail or
+    // detail panel asks for an effective selection.
+    void loadVariantOverrides();
+
+    // Auto-open the folder the user had selected last session.
+    try {
+      const lastPath = await invoke<string | null>("get_last_folder");
+      if (lastPath) {
+        const folder = findFolderByPath(this.folders, lastPath);
+        if (folder) {
+          await this.selectFolder(folder.id, folder.path);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore last folder", err);
+    }
   }
 
   disconnectedCallback(): void {
@@ -447,6 +474,10 @@ export class WarbleApp extends LitElement {
     e: CustomEvent<{ id: string; path: string }>
   ) {
     const { id, path } = e.detail;
+    await this.selectFolder(id, path);
+  }
+
+  private async selectFolder(id: string, path: string) {
     this.selectedFolderId = id;
     const name = id.split("/").filter(Boolean).pop() ?? path;
     this.selectedFolderName = name;
@@ -455,6 +486,9 @@ export class WarbleApp extends LitElement {
     });
     this.selectedPhoto = null;
     startThumbnailBatch(this.photos.map((p) => p.path));
+    void invoke("set_last_folder", { path }).catch((err) =>
+      console.error("Failed to persist last folder", err)
+    );
   }
 
   private onPhotoSelected(

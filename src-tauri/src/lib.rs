@@ -43,6 +43,10 @@ pub fn run() {
             commands::clear_thumbnail_cache,
             commands::clear_full_image_memory_cache,
             commands::reveal_in_file_manager,
+            commands::get_photo_variants,
+            commands::set_photo_variant,
+            commands::get_last_folder,
+            commands::set_last_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

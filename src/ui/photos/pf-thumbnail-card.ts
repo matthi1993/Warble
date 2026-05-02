@@ -90,6 +90,10 @@ export class PfThumbnailCard extends LitElement {
       border-radius: 999px;
       text-transform: uppercase;
     }
+    .badge span.variants {
+      background: var(--pf-accent, #4a7);
+      text-transform: none;
+    }
   `;
 
   @property({ type: String })
@@ -100,6 +104,12 @@ export class PfThumbnailCard extends LitElement {
 
   @property({ attribute: false })
   extensions: string[] = [];
+
+  /** Number of distinct variants for this photo (e.g. `Foo.jpg`,
+   *  `Foo (1).jpg`, `Foo (edit).jpg` → 3). When greater than 1, a
+   *  badge marks the thumbnail. */
+  @property({ type: Number })
+  variantCount = 1;
 
   @property({ type: Boolean, reflect: true })
   selected = false;
@@ -226,12 +236,24 @@ export class PfThumbnailCard extends LitElement {
             : html`<div class="placeholder">
                 <pf-icon name="image"></pf-icon>
               </div>`}
-          ${showBadge
+          ${showBadge || this.variantCount > 1
             ? html`<div
                 class="badge"
-                title=${`Includes: ${this.extensions.join(", ")}`}
+                title=${`Includes: ${this.extensions.join(", ")}${
+                  this.variantCount > 1
+                    ? ` (${this.variantCount} variants)`
+                    : ""
+                }`}
               >
-                ${this.extensions.map((e) => html`<span>${e}</span>`)}
+                ${showBadge
+                  ? this.extensions.map((e) => html`<span>${e}</span>`)
+                  : null}
+                ${this.variantCount > 1
+                  ? html`<span class="variants"
+                      title=${`${this.variantCount} variants`}
+                      >+${this.variantCount - 1}</span
+                    >`
+                  : null}
               </div>`
             : null}
         </div>

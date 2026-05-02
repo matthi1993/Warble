@@ -4,6 +4,14 @@ import { repeat } from "lit/directives/repeat.js";
 import type { Photo } from "./types";
 import "../ui/photos/pf-thumbnail-card";
 
+function variantCount(photo: Photo): number {
+  const files = photo.files ?? [];
+  if (files.length === 0) return 1;
+  const variants = new Set<string>();
+  for (const f of files) variants.add(f.variant);
+  return Math.max(1, variants.size);
+}
+
 @customElement("pf-photo-grid")
 export class PfPhotoGrid extends LitElement {
   static styles = css`
@@ -92,6 +100,7 @@ export class PfPhotoGrid extends LitElement {
               .path=${p.path}
               .filename=${p.filename}
               .extensions=${p.extensions ?? []}
+              .variantCount=${variantCount(p)}
               ?selected=${this.selectedPath === p.path}
             ></pf-thumbnail-card>
           `

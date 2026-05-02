@@ -21,6 +21,11 @@ import {
   primarySelection,
   type PhotoFormat,
 } from "./photo-variant";
+import {
+  getVariantOverride,
+  setVariantOverride,
+  subscribeVariantOverrides,
+} from "./variant-store";
 import { prefetchFullImages } from "./full-image-cache";
 import "../ui/controls/pf-icon-button";
 import "../ui/icons/pf-icon";
@@ -58,6 +63,23 @@ export class PfFullView extends LitElement {
       color: #fff;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
+    .toolbar-left,
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    .toolbar-right {
+      justify-content: flex-end;
+    }
+    .toolbar-center {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      flex: 0 0 auto;
+    }
     /* Symmetric placeholder bar at the bottom — same vertical footprint
        as the toolbar so the stage's centre lines up with the viewport's
        centre. When the toolbar fades on idle, this bar fades with it,
@@ -78,7 +100,8 @@ export class PfFullView extends LitElement {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      flex: 1;
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .counter {
       font-size: var(--pf-text-xs);
@@ -92,6 +115,31 @@ export class PfFullView extends LitElement {
       padding: 2px;
       background: rgba(255, 255, 255, 0.06);
       border-radius: var(--pf-radius-md);
+    }
+    .format-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+    }
+    .format-switch button {
+      background: transparent;
+      color: #fff;
+      border: none;
+      padding: 2px 10px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border-radius: var(--pf-radius-sm);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .format-switch button[aria-pressed="true"] {
+      background: rgba(255, 255, 255, 0.18);
     }
     .menu-wrap {
       position: relative;
@@ -330,10 +378,11 @@ export class PfFullView extends LitElement {
   @state()
   private openMenu: "bg" | "fit" | "format" | "variant" | null = null;
 
-  /** Per-photo override of which format (jpg/raw) to render. */
-  private formatOverrides = new Map<string, PhotoFormat>();
-  /** Per-photo+format override of which variant to render. */
-  private variantOverrides = new Map<string, string>();
+  /** Bumped when the shared variant store changes so we re-render. */
+  @state()
+  private variantTick = 0;
+
+  private unsubscribeStore: (() => void) | null = null;
 
   @property({ type: Boolean, reflect: true })
   idle = false;
@@ -359,6 +408,9 @@ export class PfFullView extends LitElement {
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("mousemove", this.onMouseMoveGlobal);
     window.addEventListener("click", this.onDocClick, { capture: true });
+    this.unsubscribeStore = subscribeVariantOverrides(() => {
+      this.variantTick++;
+    });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
   }
@@ -368,6 +420,8 @@ export class PfFullView extends LitElement {
     window.removeEventListener("keydown", this.onKeyDown, { capture: true } as unknown as EventListenerOptions);
     window.removeEventListener("mousemove", this.onMouseMoveGlobal);
     window.removeEventListener("click", this.onDocClick, { capture: true } as unknown as EventListenerOptions);
+    this.unsubscribeStore?.();
+    this.unsubscribeStore = null;
     if (this.idleTimer !== null) {
       window.clearTimeout(this.idleTimer);
       this.idleTimer = null;
@@ -542,12 +596,12 @@ export class PfFullView extends LitElement {
     const formats = availableFormats(photo);
     if (formats.length === 0) return null;
     const primary = primarySelection(photo);
-    const format =
-      this.formatOverrides.get(photo.path) ?? primary?.format ?? formats[0];
+    const stored = getVariantOverride(photo.path);
+    const format = stored?.format ?? primary?.format ?? formats[0];
     const variants = availableVariants(photo, format);
     if (variants.length === 0) return null;
     const requested =
-      this.variantOverrides.get(`${photo.path}|${format}`) ??
+      (stored && stored.format === format ? stored.variant : null) ??
       (primary && primary.format === format ? primary.variant : null) ??
       variants[0].key;
     const final =
@@ -564,9 +618,13 @@ export class PfFullView extends LitElement {
   private setFormat = (format: PhotoFormat) => {
     const photo = this.currentPhoto;
     if (!photo) return;
-    this.formatOverrides.set(photo.path, format);
+    const variants = availableVariants(photo, format);
+    if (variants.length === 0) return;
+    const sel = this.currentSelection(photo);
+    const variant =
+      variants.find((v) => v.key === sel?.variant)?.key ?? variants[0].key;
+    setVariantOverride(photo.path, { format, variant });
     this.openMenu = null;
-    this.requestUpdate();
   };
 
   private setVariant = (variantKey: string) => {
@@ -574,9 +632,11 @@ export class PfFullView extends LitElement {
     if (!photo) return;
     const sel = this.currentSelection(photo);
     if (!sel) return;
-    this.variantOverrides.set(`${photo.path}|${sel.format}`, variantKey);
+    setVariantOverride(photo.path, {
+      format: sel.format,
+      variant: variantKey,
+    });
     this.openMenu = null;
-    this.requestUpdate();
   };
 
   private fitLabel(m: ImageFit): string {
@@ -600,156 +660,150 @@ export class PfFullView extends LitElement {
     const path = this.resolvedPath(photo);
     return html`
       <div class="toolbar">
-        <span class="filename" title=${photo.filename}>${photo.filename}</span>
-        <span class="counter">${this.index + 1} / ${total}</span>
-        <span class="menu-wrap">
-          <button
-            class="menu-trigger"
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded=${this.openMenu === "bg"}
-            @click=${() => this.toggleMenu("bg")}
-          >
-            <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
-            ${this.bgLabel(this.bg)}
-            <pf-icon name="chevron-down"></pf-icon>
-          </button>
-          ${this.openMenu === "bg"
-            ? html`<div class="menu-popup" role="menu">
-                ${(["black", "grey", "white"] as BgColor[]).map(
-                  (b) => html`<button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.bg === b}
-                    @click=${() => this.setBg(b)}
+        <div class="toolbar-left">
+          <span class="filename" title=${photo.filename}>${photo.filename}</span>
+          <span class="counter">${this.index + 1} / ${total}</span>
+        </div>
+        <div class="toolbar-center">
+          ${sel !== null && formats.length > 1
+            ? html`<div
+                class="format-switch"
+                role="group"
+                aria-label="File format"
+              >
+                ${formats.map(
+                  (f) => html`<button
+                    aria-pressed=${sel.format === f}
+                    @click=${() => this.setFormat(f)}
                   >
-                    <span
-                      class="swatch"
-                      style="background:${this.bgCss(b)}"
-                    ></span>
-                    ${this.bgLabel(b)}
+                    ${f}
                   </button>`
                 )}
               </div>`
             : null}
-        </span>
-        <span class="menu-wrap">
-          <button
-            class="menu-trigger"
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded=${this.openMenu === "fit"}
-            @click=${() => this.toggleMenu("fit")}
-          >
-            ${this.fitLabel(this.fit)}
-            <pf-icon name="chevron-down"></pf-icon>
-          </button>
-          ${this.openMenu === "fit"
-            ? html`<div class="menu-popup" role="menu">
+          ${sel !== null && variants.length > 1
+            ? html`<span class="menu-wrap">
                 <button
-                  class="menu-item"
-                  role="menuitemradio"
-                  aria-pressed=${this.fit === "contain"}
-                  @click=${() => this.setFit("contain")}
-                  title="Fit to panel (0)"
+                  class="menu-trigger"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded=${this.openMenu === "variant"}
+                  @click=${() => this.toggleMenu("variant")}
                 >
-                  Fit
+                  ${variants.find((v) => v.key === sel.variant)?.label ??
+                  sel.variant}
+                  <pf-icon name="chevron-down"></pf-icon>
                 </button>
-                <button
-                  class="menu-item"
-                  role="menuitemradio"
-                  aria-pressed=${this.fit === "tight"}
-                  @click=${() => this.setFit("tight")}
-                  title="Tight proof — small margin (1)"
-                >
-                  Tight
-                </button>
-                <button
-                  class="menu-item"
-                  role="menuitemradio"
-                  aria-pressed=${this.fit === "proof"}
-                  @click=${() => this.setFit("proof")}
-                  title="Proof — generous margin (2)"
-                >
-                  Proof
-                </button>
-              </div>`
+                ${this.openMenu === "variant"
+                  ? html`<div class="menu-popup" role="menu">
+                      ${variants.map(
+                        (v) => html`<button
+                          class="menu-item"
+                          role="menuitemradio"
+                          aria-pressed=${sel.variant === v.key}
+                          @click=${() => this.setVariant(v.key)}
+                        >
+                          ${v.label}
+                        </button>`
+                      )}
+                    </div>`
+                  : null}
+              </span>`
             : null}
-        </span>
-        ${sel !== null && formats.length > 1
-          ? html`<span class="menu-wrap">
-              <button
-                class="menu-trigger"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded=${this.openMenu === "format"}
-                @click=${() => this.toggleMenu("format")}
-              >
-                ${sel.format.toUpperCase()}
-                <pf-icon name="chevron-down"></pf-icon>
-              </button>
-              ${this.openMenu === "format"
-                ? html`<div class="menu-popup" role="menu">
-                    ${formats.map(
-                      (f) => html`<button
-                        class="menu-item"
-                        role="menuitemradio"
-                        aria-pressed=${sel.format === f}
-                        @click=${() => this.setFormat(f)}
-                      >
-                        ${f.toUpperCase()}
-                      </button>`
-                    )}
-                  </div>`
-                : null}
-            </span>`
-          : null}
-        ${sel !== null && variants.length > 1
-          ? html`<span class="menu-wrap">
-              <button
-                class="menu-trigger"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded=${this.openMenu === "variant"}
-                @click=${() => this.toggleMenu("variant")}
-              >
-                ${variants.find((v) => v.key === sel.variant)?.label ??
-                sel.variant}
-                <pf-icon name="chevron-down"></pf-icon>
-              </button>
-              ${this.openMenu === "variant"
-                ? html`<div class="menu-popup" role="menu">
-                    ${variants.map(
-                      (v) => html`<button
-                        class="menu-item"
-                        role="menuitemradio"
-                        aria-pressed=${sel.variant === v.key}
-                        @click=${() => this.setVariant(v.key)}
-                      >
-                        ${v.label}
-                      </button>`
-                    )}
-                  </div>`
-                : null}
-            </span>`
-          : null}
-        <pf-icon-button
-          icon=${this.fullscreen ? "minimize" : "maximize"}
-          label=${this.fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          @click=${this.toggleFullscreen}
-        ></pf-icon-button>
-        <button
-          class="close-btn"
-          type="button"
-          aria-label="Close full view"
-          title="Close (Esc)"
-          @click=${this.close}
-          @pointerdown=${(e: Event) => e.stopPropagation()}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M6 6 L18 18 M18 6 L6 18" stroke-linecap="round" />
-          </svg>
-        </button>
+        </div>
+        <div class="toolbar-right">
+          <span class="menu-wrap">
+            <button
+              class="menu-trigger"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded=${this.openMenu === "bg"}
+              @click=${() => this.toggleMenu("bg")}
+            >
+              <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
+              ${this.bgLabel(this.bg)}
+              <pf-icon name="chevron-down"></pf-icon>
+            </button>
+            ${this.openMenu === "bg"
+              ? html`<div class="menu-popup" role="menu">
+                  ${(["black", "grey", "white"] as BgColor[]).map(
+                    (b) => html`<button
+                      class="menu-item"
+                      role="menuitemradio"
+                      aria-pressed=${this.bg === b}
+                      @click=${() => this.setBg(b)}
+                    >
+                      <span
+                        class="swatch"
+                        style="background:${this.bgCss(b)}"
+                      ></span>
+                      ${this.bgLabel(b)}
+                    </button>`
+                  )}
+                </div>`
+              : null}
+          </span>
+          <span class="menu-wrap">
+            <button
+              class="menu-trigger"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded=${this.openMenu === "fit"}
+              @click=${() => this.toggleMenu("fit")}
+            >
+              ${this.fitLabel(this.fit)}
+              <pf-icon name="chevron-down"></pf-icon>
+            </button>
+            ${this.openMenu === "fit"
+              ? html`<div class="menu-popup" role="menu">
+                  <button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.fit === "contain"}
+                    @click=${() => this.setFit("contain")}
+                    title="Fit to panel (0)"
+                  >
+                    Fit
+                  </button>
+                  <button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.fit === "tight"}
+                    @click=${() => this.setFit("tight")}
+                    title="Tight proof — small margin (1)"
+                  >
+                    Tight
+                  </button>
+                  <button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.fit === "proof"}
+                    @click=${() => this.setFit("proof")}
+                    title="Proof — generous margin (2)"
+                  >
+                    Proof
+                  </button>
+                </div>`
+              : null}
+          </span>
+          <pf-icon-button
+            icon=${this.fullscreen ? "minimize" : "maximize"}
+            label=${this.fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            @click=${this.toggleFullscreen}
+          ></pf-icon-button>
+          <button
+            class="close-btn"
+            type="button"
+            aria-label="Close full view"
+            title="Close (Esc)"
+            @click=${this.close}
+            @pointerdown=${(e: Event) => e.stopPropagation()}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6 L18 18 M18 6 L6 18" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
       </div>
       <div class="stage">
         <pf-image-canvas
