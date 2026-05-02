@@ -27,9 +27,20 @@ import {
 } from "../../app/full-image-cache";
 
 export type ImageFit = "contain" | "proof" | "tight";
+export type ImageSizing = "fit" | "fill";
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {
+  /**
+   * Layout strategy:
+   *   - Proof/tight margins are CSS `padding` on `:host`. The canvas
+   *     itself shrinks to the inner box, so the standard `ResizeObserver`
+   *     reflow is all we need to refit. Padding shows the bg color
+   *     (`--pf-canvas-bg`).
+   *
+   * `fit` is reflected as an attribute so CSS can branch on it
+   * (`:host([fit="proof"])` etc.).
+   */
   static styles = css`
     :host {
       display: block;
@@ -37,6 +48,13 @@ export class PfImageCanvas extends LitElement {
       overflow: hidden;
       background: var(--pf-canvas-bg, transparent);
       touch-action: none;
+      box-sizing: border-box;
+    }
+    :host([fit="tight"]) {
+      padding: 12px;
+    }
+    :host([fit="proof"]) {
+      padding: 48px;
     }
     canvas {
       width: 100%;
@@ -65,8 +83,11 @@ export class PfImageCanvas extends LitElement {
   @property({ type: String })
   path: string | null = null;
 
-  @property({ type: String })
+  @property({ type: String, reflect: true })
   fit: ImageFit = "contain";
+
+  @property({ type: String, reflect: true })
+  sizing: ImageSizing = "fit";
 
   @property({ type: String })
   background = "transparent";
@@ -115,8 +136,11 @@ export class PfImageCanvas extends LitElement {
   firstUpdated() {
     this.canvas = this.renderRoot.querySelector("canvas") as HTMLCanvasElement;
     this.ctx = this.canvas.getContext("2d") ?? undefined;
+    // Observe the canvas (not the host) so padding changes on `:host`
+    // — which keep the host's border box constant — still trigger a
+    // backing-store resize.
     this.resizeObserver = new ResizeObserver(() => this.onResize());
-    this.resizeObserver.observe(this);
+    this.resizeObserver.observe(this.canvas);
     this.attachInputs();
     this.onResize();
     if (this.path) this.startLoad();
@@ -144,13 +168,16 @@ export class PfImageCanvas extends LitElement {
       this.offsetX = 0;
       this.offsetY = 0;
       if (this.canvas) this.startLoad();
-    } else if (changed.has("fit")) {
+    } else if (changed.has("fit") || changed.has("sizing")) {
       this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
-      this.recomputeFit();
-      this.draw();
+      // Padding on `:host` is driven by the reflected `fit`/`sizing`
+      // attributes, so the canvas resizes on the next frame; a single
+      // onResize() pass after layout settles refits and redraws.
+      requestAnimationFrame(() => this.onResize());
     }
     if (changed.has("background")) {
       this.style.setProperty("--pf-canvas-bg", this.background);
@@ -278,17 +305,16 @@ export class PfImageCanvas extends LitElement {
   private onResize() {
     if (!this.canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const rect = this.getBoundingClientRect();
+    // Measure the canvas itself — not the host — because CSS padding
+    // on `:host` (driven by the `fit` attribute) shrinks the canvas
+    // while the host's border box stays put.
+    const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(1, Math.floor(rect.width * dpr));
     const h = Math.max(1, Math.floor(rect.height * dpr));
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
     this.recomputeFit();
     this.draw();
-  }
-
-  private fitMargin(): number {
-    return marginForFit(this.fit);
   }
 
   private recomputeFit() {
@@ -298,12 +324,17 @@ export class PfImageCanvas extends LitElement {
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const margin = this.fitMargin() * dpr;
-    const cw = Math.max(1, this.canvas.width - margin * 2);
-    const ch = Math.max(1, this.canvas.height - margin * 2);
-    // Don't upscale past 1:1 image-pixel ↔ device-pixel by default; user can
-    // wheel-zoom past that explicitly.
-    this.fitScale = Math.min(cw / bm.width, ch / bm.height, dpr);
+    const cw = Math.max(1, this.canvas.width);
+    const ch = Math.max(1, this.canvas.height);
+    // Sizing mode picks the floor scale: `fit` (default) is the
+    // largest scale that fits inside the canvas (capped at 1:1
+    // image-px ↔ device-px); `fill` is the smallest scale that
+    // fully covers the canvas — the long axis gets cropped, no dpr
+    // cap so we always cover even on hi-DPR displays.
+    this.fitScale =
+      this.sizing === "fill"
+        ? Math.max(cw / bm.width, ch / bm.height)
+        : Math.min(cw / bm.width, ch / bm.height, dpr);
     if (this.forceFitOnNextRecompute) {
       this.scale = this.fitScale;
       this.offsetX = 0;
@@ -339,23 +370,11 @@ export class PfImageCanvas extends LitElement {
       const drawH = bm.height * this.scale;
       const cx = cv.width / 2 + this.offsetX;
       const cy = cv.height / 2 + this.offsetY;
-      // Clip to the active fit viewport so the proof/tight margin stays
-      // visible as a border even when the image is zoomed past it.
-      const dpr = window.devicePixelRatio || 1;
-      const margin = this.fitMargin() * dpr;
-      if (margin > 0) {
-        ctx.beginPath();
-        ctx.rect(
-          margin,
-          margin,
-          Math.max(0, cv.width - margin * 2),
-          Math.max(0, cv.height - margin * 2)
-        );
-        ctx.clip();
-      }
+      const x = cx - drawW / 2;
+      const y = cy - drawH / 2;
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(bm, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+      ctx.drawImage(bm, x, y, drawW, drawH);
     }
     ctx.restore();
   }
@@ -401,20 +420,18 @@ export class PfImageCanvas extends LitElement {
   }
 
   /**
-   * Constrain pan so the displayed image always covers the current fit
-   * viewport (canvas minus the active fit's margin). When the image is
-   * smaller than that viewport on an axis (e.g. fully zoomed out), the
-   * offset on that axis is locked to 0 so the image stays centred and
-   * can't be dragged off to one side. When zoomed in, the fit margin
-   * stays as an overlay border the image can't cross.
+   * Constrain pan so the displayed image always covers the canvas
+   * viewport. The proof/tight margin is CSS padding on the host, so
+   * the canvas's own dimensions are already the inner viewport — no
+   * extra subtraction needed. When the image is smaller than the
+   * viewport on an axis (zoomed out), the offset on that axis is
+   * locked to 0 to keep it centred.
    */
   private clampOffsets() {
     const bm = this.currentBitmap;
     if (!bm || !this.canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const margin = this.fitMargin() * dpr;
-    const viewW = Math.max(1, this.canvas.width - margin * 2);
-    const viewH = Math.max(1, this.canvas.height - margin * 2);
+    const viewW = Math.max(1, this.canvas.width);
+    const viewH = Math.max(1, this.canvas.height);
     const drawW = bm.width * this.scale;
     const drawH = bm.height * this.scale;
     if (drawW <= viewW) {
@@ -587,14 +604,6 @@ function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
 // `pf-full-view`). Registering at module load means any code path that
 // imports the cache after this module is wired up.
 setFullImageDecoder(decodeInWorker);
-
-/** CSS-pixel margin used by each named fit mode. Smaller values pull the
- * proof/tight views closer to the panel edges. */
-function marginForFit(fit: ImageFit): number {
-  if (fit === "proof") return 48;
-  if (fit === "tight") return 12;
-  return 0;
-}
 
 declare global {
   interface HTMLElementTagNameMap {

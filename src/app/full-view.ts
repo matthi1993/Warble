@@ -13,6 +13,7 @@
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { invoke } from "@tauri-apps/api/core";
 import type { Photo } from "./types";
 import {
   availableFormats,
@@ -30,7 +31,11 @@ import { prefetchFullImages } from "./full-image-cache";
 import "../ui/controls/pf-icon-button";
 import "../ui/icons/pf-icon";
 import "../ui/photos/pf-image-canvas";
-import type { ImageFit, PfImageCanvas } from "../ui/photos/pf-image-canvas";
+import type {
+  ImageFit,
+  ImageSizing,
+  PfImageCanvas,
+} from "../ui/photos/pf-image-canvas";
 
 type BgColor = "black" | "grey" | "white";
 
@@ -376,7 +381,14 @@ export class PfFullView extends LitElement {
   private fit: ImageFit = "contain";
 
   @state()
-  private openMenu: "bg" | "fit" | "format" | "variant" | null = null;
+  private sizing: ImageSizing = "fit";
+
+  /** Suppresses the persistence side-effect during the initial hydrate
+   * from the DB so we don't write back the same value we just read. */
+  private hydrated = false;
+
+  @state()
+  private openMenu: "bg" | "fit" | "sizing" | "format" | "variant" | null = null;
 
   /** Bumped when the shared variant store changes so we re-render. */
   @state()
@@ -413,6 +425,7 @@ export class PfFullView extends LitElement {
     });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
+    void this.hydrateViewState();
   }
 
   disconnectedCallback(): void {
@@ -445,6 +458,11 @@ export class PfFullView extends LitElement {
         "--pf-fv-fg",
         this.bg === "white" ? "#000" : "#fff"
       );
+    }
+    if ((changed.has("bg") || changed.has("fit") || changed.has("sizing")) &&
+      this.hydrated
+    ) {
+      void this.persistViewState();
     }
     if (changed.has("fullscreen")) {
       if (this.fullscreen) {
@@ -488,6 +506,49 @@ export class PfFullView extends LitElement {
 
   private bgCss(bg: BgColor): string {
     return bg === "black" ? "#000" : bg === "white" ? "#fff" : "#808080";
+  }
+
+  /** Read the persisted background + fit selection from the SQLite
+   * `app_settings` row (`view_state`). Missing rows or fields fall
+   * back to the constructor defaults so first-run shows a black
+   * background with `contain` fit. */
+  private async hydrateViewState() {
+    try {
+      const persisted = await invoke<{
+        bg?: string | null;
+        fit?: string | null;
+        sizing?: string | null;
+      } | null>("get_view_state");
+      if (persisted) {
+        if (persisted.bg === "black" || persisted.bg === "grey" || persisted.bg === "white") {
+          this.bg = persisted.bg;
+        }
+        if (
+          persisted.fit === "contain" ||
+          persisted.fit === "tight" ||
+          persisted.fit === "proof"
+        ) {
+          this.fit = persisted.fit;
+        }
+        if (persisted.sizing === "fit" || persisted.sizing === "fill") {
+          this.sizing = persisted.sizing;
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to load view state", err);
+    } finally {
+      this.hydrated = true;
+    }
+  }
+
+  private async persistViewState() {
+    try {
+      await invoke("set_view_state", {
+        view: { bg: this.bg, fit: this.fit, sizing: this.sizing },
+      });
+    } catch (err) {
+      console.warn("Failed to persist view state", err);
+    }
   }
 
   private get currentPhoto(): Photo | null {
@@ -586,7 +647,19 @@ export class PfFullView extends LitElement {
     }
   };
 
-  private toggleMenu = (which: "bg" | "fit" | "format" | "variant") => {
+  private setSizing = (s: ImageSizing) => {
+    const same = this.sizing === s;
+    this.sizing = s;
+    this.openMenu = null;
+    if (same) {
+      const cv = this.renderRoot.querySelector(
+        "pf-image-canvas"
+      ) as PfImageCanvas | null;
+      cv?.resetView();
+    }
+  };
+
+  private toggleMenu = (which: "bg" | "fit" | "sizing" | "format" | "variant") => {
     this.openMenu = this.openMenu === which ? null : which;
   };
 
@@ -638,10 +711,6 @@ export class PfFullView extends LitElement {
     });
     this.openMenu = null;
   };
-
-  private fitLabel(m: ImageFit): string {
-    return m === "contain" ? "Fit" : m === "tight" ? "Tight" : "Proof";
-  }
 
   private bgLabel(bg: BgColor): string {
     return bg.charAt(0).toUpperCase() + bg.slice(1);
@@ -721,7 +790,7 @@ export class PfFullView extends LitElement {
               @click=${() => this.toggleMenu("bg")}
             >
               <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
-              ${this.bgLabel(this.bg)}
+              BG Color
               <pf-icon name="chevron-down"></pf-icon>
             </button>
             ${this.openMenu === "bg"
@@ -751,7 +820,7 @@ export class PfFullView extends LitElement {
               aria-expanded=${this.openMenu === "fit"}
               @click=${() => this.toggleMenu("fit")}
             >
-              ${this.fitLabel(this.fit)}
+              Margin
               <pf-icon name="chevron-down"></pf-icon>
             </button>
             ${this.openMenu === "fit"
@@ -761,16 +830,16 @@ export class PfFullView extends LitElement {
                     role="menuitemradio"
                     aria-pressed=${this.fit === "contain"}
                     @click=${() => this.setFit("contain")}
-                    title="Fit to panel (0)"
+                    title="No margin — image flush to the panel edges (0)"
                   >
-                    Fit
+                    None
                   </button>
                   <button
                     class="menu-item"
                     role="menuitemradio"
                     aria-pressed=${this.fit === "tight"}
                     @click=${() => this.setFit("tight")}
-                    title="Tight proof — small margin (1)"
+                    title="Tight margin (1)"
                   >
                     Tight
                   </button>
@@ -779,9 +848,43 @@ export class PfFullView extends LitElement {
                     role="menuitemradio"
                     aria-pressed=${this.fit === "proof"}
                     @click=${() => this.setFit("proof")}
-                    title="Proof — generous margin (2)"
+                    title="Generous proof margin (2)"
                   >
                     Proof
+                  </button>
+                </div>`
+              : null}
+          </span>
+          <span class="menu-wrap">
+            <button
+              class="menu-trigger"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded=${this.openMenu === "sizing"}
+              @click=${() => this.toggleMenu("sizing")}
+            >
+              Scale
+              <pf-icon name="chevron-down"></pf-icon>
+            </button>
+            ${this.openMenu === "sizing"
+              ? html`<div class="menu-popup" role="menu">
+                  <button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.sizing === "fit"}
+                    @click=${() => this.setSizing("fit")}
+                    title="Image fully visible inside the margin"
+                  >
+                    Contain
+                  </button>
+                  <button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.sizing === "fill"}
+                    @click=${() => this.setSizing("fill")}
+                    title="Image fills the stage (may crop)"
+                  >
+                    Cover
                   </button>
                 </div>`
               : null}
@@ -809,6 +912,7 @@ export class PfFullView extends LitElement {
         <pf-image-canvas
           .path=${path}
           .fit=${this.fit}
+          .sizing=${this.sizing}
           background=${this.bgCss(this.bg)}
         ></pf-image-canvas>
         <button

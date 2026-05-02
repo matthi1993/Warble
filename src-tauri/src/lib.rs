@@ -47,6 +47,10 @@ pub fn run() {
             commands::set_photo_variant,
             commands::get_last_folder,
             commands::set_last_folder,
+            commands::get_view_state,
+            commands::set_view_state,
+            commands::get_app_view,
+            commands::set_app_view,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

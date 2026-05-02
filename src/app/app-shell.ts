@@ -247,6 +247,10 @@ export class WarbleApp extends LitElement {
   private unsubscribeProgress: (() => void) | null = null;
   private unsubscribeCacheCleared: UnlistenFn | null = null;
 
+  /** Suppresses the persistence side-effect during the initial restore
+   * pass so we don't immediately write back what we just read. */
+  private appViewHydrated = false;
+
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
   }
@@ -291,6 +295,28 @@ export class WarbleApp extends LitElement {
       }
     } catch (err) {
       console.error("Failed to restore last folder", err);
+    }
+
+    // Restore the photo + surface (grid vs full view) the user had open.
+    // Runs AFTER the folder restore so `this.photos` is populated.
+    try {
+      const persisted = await invoke<{
+        path?: string | null;
+        view?: string | null;
+      } | null>("get_app_view");
+      if (persisted?.path) {
+        const idx = this.photos.findIndex((p) => p.path === persisted.path);
+        if (idx >= 0) {
+          this.selectedPhoto = this.photos[idx];
+          if (persisted.view === "full") {
+            this.fullViewIndex = idx;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore last view", err);
+    } finally {
+      this.appViewHydrated = true;
     }
   }
 
@@ -555,6 +581,25 @@ export class WarbleApp extends LitElement {
   updated(changed: Map<string, unknown>): void {
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
+    }
+    if (
+      this.appViewHydrated &&
+      (changed.has("selectedPhoto") || changed.has("fullViewIndex"))
+    ) {
+      void this.persistAppView();
+    }
+  }
+
+  private async persistAppView() {
+    try {
+      await invoke("set_app_view", {
+        view: {
+          path: this.selectedPhoto?.path ?? null,
+          view: this.fullViewIndex !== null ? "full" : "grid",
+        },
+      });
+    } catch (err) {
+      console.warn("Failed to persist app view", err);
     }
   }
 
