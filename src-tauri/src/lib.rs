@@ -51,6 +51,9 @@ pub fn run() {
             commands::set_view_state,
             commands::get_app_view,
             commands::set_app_view,
+            commands::get_photo_edits,
+            commands::set_photo_edit,
+            commands::clear_photo_edit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

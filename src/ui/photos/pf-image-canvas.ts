@@ -25,9 +25,23 @@ import {
   loadFullImage,
   setFullImageDecoder,
 } from "../../app/full-image-cache";
+import {
+  getPhotoEdit,
+  subscribePhotoEdits,
+  type CropEdit,
+} from "../../app/edit-store";
 
 export type ImageFit = "contain" | "proof" | "tight";
 export type ImageSizing = "fit" | "fill" | "hybrid";
+
+/** Pending crop frame state, exposed via `getCrop()`. */
+export interface CropFrame {
+  /** Normalised (0..1) crop in original-image coordinates. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {
@@ -92,6 +106,23 @@ export class PfImageCanvas extends LitElement {
   @property({ type: String })
   background = "transparent";
 
+  /**
+   * When `true`, the canvas enters interactive crop mode: zoom/pan are
+   * disabled, the image is forced to fit, and an aspect-locked crop
+   * frame is overlaid. The frame can be dragged (move) or resized via
+   * its 8 handles. The persisted edit, if any, is ignored while in
+   * crop mode so the user can re-frame against the full image.
+   */
+  @property({ type: Boolean, reflect: true })
+  cropMode = false;
+
+  /**
+   * Locked aspect ratio (width / height) of the crop frame. `null`
+   * means free-form (currently unused — UI always supplies a ratio).
+   */
+  @property({ type: Number })
+  cropAspect: number | null = null;
+
   @state()
   private status: "idle" | "loading" | "ready" | "error" = "idle";
 
@@ -133,6 +164,26 @@ export class PfImageCanvas extends LitElement {
   private dragOffX = 0;
   private dragOffY = 0;
 
+  // --- Crop mode state ---------------------------------------------------
+  /** Crop frame in normalised image coordinates (0..1) — the live frame
+   * the user is dragging while in crop mode. */
+  @state()
+  private cropFrame: CropFrame | null = null;
+  /** Active drag operation on the crop frame. `null` when idle. */
+  private cropDrag:
+    | null
+    | {
+        kind: "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+        startX: number;
+        startY: number;
+        startFrame: CropFrame;
+      } = null;
+  /** Saved (persisted) crop for the current photo, mirrored from the
+   * edit store. Applied at draw time when NOT in crop mode. */
+  @state()
+  private savedCrop: CropEdit | null = null;
+  private editsUnsubscribe: (() => void) | null = null;
+
   firstUpdated() {
     this.canvas = this.renderRoot.querySelector("canvas") as HTMLCanvasElement;
     this.ctx = this.canvas.getContext("2d") ?? undefined;
@@ -143,7 +194,32 @@ export class PfImageCanvas extends LitElement {
     this.resizeObserver.observe(this.canvas);
     this.attachInputs();
     this.onResize();
-    if (this.path) this.startLoad();
+    if (this.path) {
+      this.refreshSavedCrop();
+      this.startLoad();
+    }
+    // React to edit-store changes: edits are applied at draw time on
+    // the cached bitmap, so a save just refits + redraws — no reload,
+    // no cache invalidation, no backend round trip.
+    this.editsUnsubscribe = subscribePhotoEdits((path) => {
+      if (path && path !== this.path) return;
+      if (!this.path) return;
+      this.refreshSavedCrop();
+      this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
+      this.recomputeFit();
+      this.draw();
+    });
+  }
+
+  /** Pull the latest persisted crop for the current photo into
+   * `savedCrop`. Cheap (synchronous map lookup). */
+  private refreshSavedCrop() {
+    if (!this.path) {
+      this.savedCrop = null;
+      return;
+    }
+    this.savedCrop = getPhotoEdit(this.path)?.crop ?? null;
   }
 
   disconnectedCallback(): void {
@@ -158,6 +234,8 @@ export class PfImageCanvas extends LitElement {
     this.thumbBitmap?.close?.();
     this.bitmap = null;
     this.thumbBitmap = null;
+    this.editsUnsubscribe?.();
+    this.editsUnsubscribe = null;
   }
 
   willUpdate(changed: Map<string, unknown>) {
@@ -167,6 +245,9 @@ export class PfImageCanvas extends LitElement {
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
+      // Switching photos drops any pending crop state.
+      this.cropFrame = null;
+      this.refreshSavedCrop();
       if (this.canvas) this.startLoad();
     } else if (changed.has("fit") || changed.has("sizing")) {
       this.userInteracted = false;
@@ -178,6 +259,42 @@ export class PfImageCanvas extends LitElement {
       // attributes, so the canvas resizes on the next frame; a single
       // onResize() pass after layout settles refits and redraws.
       requestAnimationFrame(() => this.onResize());
+    }
+    if (changed.has("cropMode")) {
+      this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
+      this.scale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      if (this.cropMode) {
+        // Seed the live frame from the saved crop if any, otherwise
+        // build a fresh one from the requested aspect.
+        this.cropFrame =
+          (this.savedCrop
+            ? {
+                x: this.savedCrop.x,
+                y: this.savedCrop.y,
+                width: this.savedCrop.width,
+                height: this.savedCrop.height,
+              }
+            : null) ?? this.computeInitialCropFrame();
+      } else {
+        this.cropFrame = null;
+        this.cropDrag = null;
+      }
+      requestAnimationFrame(() => this.onResize());
+    }
+    if (
+      changed.has("cropAspect") &&
+      this.cropMode &&
+      !changed.has("cropMode")
+    ) {
+      // When cropMode itself just toggled on, the block above already
+      // seeded the frame from the saved crop; don't clobber it here
+      // just because `cropAspect` flipped from null to a value in the
+      // same update cycle.
+      this.cropFrame = this.computeInitialCropFrame();
+      this.draw();
     }
     if (changed.has("background")) {
       this.style.setProperty("--pf-canvas-bg", this.background);
@@ -302,6 +419,36 @@ export class PfImageCanvas extends LitElement {
     return this.bitmap ?? this.thumbBitmap;
   }
 
+  /**
+   * The crop rectangle currently being applied at draw time, expressed
+   * in normalised (0..1) image coordinates. In crop mode the canvas
+   * shows the full bitmap (so the user can re-frame against the
+   * original); otherwise the persisted crop is honoured.
+   */
+  private effectiveCrop(): CropEdit | null {
+    if (this.cropMode) return null;
+    return this.savedCrop;
+  }
+
+  /**
+   * Source-image-pixel rectangle of the bitmap currently being drawn.
+   * `dispW`/`dispH` are the dimensions used for fit math; `sx`/`sy`/
+   * `sw`/`sh` go straight into `ctx.drawImage`.
+   */
+  private effectiveRect(
+    bm: ImageBitmap
+  ): { sx: number; sy: number; sw: number; sh: number; dispW: number; dispH: number } {
+    const c = this.effectiveCrop();
+    if (!c) {
+      return { sx: 0, sy: 0, sw: bm.width, sh: bm.height, dispW: bm.width, dispH: bm.height };
+    }
+    const sx = clamp(c.x, 0, 1) * bm.width;
+    const sy = clamp(c.y, 0, 1) * bm.height;
+    const sw = Math.max(1, clamp(c.width, 0, 1) * bm.width);
+    const sh = Math.max(1, clamp(c.height, 0, 1) * bm.height);
+    return { sx, sy, sw, sh, dispW: sw, dispH: sh };
+  }
+
   private onResize() {
     if (!this.canvas) return;
     const dpr = window.devicePixelRatio || 1;
@@ -338,7 +485,8 @@ export class PfImageCanvas extends LitElement {
     //     never lop off meaningful slivers of portrait or
     //     near‑square images. Only landscape images participate;
     //     portraits always contain.
-    const aspect = bm.width / bm.height;
+    const { dispW, dispH } = this.effectiveRect(bm);
+    const aspect = dispW / dispH;
     let useFill = this.sizing === "fill";
     if (this.sizing === "hybrid" && aspect >= 1) {
       const canvasAspect = cw / ch;
@@ -349,8 +497,8 @@ export class PfImageCanvas extends LitElement {
       useFill = stretch <= HYBRID_MAX_STRETCH;
     }
     this.fitScale = useFill
-      ? Math.max(cw / bm.width, ch / bm.height)
-      : Math.min(cw / bm.width, ch / bm.height, dpr);
+      ? Math.max(cw / dispW, ch / dispH)
+      : Math.min(cw / dispW, ch / dispH, dpr);
     if (this.forceFitOnNextRecompute) {
       this.scale = this.fitScale;
       this.offsetX = 0;
@@ -382,15 +530,82 @@ export class PfImageCanvas extends LitElement {
     }
     const bm = this.currentBitmap;
     if (bm) {
-      const drawW = bm.width * this.scale;
-      const drawH = bm.height * this.scale;
+      const { sx, sy, sw, sh, dispW, dispH } = this.effectiveRect(bm);
+      const drawW = dispW * this.scale;
+      const drawH = dispH * this.scale;
       const cx = cv.width / 2 + this.offsetX;
       const cy = cv.height / 2 + this.offsetY;
       const x = cx - drawW / 2;
       const y = cy - drawH / 2;
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(bm, x, y, drawW, drawH);
+      ctx.drawImage(bm, sx, sy, sw, sh, x, y, drawW, drawH);
+      if (this.cropMode && this.cropFrame) {
+        this.drawCropOverlay(ctx, x, y, drawW, drawH);
+      }
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Render the crop overlay: a darkened mask over the rejected area
+   * plus a bright frame and 8 resize handles.
+   */
+  private drawCropOverlay(
+    ctx: CanvasRenderingContext2D,
+    imgX: number,
+    imgY: number,
+    imgW: number,
+    imgH: number
+  ) {
+    const f = this.cropFrame!;
+    const fx = imgX + f.x * imgW;
+    const fy = imgY + f.y * imgH;
+    const fw = f.width * imgW;
+    const fh = f.height * imgH;
+    // Darken everything outside the crop frame (use even-odd fill so
+    // the inner rectangle is punched out).
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.beginPath();
+    ctx.rect(imgX, imgY, imgW, imgH);
+    ctx.rect(fx, fy, fw, fh);
+    ctx.fill("evenodd");
+    ctx.restore();
+    // Frame border.
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeRect(fx, fy, fw, fh);
+    // Rule-of-thirds guides.
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.lineWidth = 1 * dpr;
+    ctx.beginPath();
+    for (let i = 1; i <= 2; i++) {
+      const gx = fx + (fw * i) / 3;
+      ctx.moveTo(gx, fy);
+      ctx.lineTo(gx, fy + fh);
+      const gy = fy + (fh * i) / 3;
+      ctx.moveTo(fx, gy);
+      ctx.lineTo(fx + fw, gy);
+    }
+    ctx.stroke();
+    // Corner + edge handles.
+    const hs = 8 * dpr;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    const handles: [number, number][] = [
+      [fx, fy],
+      [fx + fw / 2, fy],
+      [fx + fw, fy],
+      [fx + fw, fy + fh / 2],
+      [fx + fw, fy + fh],
+      [fx + fw / 2, fy + fh],
+      [fx, fy + fh],
+      [fx, fy + fh / 2],
+    ];
+    for (const [hx, hy] of handles) {
+      ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
     }
     ctx.restore();
   }
@@ -403,6 +618,10 @@ export class PfImageCanvas extends LitElement {
   }
 
   private onWheel = (e: WheelEvent) => {
+    if (this.cropMode) {
+      e.preventDefault();
+      return;
+    }
     if (!this.currentBitmap || !this.canvas) return;
     e.preventDefault();
     const dpr = window.devicePixelRatio || 1;
@@ -446,10 +665,11 @@ export class PfImageCanvas extends LitElement {
   private clampOffsets() {
     const bm = this.currentBitmap;
     if (!bm || !this.canvas) return;
+    const { dispW, dispH } = this.effectiveRect(bm);
     const viewW = Math.max(1, this.canvas.width);
     const viewH = Math.max(1, this.canvas.height);
-    const drawW = bm.width * this.scale;
-    const drawH = bm.height * this.scale;
+    const drawW = dispW * this.scale;
+    const drawH = dispH * this.scale;
     if (drawW <= viewW) {
       this.offsetX = 0;
     } else {
@@ -468,6 +688,10 @@ export class PfImageCanvas extends LitElement {
 
   private onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0 || !this.currentBitmap) return;
+    if (this.cropMode) {
+      this.startCropDrag(e);
+      return;
+    }
     this.dragging = true;
     this.dragStartX = e.clientX;
     this.dragStartY = e.clientY;
@@ -504,6 +728,10 @@ export class PfImageCanvas extends LitElement {
   };
 
   private onDblClick = (e: MouseEvent) => {
+    if (this.cropMode) {
+      e.preventDefault();
+      return;
+    }
     if (!this.currentBitmap || !this.canvas) return;
     e.preventDefault();
     const dpr = window.devicePixelRatio || 1;
@@ -534,6 +762,206 @@ export class PfImageCanvas extends LitElement {
     this.draw();
   }
 
+  // --- Crop mode ---------------------------------------------------------
+
+  /**
+   * Public: read the current crop frame (in normalised image
+   * coordinates). Returns `null` if no frame is positioned (e.g. the
+   * raw bitmap hasn't loaded yet).
+   */
+  getCropFrame(): CropFrame | null {
+    return this.cropFrame ? { ...this.cropFrame } : null;
+  }
+
+  /**
+   * Public: install a starting crop frame, e.g. when re-opening the
+   * editor on a photo that already has a saved crop.
+   */
+  setCropFrame(frame: CropFrame | null) {
+    this.cropFrame = frame ? { ...frame } : null;
+    this.draw();
+  }
+
+  /**
+   * Build the initial crop frame: centred, locked to `cropAspect`, and
+   * as large as possible inside the original image.
+   */
+  private computeInitialCropFrame(): CropFrame | null {
+    const bm = this.currentBitmap;
+    if (!bm) return null;
+    const aspect = this.cropAspect;
+    if (!aspect || !Number.isFinite(aspect) || aspect <= 0) {
+      return { x: 0, y: 0, width: 1, height: 1 };
+    }
+    const imgAspect = bm.width / bm.height;
+    let w: number;
+    let h: number;
+    if (imgAspect >= aspect) {
+      // Image is wider than crop — pillarbox.
+      h = 1;
+      w = aspect / imgAspect;
+    } else {
+      // Image is taller than crop — letterbox.
+      w = 1;
+      h = imgAspect / aspect;
+    }
+    return {
+      x: (1 - w) / 2,
+      y: (1 - h) / 2,
+      width: w,
+      height: h,
+    };
+  }
+
+  /**
+   * Map a CSS-pixel pointer coordinate to the normalised image
+   * position currently under the cursor, or `null` if the pointer is
+   * outside the displayed image.
+   */
+  private cursorToImageNorm(e: PointerEvent): { ix: number; iy: number } | null {
+    const bm = this.currentBitmap;
+    if (!bm || !this.canvas) return null;
+    const { dispW, dispH } = this.effectiveRect(bm);
+    const dpr = window.devicePixelRatio || 1;
+    const rect = this.canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * dpr;
+    const py = (e.clientY - rect.top) * dpr;
+    const drawW = dispW * this.scale;
+    const drawH = dispH * this.scale;
+    const cx = this.canvas.width / 2 + this.offsetX;
+    const cy = this.canvas.height / 2 + this.offsetY;
+    const x0 = cx - drawW / 2;
+    const y0 = cy - drawH / 2;
+    const ix = (px - x0) / drawW;
+    const iy = (py - y0) / drawH;
+    return { ix, iy };
+  }
+
+  private startCropDrag(e: PointerEvent) {
+    if (!this.cropFrame) return;
+    const norm = this.cursorToImageNorm(e);
+    if (!norm) return;
+    const f = this.cropFrame;
+    // Pick the closest handle (within tolerance) or the body.
+    const handles: Array<{
+      kind:
+        | "n"
+        | "s"
+        | "e"
+        | "w"
+        | "ne"
+        | "nw"
+        | "se"
+        | "sw";
+      x: number;
+      y: number;
+    }> = [
+      { kind: "nw", x: f.x, y: f.y },
+      { kind: "n", x: f.x + f.width / 2, y: f.y },
+      { kind: "ne", x: f.x + f.width, y: f.y },
+      { kind: "e", x: f.x + f.width, y: f.y + f.height / 2 },
+      { kind: "se", x: f.x + f.width, y: f.y + f.height },
+      { kind: "s", x: f.x + f.width / 2, y: f.y + f.height },
+      { kind: "sw", x: f.x, y: f.y + f.height },
+      { kind: "w", x: f.x, y: f.y + f.height / 2 },
+    ];
+    // Tolerance: ~12 CSS px translated to normalised coords.
+    const dpr = window.devicePixelRatio || 1;
+    const tolPx = 14 * dpr;
+    const bm = this.currentBitmap!;
+    const { dispW, dispH } = this.effectiveRect(bm);
+    const tolNormX = tolPx / (dispW * this.scale);
+    const tolNormY = tolPx / (dispH * this.scale);
+    let chosen: typeof handles[number] | null = null;
+    let bestDist = Infinity;
+    for (const h of handles) {
+      const dx = (norm.ix - h.x) / tolNormX;
+      const dy = (norm.iy - h.y) / tolNormY;
+      const d = dx * dx + dy * dy;
+      if (d <= 1 && d < bestDist) {
+        bestDist = d;
+        chosen = h;
+      }
+    }
+    let kind: "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+    if (chosen) {
+      kind = chosen.kind;
+    } else if (
+      norm.ix >= f.x &&
+      norm.ix <= f.x + f.width &&
+      norm.iy >= f.y &&
+      norm.iy <= f.y + f.height
+    ) {
+      kind = "move";
+    } else {
+      return;
+    }
+    this.cropDrag = {
+      kind,
+      startX: norm.ix,
+      startY: norm.iy,
+      startFrame: { ...f },
+    };
+    this.canvas!.setPointerCapture(e.pointerId);
+    this.canvas!.addEventListener("pointermove", this.onCropPointerMove);
+    this.canvas!.addEventListener("pointerup", this.onCropPointerUp);
+    this.canvas!.addEventListener("pointercancel", this.onCropPointerUp);
+  }
+
+  private onCropPointerMove = (e: PointerEvent) => {
+    if (!this.cropDrag || !this.cropFrame) return;
+    const norm = this.cursorToImageNorm(e);
+    if (!norm) return;
+    const dx = norm.ix - this.cropDrag.startX;
+    const dy = norm.iy - this.cropDrag.startY;
+    const start = this.cropDrag.startFrame;
+    const aspect = this.cropAspect;
+    let nf: CropFrame = { ...start };
+    if (this.cropDrag.kind === "move") {
+      nf.x = clamp(start.x + dx, 0, 1 - start.width);
+      nf.y = clamp(start.y + dy, 0, 1 - start.height);
+    } else {
+      // Resize. Compute new edges, keep the opposite corner anchored.
+      let left = start.x;
+      let top = start.y;
+      let right = start.x + start.width;
+      let bottom = start.y + start.height;
+      const k = this.cropDrag.kind;
+      if (k.includes("w")) left = clamp(start.x + dx, 0, right - 0.02);
+      if (k.includes("e"))
+        right = clamp(start.x + start.width + dx, left + 0.02, 1);
+      if (k.includes("n")) top = clamp(start.y + dy, 0, bottom - 0.02);
+      if (k.includes("s"))
+        bottom = clamp(start.y + start.height + dy, top + 0.02, 1);
+      nf = { x: left, y: top, width: right - left, height: bottom - top };
+      // Lock aspect: re-derive whichever dimension is "free" given the
+      // dragged edge(s).
+      if (aspect && Number.isFinite(aspect) && aspect > 0) {
+        nf = enforceAspect(
+          nf,
+          start,
+          aspect,
+          this.cropDrag.kind,
+          this.currentBitmap!
+        );
+      }
+    }
+    this.cropFrame = nf;
+    this.draw();
+  };
+
+  private onCropPointerUp = (e: PointerEvent) => {
+    this.cropDrag = null;
+    try {
+      this.canvas?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* no-op */
+    }
+    this.canvas?.removeEventListener("pointermove", this.onCropPointerMove);
+    this.canvas?.removeEventListener("pointerup", this.onCropPointerUp);
+    this.canvas?.removeEventListener("pointercancel", this.onCropPointerUp);
+  };
+
   render() {
     const showLoading = this.status === "loading" && !this.currentBitmap;
     return html`
@@ -546,8 +974,7 @@ export class PfImageCanvas extends LitElement {
   }
 }
 
-function decodeBase64Jpeg(b64: string): Promise<ImageBitmap> {
-  const bin = atob(b64);
+function decodeBase64Jpeg(b64: string): Promise<ImageBitmap> {  const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return createOrientedBitmap(new Blob([arr], { type: "image/jpeg" }));
@@ -620,6 +1047,112 @@ function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
 // `pf-full-view`). Registering at module load means any code path that
 // imports the cache after this module is wired up.
 setFullImageDecoder(decodeInWorker);
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/**
+ * Enforce an aspect ratio on a freshly-resized crop frame by adjusting
+ * the dimension that wasn't directly dragged (or shrinking the one that
+ * was, if doing so would push the frame outside the image).
+ *
+ * `kind` indicates which handle was dragged — corner drags resize both
+ * dimensions, edge drags resize one and we recompute the other. The
+ * anchor (the corner opposite the dragged handle/edge) stays put.
+ */
+function enforceAspect(
+  proposed: CropFrame,
+  start: CropFrame,
+  aspect: number,
+  kind: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw",
+  bm: { width: number; height: number }
+): CropFrame {
+  // Anchor point (opposite the moved handle).
+  const startRight = start.x + start.width;
+  const startBottom = start.y + start.height;
+  let anchorX = start.x + start.width / 2;
+  let anchorY = start.y + start.height / 2;
+  if (kind.includes("w")) anchorX = startRight;
+  else if (kind.includes("e")) anchorX = start.x;
+  if (kind.includes("n")) anchorY = startBottom;
+  else if (kind.includes("s")) anchorY = start.y;
+
+  // Image aspect (in normalised coords) is bm.width:bm.height ratio,
+  // but our normalised coords are 0..1 in each dimension, so a
+  // crop-frame width `w` and height `h` in normalised coords represents
+  // a true-pixel ratio of (w * bm.width) / (h * bm.height) — we want
+  // that = `aspect`, i.e. h / w = (bm.width / bm.height) / aspect.
+  const ratio = bm.width / bm.height / aspect; // h/w in normalised space
+
+  let w = proposed.width;
+  let h = proposed.height;
+  if (kind === "n" || kind === "s") {
+    // Vertical edge drag: adjust width from new height.
+    h = proposed.height;
+    w = h / ratio;
+  } else if (kind === "e" || kind === "w") {
+    h = proposed.width * ratio;
+    w = proposed.width;
+  } else {
+    // Corner: pick the dimension that produces the smaller frame
+    // (more conservative — keeps within image bounds).
+    const wFromH = proposed.height / ratio;
+    const hFromW = proposed.width * ratio;
+    if (wFromH * proposed.height <= proposed.width * hFromW) {
+      w = wFromH;
+      h = proposed.height;
+    } else {
+      w = proposed.width;
+      h = hFromW;
+    }
+  }
+
+  // Re-anchor the frame so the anchor corner/edge stays put.
+  let x: number;
+  let y: number;
+  if (kind.includes("w")) x = anchorX - w;
+  else if (kind.includes("e")) x = anchorX;
+  else x = anchorX - w / 2;
+  if (kind.includes("n")) y = anchorY - h;
+  else if (kind.includes("s")) y = anchorY;
+  else y = anchorY - h / 2;
+
+  // If the frame escapes the image, shrink to fit while preserving
+  // aspect.
+  if (x < 0) {
+    const shrink = -x;
+    w -= shrink;
+    h = w * ratio;
+    x = 0;
+    if (kind.includes("n")) y = anchorY - h;
+    else if (kind.includes("s")) y = anchorY;
+    else y = anchorY - h / 2;
+  }
+  if (y < 0) {
+    const shrink = -y;
+    h -= shrink;
+    w = h / ratio;
+    y = 0;
+    if (kind.includes("w")) x = anchorX - w;
+    else if (kind.includes("e")) x = anchorX;
+    else x = anchorX - w / 2;
+  }
+  if (x + w > 1) {
+    w = 1 - x;
+    h = w * ratio;
+  }
+  if (y + h > 1) {
+    h = 1 - y;
+    w = h / ratio;
+  }
+  return {
+    x: clamp(x, 0, 1),
+    y: clamp(y, 0, 1),
+    width: clamp(w, 0.02, 1),
+    height: clamp(h, 0.02, 1),
+  };
+}
 
 declare global {
   interface HTMLElementTagNameMap {

@@ -78,6 +78,78 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         }
 
+        if current < 4 {
+            // Per-photo non-destructive edits, stored as opaque JSON
+            // (currently a `CropEdit` payload). Keyed by the photo's
+            // primary file path, so a JPEG with both a `base` and
+            // `(1)` variant share an edit row only if the user
+            // explicitly addresses each — but for now the UI only
+            // edits the path being viewed.
+            conn.execute_batch(
+                "CREATE TABLE photo_edits (
+                    path  TEXT PRIMARY KEY,
+                    edits TEXT NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (4);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    /// Return every persisted (path → edits-json) row.
+    pub fn all_photo_edits(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT path, edits FROM photo_edits")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_photo_edit(&self, path: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT edits FROM photo_edits WHERE path = ?1",
+                params![path],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })?;
+        Ok(value)
+    }
+
+    pub fn set_photo_edit(&self, path: &str, edits_json: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO photo_edits (path, edits) VALUES (?1, ?2)
+             ON CONFLICT(path) DO UPDATE SET edits = excluded.edits",
+            params![path, edits_json],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_photo_edit(&self, path: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM photo_edits WHERE path = ?1",
+            params![path],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 

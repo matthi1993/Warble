@@ -1,5 +1,12 @@
 //! Tauri commands for image rendering: thumbnails and full-resolution
 //! bytes for the canvas viewer.
+//!
+//! Non-destructive edits (crop, etc.) are intentionally NOT applied
+//! here. The frontend canvas applies them at render time on the
+//! decoded `ImageBitmap`, which is format-agnostic and free — no
+//! decode/re-encode round trip per save. The backend's only job is
+//! to hand the canvas the original decoded bytes (or, for RAW, the
+//! developed preview bytes).
 
 use tauri::ipc::Response;
 

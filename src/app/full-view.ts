@@ -28,6 +28,17 @@ import {
   subscribeVariantOverrides,
 } from "./variant-store";
 import { prefetchFullImages } from "./full-image-cache";
+import {
+  ASPECT_RATIO_LABELS,
+  ASPECT_RATIO_VALUES,
+  getPhotoEdit,
+  hasEdits,
+  setPhotoCrop,
+  subscribePhotoEdits,
+  type AspectRatioKey,
+  type CropEdit,
+  type Orientation,
+} from "./edit-store";
 import "../ui/controls/pf-icon-button";
 import "../ui/icons/pf-icon";
 import "../ui/photos/pf-image-canvas";
@@ -92,12 +103,17 @@ export class PfFullView extends LitElement {
     .bottombar {
       display: flex;
       align-items: center;
+      gap: var(--pf-space-2);
       padding: var(--pf-space-2) var(--pf-space-3);
       background: #111;
       color: #fff;
       border-top: 1px solid rgba(255, 255, 255, 0.08);
       min-height: 32px;
       box-sizing: border-box;
+    }
+    .bottombar .menu-popup {
+      top: auto;
+      bottom: calc(100% + 6px);
     }
     .filename {
       font-size: var(--pf-text-sm);
@@ -205,6 +221,11 @@ export class PfFullView extends LitElement {
     }
     .menu-item[aria-pressed="true"] {
       background: rgba(255, 255, 255, 0.16);
+    }
+    .edit-mark {
+      color: var(--pf-accent);
+      font-weight: 700;
+      line-height: 1;
     }
     .swatch {
       width: 1.4rem;
@@ -363,6 +384,155 @@ export class PfFullView extends LitElement {
     :host([fullscreen][idle]) {
       cursor: none;
     }
+    .edit-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      transition: background var(--pf-transition);
+    }
+    .edit-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .edit-btn[aria-pressed="true"] {
+      background: var(--pf-accent, #4a90e2);
+      border-color: transparent;
+    }
+    .edit-btn pf-icon {
+      font-size: 1rem;
+    }
+    /* Sub-toolbar that appears directly below the main toolbar while
+       editing. In windowed mode it sits in the document flow between
+       the main toolbar and the stage; in fullscreen the main toolbar
+       floats over the stage so we float this one too, anchored just
+       below. */
+    .edit-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-2) var(--pf-space-3);
+      background: #181818;
+      color: #fff;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      flex-wrap: wrap;
+    }
+    .edit-toolbar .spacer {
+      flex: 1 1 auto;
+    }
+    :host([fullscreen]) .edit-toolbar {
+      position: absolute;
+      top: 49px; /* match toolbar height */
+      left: 0;
+      right: 0;
+      z-index: 3;
+      background: rgba(24, 24, 24, 0.92);
+      backdrop-filter: blur(6px);
+    }
+    :host([fullscreen][idle]) .edit-toolbar {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .edit-toolbar .edit-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: var(--pf-radius-md);
+    }
+    .edit-toolbar .edit-group button {
+      background: transparent;
+      color: #fff;
+      border: none;
+      padding: 4px 10px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      border-radius: var(--pf-radius-sm);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .edit-toolbar .edit-group button:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .edit-toolbar .edit-group button[aria-pressed="true"] {
+      background: rgba(255, 255, 255, 0.22);
+    }
+    .edit-toolbar .edit-action {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: var(--pf-radius-md);
+      padding: 4px 12px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .edit-toolbar .edit-action:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+    .edit-toolbar .edit-action.primary {
+      background: var(--pf-accent, #4a90e2);
+      border-color: transparent;
+    }
+    .edit-toolbar .edit-action.danger {
+      color: #ff8080;
+      border-color: rgba(255, 128, 128, 0.4);
+    }
+    .edit-toolbar .sep {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .edit-toolbar .tool-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      transition: background var(--pf-transition);
+    }
+    .edit-toolbar .tool-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .edit-toolbar .tool-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .edit-toolbar .tool-btn:disabled:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .edit-toolbar .tool-btn[aria-pressed="true"] {
+      background: var(--pf-accent, #4a90e2);
+      border-color: transparent;
+    }
+    .edit-toolbar .tool-btn.primary {
+      background: var(--pf-accent, #4a90e2);
+      border-color: transparent;
+    }
+    .edit-toolbar .tool-btn.primary:hover {
+      background: var(--pf-accent-hover, #4a90e2);
+    }
+    .edit-toolbar .tool-btn pf-icon {
+      font-size: 1rem;
+    }
+    .edit-toolbar,
+    .edit-btn {
+      transition: opacity 200ms ease;
+    }
   `;
 
   @property({ attribute: false })
@@ -399,6 +569,31 @@ export class PfFullView extends LitElement {
   @property({ type: Boolean, reflect: true })
   idle = false;
 
+  // --- Edit (crop) state -----------------------------------------------
+  @state()
+  private editMode = false;
+
+  /**
+   * Currently-active edit tool. `null` means the toolbar shows the
+   * tool palette; non-null means the tool's parameters are shown and
+   * the canvas is in that tool's interactive mode.
+   */
+  @state()
+  private activeEditTool: "crop" | null = null;
+
+  @state()
+  private editAspect: AspectRatioKey = "3:2";
+
+  @state()
+  private editOrientation: Orientation = "landscape";
+
+  /** Bumped when the edit store changes so the "Edit" button reflects
+   * whether the current photo has a saved crop. */
+  @state()
+  private editsTick = 0;
+
+  private unsubscribeEdits: (() => void) | null = null;
+
   private idleTimer: number | null = null;
 
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
@@ -432,6 +627,9 @@ export class PfFullView extends LitElement {
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
+    this.unsubscribeEdits = subscribePhotoEdits(() => {
+      this.editsTick++;
+    });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
     void this.hydrateViewState();
@@ -444,6 +642,8 @@ export class PfFullView extends LitElement {
     window.removeEventListener("click", this.onDocClick, { capture: true } as unknown as EventListenerOptions);
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
+    this.unsubscribeEdits?.();
+    this.unsubscribeEdits = null;
     if (this.idleTimer !== null) {
       window.clearTimeout(this.idleTimer);
       this.idleTimer = null;
@@ -486,6 +686,11 @@ export class PfFullView extends LitElement {
     }
     if (changed.has("photos") || changed.has("index")) {
       this.schedulePrefetch();
+      // Navigation cancels any active edit session.
+      if (this.editMode) {
+        this.editMode = false;
+        this.activeEditTool = null;
+      }
     }
   }
 
@@ -573,6 +778,43 @@ export class PfFullView extends LitElement {
     // `f`, `Escape`, and `g` are owned by the app shell so it can
     // coordinate window fullscreen + view stack across grid and full
     // views. We deliberately do not handle them here.
+    if (this.editMode) {
+      // Esc / Enter are handled by the editor; stop them so app-shell
+      // doesn't also act on them (e.g. closing the full view).
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (this.activeEditTool) {
+          this.activeEditTool = null;
+        } else {
+          this.editMode = false;
+        }
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (this.activeEditTool === "crop") {
+          void this.saveEdit();
+        }
+        return;
+      }
+      // Block navigation/zoom shortcuts so they don't fight the editor.
+      if (
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowRight" ||
+        e.key === "p" ||
+        e.key === "P" ||
+        e.key === "b" ||
+        e.key === "B" ||
+        e.key === "0" ||
+        e.key === "1" ||
+        e.key === "2"
+      ) {
+        e.preventDefault();
+      }
+      return;
+    }
     if (e.key === "ArrowLeft") {
       e.preventDefault();
       this.go(-1);
@@ -701,6 +943,16 @@ export class PfFullView extends LitElement {
     return fileForSelection(photo, sel.format, sel.variant) ?? photo.path;
   }
 
+  private variantHasEdits(
+    photo: Photo,
+    format: PhotoFormat,
+    variant: string
+  ): boolean {
+    void this.editsTick;
+    const path = fileForSelection(photo, format, variant);
+    return path != null && hasEdits(path);
+  }
+
   private setFormat = (format: PhotoFormat) => {
     const photo = this.currentPhoto;
     if (!photo) return;
@@ -727,6 +979,210 @@ export class PfFullView extends LitElement {
 
   private bgLabel(bg: BgColor): string {
     return bg.charAt(0).toUpperCase() + bg.slice(1);
+  }
+
+  // --- Edit helpers ----------------------------------------------------
+
+  /** Effective aspect ratio (W/H) given the current preset + orientation. */
+  private effectiveAspect(): number {
+    const a = ASPECT_RATIO_VALUES[this.editAspect];
+    return this.editOrientation === "portrait" ? 1 / a : a;
+  }
+
+  /** Whether the active selection is a JPEG (only format we edit). */
+  private isJpegSelection(): boolean {
+    const photo = this.currentPhoto;
+    if (!photo) return false;
+    const sel = this.currentSelection(photo);
+    return sel?.format === "jpg";
+  }
+
+  /** The path the canvas is actually displaying — i.e. the resolved
+   * variant file. This is what the cache, the Rust full-image
+   * command, and therefore the edit store must all agree on. */
+  private editTargetPath(): string | null {
+    const photo = this.currentPhoto;
+    if (!photo) return null;
+    return this.resolvedPath(photo);
+  }
+
+  /** Currently saved crop on the active photo, if any. */
+  private currentSavedCrop(): CropEdit | null {
+    void this.editsTick;
+    const target = this.editTargetPath();
+    if (!target) return null;
+    return getPhotoEdit(target)?.crop ?? null;
+  }
+
+  private toggleEditMode = () => {
+    if (this.editMode) {
+      this.editMode = false;
+      this.activeEditTool = null;
+      return;
+    }
+    if (!this.isJpegSelection()) return;
+    this.editMode = true;
+    this.activeEditTool = null;
+    this.openMenu = null;
+  };
+
+  private openTool = (tool: "crop") => {
+    if (tool === "crop") {
+      const saved = this.currentSavedCrop();
+      if (saved) {
+        this.editAspect = saved.aspectRatio;
+        this.editOrientation = saved.orientation;
+      }
+    }
+    this.activeEditTool = tool;
+  };
+
+  private setEditAspect = (a: AspectRatioKey) => {
+    this.editAspect = a;
+  };
+
+  private setEditOrientation = (o: Orientation) => {
+    this.editOrientation = o;
+  };
+
+  private saveEdit = async () => {
+    const target = this.editTargetPath();
+    if (!target) return;
+    const cv = this.renderRoot.querySelector(
+      "pf-image-canvas"
+    ) as PfImageCanvas | null;
+    const frame = cv?.getCropFrame();
+    if (!frame) {
+      this.activeEditTool = null;
+      return;
+    }
+    const crop: CropEdit = {
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      aspectRatio: this.editAspect,
+      orientation: this.editOrientation,
+    };
+    // Await persistence + cache invalidation BEFORE leaving crop mode
+    // so the canvas's subsequent reload reads the freshly-written edit.
+    await setPhotoCrop(target, crop);
+    this.activeEditTool = null;
+  };
+
+  private cancelEdit = () => {
+    this.activeEditTool = null;
+  };
+
+  private resetAllEdits = async () => {
+    const target = this.editTargetPath();
+    if (!target) return;
+    if (!hasEdits(target)) return;
+    await setPhotoCrop(target, null);
+    this.activeEditTool = null;
+  };
+
+  private renderEditToolbar() {
+    void this.editsTick;
+    const target = this.editTargetPath();
+    const anyEdits = target ? hasEdits(target) : false;
+    return html`
+      <div
+        class="edit-toolbar"
+        role="toolbar"
+        aria-label="Edit tools"
+        @click=${(e: Event) => e.stopPropagation()}
+      >
+        ${this.activeEditTool === null
+          ? this.renderToolPalette()
+          : this.activeEditTool === "crop"
+          ? this.renderCropParams()
+          : null}
+        <span class="spacer" aria-hidden="true"></span>
+        <button
+          type="button"
+          class="tool-btn"
+          title="Reset all edits"
+          aria-label="Reset all edits"
+          ?disabled=${!anyEdits}
+          @click=${this.resetAllEdits}
+        >
+          <pf-icon name="rotate-ccw"></pf-icon>
+        </button>
+      </div>
+    `;
+  }
+
+  private renderToolPalette() {
+    return html`
+      <button
+        type="button"
+        class="tool-btn"
+        title="Crop"
+        aria-label="Crop"
+        @click=${() => this.openTool("crop")}
+      >
+        <pf-icon name="crop"></pf-icon>
+      </button>
+    `;
+  }
+
+  private renderCropParams() {
+    const aspects: AspectRatioKey[] = [
+      "3:2",
+      "1:1",
+      "4:3",
+      "panavision",
+      "super-panavision",
+    ];
+    return html`
+      <div class="edit-group" role="group" aria-label="Aspect ratio">
+        ${aspects.map(
+          (a) => html`<button
+            type="button"
+            aria-pressed=${this.editAspect === a}
+            @click=${() => this.setEditAspect(a)}
+          >
+            ${ASPECT_RATIO_LABELS[a]}
+          </button>`
+        )}
+      </div>
+      <div class="edit-group" role="group" aria-label="Orientation">
+        <button
+          type="button"
+          aria-pressed=${this.editOrientation === "landscape"}
+          @click=${() => this.setEditOrientation("landscape")}
+        >
+          Landscape
+        </button>
+        <button
+          type="button"
+          aria-pressed=${this.editOrientation === "portrait"}
+          @click=${() => this.setEditOrientation("portrait")}
+        >
+          Portrait
+        </button>
+      </div>
+      <span class="sep" aria-hidden="true"></span>
+      <button
+        type="button"
+        class="tool-btn"
+        title="Cancel (Esc)"
+        aria-label="Cancel"
+        @click=${this.cancelEdit}
+      >
+        <pf-icon name="x"></pf-icon>
+      </button>
+      <button
+        type="button"
+        class="tool-btn primary"
+        title="Apply (Enter)"
+        aria-label="Apply"
+        @click=${this.saveEdit}
+      >
+        <pf-icon name="check"></pf-icon>
+      </button>
+    `;
   }
 
   private fitLabel(m: ImageFit): string {
@@ -782,6 +1238,9 @@ export class PfFullView extends LitElement {
                 >
                   ${variants.find((v) => v.key === sel.variant)?.label ??
                   sel.variant}
+                  ${this.variantHasEdits(photo, sel.format, sel.variant)
+                    ? html`<span class="edit-mark" aria-label="Edited">*</span>`
+                    : null}
                   <pf-icon name="chevron-down"></pf-icon>
                 </button>
                 ${this.openMenu === "variant"
@@ -794,131 +1253,29 @@ export class PfFullView extends LitElement {
                           @click=${() => this.setVariant(v.key)}
                         >
                           ${v.label}
+                          ${this.variantHasEdits(photo, sel.format, v.key)
+                            ? html`<span class="edit-mark" aria-label="Edited">*</span>`
+                            : null}
                         </button>`
                       )}
                     </div>`
                   : null}
               </span>`
             : null}
+          ${this.isJpegSelection()
+            ? html`<button
+                class="edit-btn"
+                type="button"
+                aria-pressed=${this.editMode}
+                aria-label=${this.editMode ? "Close edit" : "Edit photo"}
+                title=${this.editMode ? "Close edit" : "Edit photo"}
+                @click=${this.toggleEditMode}
+              >
+                <pf-icon name="pencil"></pf-icon>
+              </button>`
+            : null}
         </div>
         <div class="toolbar-right">
-          <span class="menu-wrap">
-            <button
-              class="menu-trigger"
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded=${this.openMenu === "bg"}
-              @click=${() => this.toggleMenu("bg")}
-            >
-              <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
-              BG Color: ${this.bgLabel(this.bg)}
-              <pf-icon name="chevron-down"></pf-icon>
-            </button>
-            ${this.openMenu === "bg"
-              ? html`<div class="menu-popup" role="menu">
-                  ${(["black", "grey", "white"] as BgColor[]).map(
-                    (b) => html`<button
-                      class="menu-item"
-                      role="menuitemradio"
-                      aria-pressed=${this.bg === b}
-                      @click=${() => this.setBg(b)}
-                    >
-                      <span
-                        class="swatch"
-                        style="background:${this.bgCss(b)}"
-                      ></span>
-                      ${this.bgLabel(b)}
-                    </button>`
-                  )}
-                </div>`
-              : null}
-          </span>
-          <span class="menu-wrap">
-            <button
-              class="menu-trigger"
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded=${this.openMenu === "fit"}
-              @click=${() => this.toggleMenu("fit")}
-            >
-              Margin: ${this.fitLabel(this.fit)}
-              <pf-icon name="chevron-down"></pf-icon>
-            </button>
-            ${this.openMenu === "fit"
-              ? html`<div class="menu-popup" role="menu">
-                  <button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.fit === "contain"}
-                    @click=${() => this.setFit("contain")}
-                    title="No margin — image flush to the panel edges (0)"
-                  >
-                    None
-                  </button>
-                  <button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.fit === "tight"}
-                    @click=${() => this.setFit("tight")}
-                    title="Tight margin (1)"
-                  >
-                    Tight
-                  </button>
-                  <button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.fit === "proof"}
-                    @click=${() => this.setFit("proof")}
-                    title="Generous proof margin (2)"
-                  >
-                    Proof
-                  </button>
-                </div>`
-              : null}
-          </span>
-          <span class="menu-wrap">
-            <button
-              class="menu-trigger"
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded=${this.openMenu === "sizing"}
-              @click=${() => this.toggleMenu("sizing")}
-            >
-              Scale: ${this.sizingLabel(this.sizing)}
-              <pf-icon name="chevron-down"></pf-icon>
-            </button>
-            ${this.openMenu === "sizing"
-              ? html`<div class="menu-popup" role="menu">
-                  <button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.sizing === "fit"}
-                    @click=${() => this.setSizing("fit")}
-                    title="Image fully visible inside the margin"
-                  >
-                    Contain
-                  </button>
-                  <button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.sizing === "fill"}
-                    @click=${() => this.setSizing("fill")}
-                    title="Image fills the stage (may crop)"
-                  >
-                    Cover
-                  </button>
-                  <button
-                    class="menu-item"
-                    role="menuitemradio"
-                    aria-pressed=${this.sizing === "hybrid"}
-                    @click=${() => this.setSizing("hybrid")}
-                    title="Cover for wide landscape (≥3:2), contain otherwise"
-                  >
-                    Hybrid
-                  </button>
-                </div>`
-              : null}
-          </span>
           <pf-icon-button
             icon=${this.fullscreen ? "minimize" : "maximize"}
             label=${this.fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
@@ -938,11 +1295,16 @@ export class PfFullView extends LitElement {
           </button>
         </div>
       </div>
+      ${this.editMode ? this.renderEditToolbar() : null}
       <div class="stage">
         <pf-image-canvas
           .path=${path}
           .fit=${this.fit}
-          .sizing=${this.sizing}
+          .sizing=${this.editMode ? "fit" : this.sizing}
+          .cropMode=${this.editMode && this.activeEditTool === "crop"}
+          .cropAspect=${this.editMode && this.activeEditTool === "crop"
+            ? this.effectiveAspect()
+            : null}
           background=${this.bgCss(this.bg)}
         ></pf-image-canvas>
         <button
@@ -966,7 +1328,125 @@ export class PfFullView extends LitElement {
           P proof · B background · F fullscreen · G grid · Esc to close
         </div>
       </div>
-      <div class="bottombar" aria-hidden="true"></div>
+      <div class="bottombar">
+        <span class="menu-wrap">
+          <button
+            class="menu-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded=${this.openMenu === "bg"}
+            @click=${() => this.toggleMenu("bg")}
+          >
+            <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
+            BG Color: ${this.bgLabel(this.bg)}
+            <pf-icon name="chevron-down"></pf-icon>
+          </button>
+          ${this.openMenu === "bg"
+            ? html`<div class="menu-popup" role="menu">
+                ${(["black", "grey", "white"] as BgColor[]).map(
+                  (b) => html`<button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.bg === b}
+                    @click=${() => this.setBg(b)}
+                  >
+                    <span
+                      class="swatch"
+                      style="background:${this.bgCss(b)}"
+                    ></span>
+                    ${this.bgLabel(b)}
+                  </button>`
+                )}
+              </div>`
+            : null}
+        </span>
+        <span class="menu-wrap">
+          <button
+            class="menu-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded=${this.openMenu === "fit"}
+            @click=${() => this.toggleMenu("fit")}
+          >
+            Margin: ${this.fitLabel(this.fit)}
+            <pf-icon name="chevron-down"></pf-icon>
+          </button>
+          ${this.openMenu === "fit"
+            ? html`<div class="menu-popup" role="menu">
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.fit === "contain"}
+                  @click=${() => this.setFit("contain")}
+                  title="No margin — image flush to the panel edges (0)"
+                >
+                  None
+                </button>
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.fit === "tight"}
+                  @click=${() => this.setFit("tight")}
+                  title="Tight margin (1)"
+                >
+                  Tight
+                </button>
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.fit === "proof"}
+                  @click=${() => this.setFit("proof")}
+                  title="Generous proof margin (2)"
+                >
+                  Proof
+                </button>
+              </div>`
+            : null}
+        </span>
+        <span class="menu-wrap">
+          <button
+            class="menu-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded=${this.openMenu === "sizing"}
+            @click=${() => this.toggleMenu("sizing")}
+          >
+            Scale: ${this.sizingLabel(this.sizing)}
+            <pf-icon name="chevron-down"></pf-icon>
+          </button>
+          ${this.openMenu === "sizing"
+            ? html`<div class="menu-popup" role="menu">
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.sizing === "fit"}
+                  @click=${() => this.setSizing("fit")}
+                  title="Image fully visible inside the margin"
+                >
+                  Contain
+                </button>
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.sizing === "fill"}
+                  @click=${() => this.setSizing("fill")}
+                  title="Image fills the stage (may crop)"
+                >
+                  Cover
+                </button>
+                <button
+                  class="menu-item"
+                  role="menuitemradio"
+                  aria-pressed=${this.sizing === "hybrid"}
+                  @click=${() => this.setSizing("hybrid")}
+                  title="Cover for wide landscape (≥3:2), contain otherwise"
+                >
+                  Hybrid
+                </button>
+              </div>`
+            : null}
+        </span>
+      </div>
     `;
   }
 }
