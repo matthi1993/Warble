@@ -27,7 +27,7 @@ import {
 } from "../../app/full-image-cache";
 
 export type ImageFit = "contain" | "proof" | "tight";
-export type ImageSizing = "fit" | "fill";
+export type ImageSizing = "fit" | "fill" | "hybrid";
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {
@@ -326,15 +326,31 @@ export class PfImageCanvas extends LitElement {
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.max(1, this.canvas.width);
     const ch = Math.max(1, this.canvas.height);
-    // Sizing mode picks the floor scale: `fit` (default) is the
-    // largest scale that fits inside the canvas (capped at 1:1
-    // image-px ↔ device-px); `fill` is the smallest scale that
-    // fully covers the canvas — the long axis gets cropped, no dpr
-    // cap so we always cover even on hi-DPR displays.
-    this.fitScale =
-      this.sizing === "fill"
-        ? Math.max(cw / bm.width, ch / bm.height)
-        : Math.min(cw / bm.width, ch / bm.height, dpr);
+    // Sizing mode picks the floor scale:
+    //   - `fit`    → contain: largest scale that fits inside the
+    //     canvas (capped at 1:1 image‑px ↔ device‑px).
+    //   - `fill`   → cover: smallest scale that fully covers the
+    //     canvas (long axis cropped). No dpr cap.
+    //   - `hybrid` → cover when the canvas/image aspect mismatch
+    //     is small enough that the resulting crop is mild
+    //     (currently: stretching a 3:2 image into a 16:10 frame,
+    //     i.e. ≤ ~6.7 %). Above that, fall back to contain so we
+    //     never lop off meaningful slivers of portrait or
+    //     near‑square images. Only landscape images participate;
+    //     portraits always contain.
+    const aspect = bm.width / bm.height;
+    let useFill = this.sizing === "fill";
+    if (this.sizing === "hybrid" && aspect >= 1) {
+      const canvasAspect = cw / ch;
+      const stretch =
+        canvasAspect >= aspect ? canvasAspect / aspect : aspect / canvasAspect;
+      // 16:10 ÷ 3:2 = 16/15 ≈ 1.0667 (the configured threshold).
+      const HYBRID_MAX_STRETCH = 4 / 3;
+      useFill = stretch <= HYBRID_MAX_STRETCH;
+    }
+    this.fitScale = useFill
+      ? Math.max(cw / bm.width, ch / bm.height)
+      : Math.min(cw / bm.width, ch / bm.height, dpr);
     if (this.forceFitOnNextRecompute) {
       this.scale = this.fitScale;
       this.offsetX = 0;

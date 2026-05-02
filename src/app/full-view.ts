@@ -402,7 +402,16 @@ export class PfFullView extends LitElement {
   private idleTimer: number | null = null;
 
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
-  private onMouseMoveGlobal = () => this.bumpIdle();
+  private onMouseMoveGlobal = (e: MouseEvent) => {
+    // While controls are visible, any mouse movement resets the idle timer.
+    // Once hidden (idle), only movement within the upper area of the viewport
+    // brings them back, so casual movement over the image doesn't reveal them.
+    if (this.idle) {
+      const threshold = Math.max(120, window.innerHeight * 0.2);
+      if (e.clientY > threshold) return;
+    }
+    this.bumpIdle();
+  };
   private onDocClick = (e: MouseEvent) => {
     if (!this.openMenu) return;
     const path = e.composedPath();
@@ -530,7 +539,11 @@ export class PfFullView extends LitElement {
         ) {
           this.fit = persisted.fit;
         }
-        if (persisted.sizing === "fit" || persisted.sizing === "fill") {
+        if (
+          persisted.sizing === "fit" ||
+          persisted.sizing === "fill" ||
+          persisted.sizing === "hybrid"
+        ) {
           this.sizing = persisted.sizing;
         }
       }
@@ -716,6 +729,14 @@ export class PfFullView extends LitElement {
     return bg.charAt(0).toUpperCase() + bg.slice(1);
   }
 
+  private fitLabel(m: ImageFit): string {
+    return m === "contain" ? "None" : m === "tight" ? "Tight" : "Proof";
+  }
+
+  private sizingLabel(s: ImageSizing): string {
+    return s === "fit" ? "Contain" : s === "fill" ? "Cover" : "Hybrid";
+  }
+
   render() {
     const photo = this.currentPhoto;
     if (!photo) return html``;
@@ -790,7 +811,7 @@ export class PfFullView extends LitElement {
               @click=${() => this.toggleMenu("bg")}
             >
               <span class="swatch" style="background:${this.bgCss(this.bg)}"></span>
-              BG Color
+              BG Color: ${this.bgLabel(this.bg)}
               <pf-icon name="chevron-down"></pf-icon>
             </button>
             ${this.openMenu === "bg"
@@ -820,7 +841,7 @@ export class PfFullView extends LitElement {
               aria-expanded=${this.openMenu === "fit"}
               @click=${() => this.toggleMenu("fit")}
             >
-              Margin
+              Margin: ${this.fitLabel(this.fit)}
               <pf-icon name="chevron-down"></pf-icon>
             </button>
             ${this.openMenu === "fit"
@@ -863,7 +884,7 @@ export class PfFullView extends LitElement {
               aria-expanded=${this.openMenu === "sizing"}
               @click=${() => this.toggleMenu("sizing")}
             >
-              Scale
+              Scale: ${this.sizingLabel(this.sizing)}
               <pf-icon name="chevron-down"></pf-icon>
             </button>
             ${this.openMenu === "sizing"
@@ -885,6 +906,15 @@ export class PfFullView extends LitElement {
                     title="Image fills the stage (may crop)"
                   >
                     Cover
+                  </button>
+                  <button
+                    class="menu-item"
+                    role="menuitemradio"
+                    aria-pressed=${this.sizing === "hybrid"}
+                    @click=${() => this.setSizing("hybrid")}
+                    title="Cover for wide landscape (≥3:2), contain otherwise"
+                  >
+                    Hybrid
                   </button>
                 </div>`
               : null}
