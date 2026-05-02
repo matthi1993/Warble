@@ -229,8 +229,11 @@ export class PfImageCanvas extends LitElement {
         photoPath: path,
       });
       if (ac.signal.aborted || this.path !== path) return;
-      const blob = new Blob([buf]);
-      const bm = await createOrientedBitmap(blob);
+      // Decode off the main thread. `createImageBitmap` does meaningful
+      // synchronous JPEG work on macOS WebKit when invoked here, which
+      // freezes input handling for 24 MP previews. The worker also gets
+      // ownership of `buf` via transfer, avoiding a copy.
+      const bm = await decodeInWorker(buf);
       if (ac.signal.aborted || this.path !== path) {
         bm.close?.();
         return;
@@ -336,7 +339,12 @@ export class PfImageCanvas extends LitElement {
         ctx.clip();
       }
       ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
+      // "high" triggers a CPU-bound resampler on macOS WebKit that can
+      // stall the main thread for hundreds of ms when downscaling a
+      // 24 MP bitmap into the viewport. "medium" stays on the GPU
+      // bilinear path and is visually indistinguishable for photo
+      // content at fit/proof scales.
+      ctx.imageSmoothingQuality = "medium";
       ctx.drawImage(bm, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
     }
     ctx.restore();
@@ -513,6 +521,55 @@ async function createOrientedBitmap(blob: Blob): Promise<ImageBitmap> {
   } catch {
     return await createImageBitmap(blob);
   }
+}
+
+// --- full-image decode worker -----------------------------------------------
+//
+// A single shared worker handles every full-image decode request. Decoding
+// off the main thread is what prevents the UI from locking up while a 24 MP
+// JPEG is being parsed.
+
+interface WorkerResponse {
+  id: number;
+  ok: boolean;
+  bitmap?: ImageBitmap;
+  error?: string;
+}
+
+let decoderWorker: Worker | null = null;
+let nextDecodeId = 1;
+const pendingDecodes = new Map<
+  number,
+  { resolve: (b: ImageBitmap) => void; reject: (e: unknown) => void }
+>();
+
+function getDecoderWorker(): Worker {
+  if (decoderWorker) return decoderWorker;
+  decoderWorker = new Worker(
+    new URL("../../app/full-image-worker.ts", import.meta.url),
+    { type: "module" }
+  );
+  decoderWorker.addEventListener("message", (e: MessageEvent<WorkerResponse>) => {
+    const data = e.data;
+    const entry = pendingDecodes.get(data.id);
+    if (!entry) return;
+    pendingDecodes.delete(data.id);
+    if (data.ok && data.bitmap) entry.resolve(data.bitmap);
+    else entry.reject(new Error(data.error ?? "image decode failed"));
+  });
+  decoderWorker.addEventListener("error", (e) => {
+    console.error("full-image-worker error", e.message);
+  });
+  return decoderWorker;
+}
+
+function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
+  const id = nextDecodeId++;
+  return new Promise<ImageBitmap>((resolve, reject) => {
+    pendingDecodes.set(id, { resolve, reject });
+    // Transfer the buffer so we don't pay a copy on the way in.
+    getDecoderWorker().postMessage({ id, buffer }, [buffer]);
+  });
 }
 
 /** CSS-pixel margin used by each named fit mode. Smaller values pull the
