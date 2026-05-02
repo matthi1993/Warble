@@ -85,6 +85,10 @@ export class PfImageCanvas extends LitElement {
   private offsetY = 0;
   private fitScale = 1;
   private userInteracted = false;
+  /** Force the next `recomputeFit` (typically when a new bitmap arrives
+   * after navigation) to snap scale/offsets back to fit, ignoring any
+   * stray interaction state from the previous photo. */
+  private forceFitOnNextRecompute = false;
 
   private resizeObserver?: ResizeObserver;
   private loadAbort: AbortController | null = null;
@@ -117,6 +121,7 @@ export class PfImageCanvas extends LitElement {
   willUpdate(changed: Map<string, unknown>) {
     if (changed.has("path")) {
       this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
@@ -256,20 +261,23 @@ export class PfImageCanvas extends LitElement {
     // Don't upscale past 1:1 image-pixel ↔ device-pixel by default; user can
     // wheel-zoom past that explicitly.
     this.fitScale = Math.min(cw / bm.width, ch / bm.height, dpr);
-    if (!this.userInteracted) this.scale = this.fitScale;
+    if (this.forceFitOnNextRecompute) {
+      this.scale = this.fitScale;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.userInteracted = false;
+      this.forceFitOnNextRecompute = false;
+    } else if (!this.userInteracted) {
+      this.scale = this.fitScale;
+    }
   }
 
-  /** Scale that the `proof` fit mode would produce, regardless of current
-   * fit. Used as the floor for wheel-zoom-out so users can never see less
-   * than the proof view. */
-  private proofFitScale(): number {
-    const bm = this.currentBitmap;
-    if (!bm || !this.canvas) return this.fitScale;
-    const dpr = window.devicePixelRatio || 1;
-    const margin = marginForFit("proof") * dpr;
-    const cw = Math.max(1, this.canvas.width - margin * 2);
-    const ch = Math.max(1, this.canvas.height - margin * 2);
-    return Math.min(cw / bm.width, ch / bm.height, dpr);
+  /** Floor scale for wheel-zoom-out: never smaller than the current fit
+   * mode would produce. In `contain` mode this prevents zooming out past
+   * the full image view; in `proof`/`tight` it preserves the configured
+   * margin around the image. */
+  private minScale(): number {
+    return this.fitScale;
   }
 
   private draw() {
@@ -288,6 +296,20 @@ export class PfImageCanvas extends LitElement {
       const drawH = bm.height * this.scale;
       const cx = cv.width / 2 + this.offsetX;
       const cy = cv.height / 2 + this.offsetY;
+      // Clip to the active fit viewport so the proof/tight margin stays
+      // visible as a border even when the image is zoomed past it.
+      const dpr = window.devicePixelRatio || 1;
+      const margin = this.fitMargin() * dpr;
+      if (margin > 0) {
+        ctx.beginPath();
+        ctx.rect(
+          margin,
+          margin,
+          Math.max(0, cv.width - margin * 2),
+          Math.max(0, cv.height - margin * 2)
+        );
+        ctx.clip();
+      }
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
       ctx.drawImage(bm, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
@@ -310,9 +332,10 @@ export class PfImageCanvas extends LitElement {
     const px = (e.clientX - rect.left) * dpr;
     const py = (e.clientY - rect.top) * dpr;
     const factor = Math.exp(-e.deltaY * 0.0015);
-    // Floor zoom-out at the proof fit (the most-zoomed-out of the named
-    // fits). Going further out makes no sense — nothing else would change.
-    const minScale = this.proofFitScale();
+    // Floor zoom-out at the current fit. Zooming out past it would just
+    // shrink the image inside its (proof) margin or canvas — nothing
+    // useful changes.
+    const minScale = this.minScale();
     const maxScale = Math.max(20 * dpr, this.fitScale * 20);
     const newScale = Math.min(maxScale, Math.max(minScale, this.scale * factor));
     this.zoomAround(px, py, newScale);
@@ -331,6 +354,40 @@ export class PfImageCanvas extends LitElement {
     this.offsetX = newCx - this.canvas.width / 2;
     this.offsetY = newCy - this.canvas.height / 2;
     this.scale = newScale;
+    this.clampOffsets();
+  }
+
+  /**
+   * Constrain pan so the displayed image always covers the current fit
+   * viewport (canvas minus the active fit's margin). When the image is
+   * smaller than that viewport on an axis (e.g. fully zoomed out), the
+   * offset on that axis is locked to 0 so the image stays centred and
+   * can't be dragged off to one side. When zoomed in, the fit margin
+   * stays as an overlay border the image can't cross.
+   */
+  private clampOffsets() {
+    const bm = this.currentBitmap;
+    if (!bm || !this.canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const margin = this.fitMargin() * dpr;
+    const viewW = Math.max(1, this.canvas.width - margin * 2);
+    const viewH = Math.max(1, this.canvas.height - margin * 2);
+    const drawW = bm.width * this.scale;
+    const drawH = bm.height * this.scale;
+    if (drawW <= viewW) {
+      this.offsetX = 0;
+    } else {
+      const limit = (drawW - viewW) / 2;
+      if (this.offsetX > limit) this.offsetX = limit;
+      else if (this.offsetX < -limit) this.offsetX = -limit;
+    }
+    if (drawH <= viewH) {
+      this.offsetY = 0;
+    } else {
+      const limit = (drawH - viewH) / 2;
+      if (this.offsetY > limit) this.offsetY = limit;
+      else if (this.offsetY < -limit) this.offsetY = -limit;
+    }
   }
 
   private onPointerDown = (e: PointerEvent) => {
@@ -352,6 +409,7 @@ export class PfImageCanvas extends LitElement {
     const dpr = window.devicePixelRatio || 1;
     this.offsetX = this.dragOffX + (e.clientX - this.dragStartX) * dpr;
     this.offsetY = this.dragOffY + (e.clientY - this.dragStartY) * dpr;
+    this.clampOffsets();
     this.userInteracted = true;
     this.draw();
   };
