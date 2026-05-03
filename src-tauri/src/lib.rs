@@ -69,6 +69,8 @@ pub fn run() {
             commands::get_photo_edits,
             commands::set_photo_edit,
             commands::clear_photo_edit,
+            commands::get_photo_ratings,
+            commands::set_photo_rating,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -118,11 +120,39 @@ fn init_menu(app: &tauri::App) {
 }
 
 fn init_library_repository(app: &tauri::App) {
-    let mut db_path = app
+    // The library DB used to live under the OS-specific app data
+    // directory, but users couldn't find it for backup or migration.
+    // We now keep it next to the user's photos as a single
+    // `~/Pictures/library.warble` file. If an old DB exists in the
+    // previous location, copy it across once so we don't lose the
+    // user's history.
+    let db_path = app
         .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
-    db_path.push("warble.db");
+        .picture_dir()
+        .ok()
+        .map(|mut p| {
+            p.push("library.warble");
+            p
+        })
+        .unwrap_or_else(|| PathBuf::from("./library.warble"));
+    if let Some(parent) = db_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("failed to create library dir at {parent:?}: {e}");
+        }
+    }
+
+    if !db_path.exists() {
+        if let Ok(mut legacy) = app.path().app_data_dir() {
+            legacy.push("warble.db");
+            if legacy.exists() {
+                if let Err(e) = std::fs::copy(&legacy, &db_path) {
+                    eprintln!(
+                        "failed to migrate legacy DB {legacy:?} -> {db_path:?}: {e}"
+                    );
+                }
+            }
+        }
+    }
 
     let state = app.state::<AppState>();
     match LibraryRepository::open(&db_path) {

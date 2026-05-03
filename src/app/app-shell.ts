@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides } from "./variant-store";
+import { applyRatingShortcut, loadPhotoRatings, RATING_LABEL_KEYS } from "./rating-store";
 import {
   clearThumbnailBatch,
   dropAllThumbnailState,
@@ -111,7 +112,7 @@ export class WarbleApp extends LitElement {
 
     main.content {
       grid-area: main;
-      padding: var(--pf-space-4);
+      margin: var(--pf-space-4);
       overflow-y: auto;
     }
     h1 {
@@ -320,6 +321,7 @@ export class WarbleApp extends LitElement {
     // Hydrate per-photo variant preferences before any thumbnail or
     // detail panel asks for an effective selection.
     void loadVariantOverrides();
+    void loadPhotoRatings();
 
     // Auto-open the folder the user had selected last session.
     try {
@@ -495,6 +497,19 @@ export class WarbleApp extends LitElement {
 
     // While the full view is open, let it handle its own remaining keys.
     if (this.fullViewIndex !== null) return;
+
+    // Star ratings (1–5) and color labels (6–9, 0). Apply to the
+    // currently-selected grid photo, falling back to the first card
+    // if nothing is selected yet.
+    if (RATING_LABEL_KEYS.has(e.key)) {
+      const target =
+        this.selectedPhoto ?? (this.photos.length > 0 ? this.photos[0] : null);
+      if (target) {
+        e.preventDefault();
+        applyRatingShortcut(target.path, e.key);
+      }
+      return;
+    }
 
     if (
       e.key === "ArrowLeft" ||
@@ -734,18 +749,16 @@ export class WarbleApp extends LitElement {
         @photo-open=${this.onPhotoOpen}
         @photo-context-menu=${this.onPhotoContextMenu}
       >
-        <h1>
-          ${this.selectedFolderName
-            ? `Photos in ${this.selectedFolderName}`
-            : "Warble"}
-        </h1>
         ${this.selectedFolderId === null
-          ? html`<p>Select a folder from the sidebar to view its photos.</p>`
+          ? html`<h1>Warble</h1>
+              <p>Select a folder from the sidebar to view its photos.</p>`
           : this.photos.length === 0
-          ? html`<p>No photos in this folder.</p>`
+          ? html`<h1>${this.selectedFolderName ?? ""}</h1>
+              <p>No photos in this folder.</p>`
           : html`<pf-photo-grid
               .photos=${this.photos}
               .selectedPath=${this.selectedPhoto?.path ?? null}
+              .folderName=${this.selectedFolderName ?? ""}
               ?full-view-open=${this.fullViewIndex !== null}
             ></pf-photo-grid>`}
       </main>

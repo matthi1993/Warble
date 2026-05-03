@@ -7,6 +7,7 @@ import {
 } from "../../app/thumbnail-service";
 import { isHdCached, onHdCached } from "../../app/hd-image-cache";
 import "../icons/pf-icon";
+import "./pf-rating-overlay";
 
 @customElement("pf-thumbnail-card")
 export class PfThumbnailCard extends LitElement {
@@ -316,6 +317,7 @@ export class PfThumbnailCard extends LitElement {
                 >✓</span
               >`
             : null}
+          <pf-rating-overlay .path=${this.path}></pf-rating-overlay>
         </div>
         <div class="filename" title=${this.filename}>${this.filename}</div>
       </div>

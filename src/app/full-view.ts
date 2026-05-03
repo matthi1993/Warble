@@ -29,6 +29,10 @@ import {
 } from "./variant-store";
 import { prefetchHdImages } from "./hd-image-cache";
 import {
+  applyRatingShortcut,
+  RATING_LABEL_KEYS,
+} from "./rating-store";
+import {
   ASPECT_RATIO_LABELS,
   ASPECT_RATIO_VALUES,
   defaultTone,
@@ -49,6 +53,7 @@ import "../ui/controls/pf-icon-button";
 import "../ui/controls/pf-slider";
 import "../ui/icons/pf-icon";
 import "../ui/photos/pf-image-canvas";
+import "../ui/photos/pf-rating-overlay";
 import type {
   ImageFit,
   ImageSizing,
@@ -340,6 +345,14 @@ export class PfFullView extends LitElement {
     pf-image-canvas {
       position: absolute;
       inset: 0;
+    }
+    .fv-rating-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+    }
+    :host([fullscreen]) .fv-rating-overlay {
+      display: none;
     }
     /* In fullscreen, the toolbar and bottombar overlay the stage so that
        fit/proof calculations operate on the full viewport, not the
@@ -1146,13 +1159,15 @@ export class PfFullView extends LitElement {
   private toneForPath: string | null = null;
 
   /** Whether the "Basic" disclosure card is open. Persisted only in
-   * memory — opens by default each session. */
+   * memory; closed by default each session so the side panel starts
+   * tidy and the user opts in to each tool explicitly. */
   @state()
-  private basicCardOpen = true;
+  private basicCardOpen = false;
 
-  /** Whether the "Info" (EXIF) disclosure card is open. Defaults open. */
+  /** Whether the "Info" (EXIF) disclosure card is open. Closed by
+   * default to match every other tool card. */
   @state()
-  private infoCardOpen = true;
+  private infoCardOpen = false;
 
   /** Cached EXIF metadata for the active photo. `null` while loading
    * or if the read failed; an empty record means no fields available. */
@@ -1528,15 +1543,12 @@ export class PfFullView extends LitElement {
     } else if (e.key === "b" || e.key === "B") {
       e.preventDefault();
       this.cycleBg();
-    } else if (e.key === "0") {
-      e.preventDefault();
-      this.fit = "contain";
-    } else if (e.key === "1") {
-      e.preventDefault();
-      this.fit = "tight";
-    } else if (e.key === "2") {
-      e.preventDefault();
-      this.fit = "proof";
+    } else if (RATING_LABEL_KEYS.has(e.key)) {
+      const photo = this.currentPhoto;
+      if (photo) {
+        e.preventDefault();
+        applyRatingShortcut(photo.path, e.key);
+      }
     }
   }
 
@@ -2573,6 +2585,13 @@ export class PfFullView extends LitElement {
             @orientation-flip=${this.onCanvasOrientationFlip}
             @horizon-line=${this.onCanvasHorizonLine}
           ></pf-image-canvas>
+          ${path
+            ? html`<pf-rating-overlay
+                class="fv-rating-overlay"
+                .path=${path}
+                style="--pf-rating-inset: 16px; --pf-rating-star-size: 14px; --pf-rating-label-size: 8px;"
+              ></pf-rating-overlay>`
+            : null}
           <button
             class="nav prev"
             aria-label="Previous"
@@ -2671,7 +2690,7 @@ export class PfFullView extends LitElement {
                   role="menuitemradio"
                   aria-pressed=${this.fit === "contain"}
                   @click=${() => this.setFit("contain")}
-                  title="No margin — image flush to the panel edges (0)"
+                  title="No margin — image flush to the panel edges"
                 >
                   None
                 </button>
@@ -2680,7 +2699,7 @@ export class PfFullView extends LitElement {
                   role="menuitemradio"
                   aria-pressed=${this.fit === "tight"}
                   @click=${() => this.setFit("tight")}
-                  title="Tight margin (1)"
+                  title="Tight margin"
                 >
                   Tight
                 </button>
@@ -2689,7 +2708,7 @@ export class PfFullView extends LitElement {
                   role="menuitemradio"
                   aria-pressed=${this.fit === "proof"}
                   @click=${() => this.setFit("proof")}
-                  title="Generous proof margin (2)"
+                  title="Generous proof margin"
                 >
                   Proof
                 </button>

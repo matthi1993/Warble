@@ -114,6 +114,89 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         }
 
+        if current < 6 {
+            // Per-photo star rating (0..=5) and color label
+            // (`green`/`blue`/`yellow`/`orange`/`red` or empty).
+            // Keyed by primary file path. A `rating = 0` and empty
+            // `label` row is equivalent to "no rating row" — the
+            // command layer deletes such rows.
+            conn.execute_batch(
+                "CREATE TABLE photo_ratings (
+                    path   TEXT PRIMARY KEY,
+                    rating INTEGER NOT NULL DEFAULT 0,
+                    label  TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO schema_version (version) VALUES (6);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        if current < 7 {
+            // Track when the user last rated/labelled a photo.
+            // Stored as Unix epoch seconds; 0 for legacy rows that
+            // pre-date this column.
+            conn.execute_batch(
+                "ALTER TABLE photo_ratings
+                    ADD COLUMN rated_at INTEGER NOT NULL DEFAULT 0;
+                INSERT INTO schema_version (version) VALUES (7);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    /// Return every persisted (path, rating, label, rated_at) row.
+    pub fn all_photo_ratings(&self) -> Result<Vec<(String, i64, String, i64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT path, rating, label, rated_at FROM photo_ratings")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn set_photo_rating_row(
+        &self,
+        path: &str,
+        rating: i64,
+        label: &str,
+        rated_at: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO photo_ratings (path, rating, label, rated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET
+                 rating   = excluded.rating,
+                 label    = excluded.label,
+                 rated_at = excluded.rated_at",
+            params![path, rating, label, rated_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_photo_rating(&self, path: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM photo_ratings WHERE path = ?1",
+            params![path],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 

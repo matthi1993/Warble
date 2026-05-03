@@ -1,0 +1,208 @@
+/**
+ * Per-photo star rating (0..=5) and color label store. Mirrors
+ * `variant-store` but persists into the `photo_ratings` SQLite
+ * table. The original file on disk is never modified.
+ */
+import { invoke } from "@tauri-apps/api/core";
+
+export type ColorLabel =
+  | "green"
+  | "blue"
+  | "yellow"
+  | "red"
+  | "";
+
+export const COLOR_LABELS: readonly Exclude<ColorLabel, "">[] = [
+  "green",
+  "blue",
+  "yellow",
+  "red",
+] as const;
+
+/** Hex color for each label. Picked to read well over both light
+ *  thumbnails and the dark full-view background. */
+export const LABEL_COLORS: Record<Exclude<ColorLabel, "">, string> = {
+  green: "#22c55e",
+  blue: "#3b82f6",
+  yellow: "#eab308",
+  red: "#ef4444",
+};
+
+export const LABEL_DISPLAY_NAMES: Record<Exclude<ColorLabel, "">, string> = {
+  green: "Select",
+  blue: "Select 2",
+  yellow: "Raw archive",
+  red: "Archive",
+};
+
+export interface PhotoRating {
+  rating: number;
+  label: ColorLabel;
+  /** Unix epoch seconds at which the rating was last changed. `0`
+   * for legacy rows that pre-date the timestamp column. */
+  ratedAt: number;
+}
+
+interface PersistedRow {
+  path: string;
+  rating: number;
+  label: string;
+  ratedAt: number;
+}
+
+const ratings = new Map<string, PhotoRating>();
+const listeners = new Set<(path: string) => void>();
+let loaded = false;
+let loadPromise: Promise<void> | null = null;
+
+function sanitizeLabel(s: string): ColorLabel {
+  return s === "green" ||
+    s === "blue" ||
+    s === "yellow" ||
+    s === "red"
+    ? s
+    : "";
+}
+
+function clampRating(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(5, Math.round(n)));
+}
+
+export function loadPhotoRatings(): Promise<void> {
+  if (loaded) return Promise.resolve();
+  if (loadPromise) return loadPromise;
+  loadPromise = invoke<PersistedRow[]>("get_photo_ratings")
+    .then((rows) => {
+      for (const r of rows) {
+        const rating = clampRating(r.rating);
+        const label = sanitizeLabel(r.label);
+        if (rating === 0 && label === "") continue;
+        ratings.set(r.path, {
+          rating,
+          label,
+          ratedAt: typeof r.ratedAt === "number" ? r.ratedAt : 0,
+        });
+      }
+      loaded = true;
+      notify("");
+    })
+    .catch((err) => {
+      console.error("Failed to load photo ratings", err);
+      loaded = true;
+    });
+  return loadPromise;
+}
+
+export function getPhotoRating(path: string): PhotoRating {
+  return ratings.get(path) ?? { rating: 0, label: "", ratedAt: 0 };
+}
+
+function persist(path: string, value: PhotoRating): void {
+  void invoke<number>("set_photo_rating", {
+    path,
+    rating: value.rating,
+    label: value.label,
+  })
+    .then((ratedAt) => {
+      // Backend returns the canonical timestamp it just persisted
+      // (or 0 if the row was deleted). Update the in-memory row so
+      // subscribers see the same value the DB has.
+      const cur = ratings.get(path);
+      if (!cur) return;
+      if (cur.ratedAt === ratedAt) return;
+      ratings.set(path, { ...cur, ratedAt });
+      notify(path);
+    })
+    .catch((err) => console.error("Failed to persist photo rating", err));
+}
+
+export function setPhotoStars(path: string, rating: number): void {
+  const next: PhotoRating = {
+    rating: clampRating(rating),
+    label: ratings.get(path)?.label ?? "",
+    ratedAt: Math.floor(Date.now() / 1000),
+  };
+  if (next.rating === 0 && next.label === "") {
+    ratings.delete(path);
+  } else {
+    ratings.set(path, next);
+  }
+  notify(path);
+  persist(path, next);
+}
+
+export function setPhotoLabel(path: string, label: ColorLabel): void {
+  const next: PhotoRating = {
+    rating: ratings.get(path)?.rating ?? 0,
+    label: sanitizeLabel(label),
+    ratedAt: Math.floor(Date.now() / 1000),
+  };
+  if (next.rating === 0 && next.label === "") {
+    ratings.delete(path);
+  } else {
+    ratings.set(path, next);
+  }
+  notify(path);
+  persist(path, next);
+}
+
+export function toggleLabel(path: string, label: ColorLabel): void {
+  const cur = ratings.get(path)?.label ?? "";
+  setPhotoLabel(path, cur === label ? "" : label);
+}
+
+/**
+ * Map keyboard shortcut keys (`0`..`5` for stars, `6`..`9` for color
+ * labels) to their actions. Used by both the grid (in `app-shell`)
+ * and full view (in `full-view`) so the bindings stay in lockstep.
+ */
+const KEY_TO_LABEL: Record<string, Exclude<ColorLabel, "">> = {
+  "6": "green",
+  "7": "blue",
+  "8": "yellow",
+  "9": "red",
+};
+
+export const RATING_LABEL_KEYS: ReadonlySet<string> = new Set([
+  "0",
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+]);
+
+/** Apply the rating-or-label keyboard shortcut for `path`. Star keys
+ * (`0`–`5`) set the rating to that exact value (idempotent: pressing
+ * the same key again leaves the rating unchanged). Label keys
+ * (`6`–`9`) toggle the corresponding color label off when it's
+ * already set, otherwise replace whatever label was there. */
+export function applyRatingShortcut(path: string, key: string): boolean {
+  if (key >= "0" && key <= "5") {
+    const stars = Number(key);
+    setPhotoStars(path, stars);
+    return true;
+  }
+  const label = KEY_TO_LABEL[key];
+  if (label) {
+    toggleLabel(path, label);
+    return true;
+  }
+  return false;
+}
+
+export function subscribePhotoRatings(
+  fn: (path: string) => void
+): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+function notify(path: string) {
+  for (const fn of listeners) fn(path);
+}
