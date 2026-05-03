@@ -81,6 +81,27 @@ export class PfImageCanvas extends LitElement {
     canvas.dragging {
       cursor: grabbing;
     }
+    :host([cropMode]) canvas {
+      cursor: default;
+    }
+    :host([cropMode][cursor="move"]) canvas {
+      cursor: move;
+    }
+    :host([cropMode][cursor="ns"]) canvas {
+      cursor: ns-resize;
+    }
+    :host([cropMode][cursor="ew"]) canvas {
+      cursor: ew-resize;
+    }
+    :host([cropMode][cursor="nwse"]) canvas {
+      cursor: nwse-resize;
+    }
+    :host([cropMode][cursor="nesw"]) canvas {
+      cursor: nesw-resize;
+    }
+    :host([cropMode][cursor="horizon"]) canvas {
+      cursor: crosshair;
+    }
     .status {
       position: absolute;
       inset: 0;
@@ -134,6 +155,30 @@ export class PfImageCanvas extends LitElement {
    */
   @property({ type: Number })
   cropAspect: number | null = null;
+
+  /**
+   * Rotation applied to the source bitmap before crop normalised
+   * coords are interpreted, in degrees. Combines a 90° snap with a
+   * fine straighten in (-45..+45). The rotated bitmap lives in an
+   * offscreen cache so the tone pipeline and 2D draw both naturally
+   * see the rotated pixels.
+   */
+  @property({ type: Number })
+  rotation = 0;
+
+  /**
+   * When `true`, the canvas enters "horizon pick" mode: the user
+   * draws a line across the image and the host receives a
+   * `horizon-line` event with the implied straighten angle. The
+   * crop card uses this to drive the rotation slider.
+   */
+  @property({ type: Boolean, reflect: true })
+  horizonMode = false;
+
+  /** Reflected so CSS can pick the right cursor for the current
+   * crop interaction (move / resize / horizon). */
+  @property({ type: String, reflect: true })
+  cursor: "" | "move" | "ns" | "ew" | "nwse" | "nesw" | "horizon" = "";
 
   /**
    * When `true`, persisted crop and tonal adjustments are bypassed at
@@ -249,10 +294,20 @@ export class PfImageCanvas extends LitElement {
           (prevCrop.x !== this.savedCrop.x ||
             prevCrop.y !== this.savedCrop.y ||
             prevCrop.width !== this.savedCrop.width ||
-            prevCrop.height !== this.savedCrop.height));
+            prevCrop.height !== this.savedCrop.height ||
+            prevCrop.rotation !== this.savedCrop.rotation));
       if (cropChanged) {
         this.userInteracted = false;
         this.forceFitOnNextRecompute = true;
+        // Saved rotation feeds `normalizedRotation()` when crop mode
+        // is off, so a rotation change must drop the rotated cache to
+        // force a re-bake at the new angle.
+        if (
+          (prevCrop?.rotation ?? 0) !== (this.savedCrop?.rotation ?? 0)
+        ) {
+          this.rotatedCache = null;
+          this.tonePipeline.invalidate();
+        }
         this.recomputeFit();
       }
       this.scheduleDraw();
@@ -329,9 +384,53 @@ export class PfImageCanvas extends LitElement {
                 height: this.savedCrop.height,
               }
             : null) ?? this.computeInitialCropFrame();
+        this.canvas?.addEventListener("pointermove", this.onCropHover);
       } else {
         this.cropFrame = null;
         this.cropDrag = null;
+        this.cursor = "";
+        this.canvas?.removeEventListener("pointermove", this.onCropHover);
+      }
+      // Effective rotation source changes when toggling cropMode (live
+      // `this.rotation` vs persisted `savedCrop.rotation`); drop the
+      // rotated cache and tone texture so the next render rebakes.
+      this.rotatedCache = null;
+      this.tonePipeline.invalidate();
+      requestAnimationFrame(() => this.onResize());
+    }
+    if (changed.has("horizonMode")) {
+      this.cursor = this.horizonMode ? "horizon" : "";
+    }
+    if (changed.has("rotation")) {
+      // Reset pan/zoom so the rotated image lands centred and fitting.
+      this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
+      this.scale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      // Rebuild rotation cache lazily; tone pipeline texture is
+      // identity-keyed so the next render() will re-upload.
+      this.tonePipeline.invalidate();
+      // Re-derive a centred frame around the current aspect so we
+      // don't end up with a frame partially outside the rotated
+      // bitmap's bounds.
+      if (this.cropMode) {
+        const fallback = this.computeInitialCropFrame();
+        if (this.cropFrame && fallback) {
+          // Keep the user's existing frame if it still fits the
+          // rotated content; otherwise clamp toward the centred
+          // inscribed default. Prevents a fresh nudge of the slider
+          // from snapping the frame back to the centre.
+          this.cropFrame = this.clampFrameToRotated(
+            this.cropFrame,
+            fallback,
+          );
+        } else {
+          this.cropFrame = fallback;
+        }
+        // The frame may have changed shape — let the host persist it
+        // so the saved crop tracks the rotation change.
+        this.dispatchCropChange();
       }
       requestAnimationFrame(() => this.onResize());
     }
@@ -443,7 +542,9 @@ export class PfImageCanvas extends LitElement {
 
     // Phase 1: thumbnail (cached → near-instant). Always kick this off
     // immediately so even rapid arrow-key navigation shows something.
-    const thumbHandle = requestThumbnail(path);
+    // Tagged `urgent` because this is the photo the user is looking at
+    // right now — it must jump ahead of any folder-wide batch.
+    const thumbHandle = requestThumbnail(path, "urgent");
     void thumbHandle.promise
       .then((b64) => decodeBase64Jpeg(b64))
       .then((bm) => {
@@ -482,7 +583,13 @@ export class PfImageCanvas extends LitElement {
       // Goes through the shared LRU cache: dedupes concurrent requests,
       // returns instantly if another canvas already decoded this photo,
       // and stores the result for future hits / neighbour preloads.
-      const bm = await loadFullImage(path);
+      // Passing the abort signal lets the cache cancel the backend
+      // byte fetch when the user navigates away before the decode
+      // starts running on the priority pool.
+      const bm = await loadFullImage(path, {
+        priority: "urgent",
+        signal: ac.signal,
+      });
       if (ac.signal.aborted || this.path !== path) return;
       // Cache owns the bitmap; just take a reference.
       this.bitmap = bm;
@@ -507,6 +614,105 @@ export class PfImageCanvas extends LitElement {
     return this.bitmap ?? this.thumbBitmap;
   }
 
+  /** Offscreen canvas holding `currentBitmap` rotated by `rotation`,
+   * cached so the tone pipeline + 2D draw both see the rotated pixels
+   * without re-rotating per frame. Keyed by `(bitmap, rotation)`. */
+  private rotatedCache: {
+    source: ImageBitmap;
+    rotation: number;
+    canvas: HTMLCanvasElement | OffscreenCanvas;
+    width: number;
+    height: number;
+  } | null = null;
+
+  /** The pixel source the rest of the pipeline operates on. When
+   * `rotation` is 0 this is the original bitmap; otherwise we lazily
+   * render a rotated offscreen canvas and hand that back. */
+  private effectiveSource(): {
+    source: ToneSource;
+    width: number;
+    height: number;
+  } | null {
+    const bm = this.currentBitmap;
+    if (!bm) return null;
+    const rot = this.normalizedRotation();
+    if (rot === 0) {
+      return { source: bm, width: bm.width, height: bm.height };
+    }
+    if (
+      this.rotatedCache &&
+      this.rotatedCache.source === bm &&
+      this.rotatedCache.rotation === rot
+    ) {
+      return {
+        source: this.rotatedCache.canvas,
+        width: this.rotatedCache.width,
+        height: this.rotatedCache.height,
+      };
+    }
+    const cache = this.buildRotatedCache(bm, rot);
+    if (!cache) return { source: bm, width: bm.width, height: bm.height };
+    this.rotatedCache = { source: bm, rotation: rot, ...cache };
+    return {
+      source: cache.canvas,
+      width: cache.width,
+      height: cache.height,
+    };
+  }
+
+  /** Normalise rotation into (-180, 180]. The effective rotation
+   * tracks the live `rotation` property while the crop tool is open
+   * and the persisted `savedCrop.rotation` otherwise — that way the
+   * canvas keeps showing the straightened/rotated image after the
+   * crop card is dismissed. */
+  private normalizedRotation(): number {
+    let r: number;
+    if (this.cropMode) {
+      r = this.rotation || 0;
+    } else {
+      r = this.savedCrop?.rotation ?? 0;
+    }
+    if (!Number.isFinite(r)) return 0;
+    r = ((r % 360) + 360) % 360;
+    if (r > 180) r -= 360;
+    return r;
+  }
+
+  /** Render the bitmap rotated into an offscreen canvas large enough
+   * to hold the rotated bounding box. Returns null on failure. */
+  private buildRotatedCache(
+    bm: ImageBitmap,
+    rotDeg: number,
+  ): {
+    canvas: HTMLCanvasElement | OffscreenCanvas;
+    width: number;
+    height: number;
+  } | null {
+    const rad = (rotDeg * Math.PI) / 180;
+    const c = Math.abs(Math.cos(rad));
+    const s = Math.abs(Math.sin(rad));
+    const w = Math.max(1, Math.round(bm.width * c + bm.height * s));
+    const h = Math.max(1, Math.round(bm.width * s + bm.height * c));
+    let cv: HTMLCanvasElement | OffscreenCanvas;
+    let ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+    if (typeof OffscreenCanvas !== "undefined") {
+      cv = new OffscreenCanvas(w, h);
+      ctx = cv.getContext("2d");
+    } else {
+      cv = document.createElement("canvas");
+      cv.width = w;
+      cv.height = h;
+      ctx = cv.getContext("2d");
+    }
+    if (!ctx) return null;
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(rad);
+    ctx.drawImage(bm, -bm.width / 2, -bm.height / 2);
+    ctx.restore();
+    return { canvas: cv, width: w, height: h };
+  }
+
   /**
    * The crop rectangle currently being applied at draw time, expressed
    * in normalised (0..1) image coordinates. In crop mode the canvas
@@ -522,10 +728,12 @@ export class PfImageCanvas extends LitElement {
   /**
    * Source-image-pixel rectangle of the bitmap currently being drawn.
    * `dispW`/`dispH` are the dimensions used for fit math; `sx`/`sy`/
-   * `sw`/`sh` go straight into `ctx.drawImage`.
+   * `sw`/`sh` go straight into `ctx.drawImage`. Operates on the
+   * rotated source so the persisted crop is interpreted in the
+   * post-rotation coordinate space.
    */
   private effectiveRect(
-    bm: ImageBitmap
+    bm: { width: number; height: number },
   ): { sx: number; sy: number; sw: number; sh: number; dispW: number; dispH: number } {
     const c = this.effectiveCrop();
     if (!c) {
@@ -554,27 +762,15 @@ export class PfImageCanvas extends LitElement {
   }
 
   private recomputeFit() {
-    const bm = this.currentBitmap;
-    if (!bm || !this.canvas) {
+    const src = this.effectiveSource();
+    if (!src || !this.canvas) {
       this.fitScale = 1;
       return;
     }
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.max(1, this.canvas.width);
     const ch = Math.max(1, this.canvas.height);
-    // Sizing mode picks the floor scale:
-    //   - `fit`    → contain: largest scale that fits inside the
-    //     canvas (capped at 1:1 image‑px ↔ device‑px).
-    //   - `fill`   → cover: smallest scale that fully covers the
-    //     canvas (long axis cropped). No dpr cap.
-    //   - `hybrid` → cover when the canvas/image aspect mismatch
-    //     is small enough that the resulting crop is mild
-    //     (currently: stretching a 3:2 image into a 16:10 frame,
-    //     i.e. ≤ ~6.7 %). Above that, fall back to contain so we
-    //     never lop off meaningful slivers of portrait or
-    //     near‑square images. Only landscape images participate;
-    //     portraits always contain.
-    const { dispW, dispH } = this.effectiveRect(bm);
+    const { dispW, dispH } = this.effectiveRect(src);
     const aspect = dispW / dispH;
     let useFill = this.sizing === "fill";
     if (this.sizing === "hybrid" && aspect >= 1) {
@@ -629,7 +825,8 @@ export class PfImageCanvas extends LitElement {
     }
     const bm = this.currentBitmap;
     if (bm) {
-      const { sx, sy, sw, sh, dispW, dispH } = this.effectiveRect(bm);
+      const src = this.effectiveSource()!;
+      const { sx, sy, sw, sh, dispW, dispH } = this.effectiveRect(src);
       const drawW = dispW * this.scale;
       const drawH = dispH * this.scale;
       const cx = cv.width / 2 + this.offsetX;
@@ -638,26 +835,12 @@ export class PfImageCanvas extends LitElement {
       const y = cy - drawH / 2;
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      // Apply tonal adjustments via WebGL: the bitmap is rendered into
-      // an offscreen canvas at *display* resolution (capped at the
-      // cropped source region size) with a fragment shader applying
-      // brightness, contrast, and saturation. Crop mode shows the
-      // unedited image so the user can re-frame.
-      //
-      // Rendering at display size, not bitmap size, is the key
-      // performance trick: a 40 MP bitmap would otherwise be re-shaded
-      // and copied each slider tick. By having the shader sample the
-      // cropped sub-rect into a viewport-sized output, the per-tick
-      // cost stays proportional to what's actually visible.
+      // Tone is applied in crop mode too so the user sees what their
+      // adjustments do while re-framing. `previewOriginal` (the
+      // before/after toggle) still bypasses tone + crop on purpose.
       const applyTone =
-        !this.cropMode && !this.previewOriginal && !isToneZero(this.savedTone);
+        !this.previewOriginal && !isToneZero(this.savedTone);
       if (applyTone) {
-        // Compute the *visible* portion of the displayed image so the
-        // GL pipeline only shades pixels that actually land on the
-        // canvas. Without this, zooming in to e.g. 4× on a 40 MP
-        // image asks the shader to render the full 40 MP cropped
-        // source even though only a few MP are on screen — the
-        // remainder is just thrown away by `drawImage`'s clip.
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
         const visX1 = Math.min(cv.width, x + drawW);
@@ -665,9 +848,6 @@ export class PfImageCanvas extends LitElement {
         const visW = Math.max(0, visX1 - visX0);
         const visH = Math.max(0, visY1 - visY0);
         if (visW > 0 && visH > 0) {
-          // Map the visible canvas rectangle back into the cropped
-          // source image's pixel space. This is the sub-rect we need
-          // the shader to sample.
           const u0 = (visX0 - x) / drawW;
           const v0 = (visY0 - y) / drawH;
           const u1 = (visX1 - x) / drawW;
@@ -676,10 +856,6 @@ export class PfImageCanvas extends LitElement {
           const subSy = sy + v0 * sh;
           const subSw = (u1 - u0) * sw;
           const subSh = (v1 - v0) * sh;
-          // Render at viewport resolution capped at source resolution
-          // — both axes — so we never shade more fragments than will
-          // land on screen, and never upscale in the shader (the 2D
-          // canvas does the cheap upscale on `drawImage`).
           const outW = Math.max(
             1,
             Math.min(Math.ceil(visW), Math.ceil(subSw))
@@ -689,38 +865,45 @@ export class PfImageCanvas extends LitElement {
             Math.min(Math.ceil(visH), Math.ceil(subSh))
           );
           const toned = this.tonePipeline.render(
-            bm,
+            src.source,
             this.savedTone!,
             { sx: subSx, sy: subSy, sw: subSw, sh: subSh },
             outW,
-            outH
+            outH,
           );
           if (toned) {
             ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
           } else {
-            ctx.drawImage(bm, sx, sy, sw, sh, x, y, drawW, drawH);
+            ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
           }
         }
       } else {
-        ctx.drawImage(bm, sx, sy, sw, sh, x, y, drawW, drawH);
+        ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
       }
       if (this.cropMode && this.cropFrame) {
         this.drawCropOverlay(ctx, x, y, drawW, drawH);
       }
+      if (this.horizonDrag) {
+        this.drawHorizonLine(ctx, x, y, drawW, drawH);
+      }
+      void bm;
     }
     ctx.restore();
   }
 
   /**
    * Render the crop overlay: a darkened mask over the rejected area
-   * plus a bright frame and 8 resize handles.
+   * plus a bright frame, rule-of-thirds guides, and slim handles.
+   * Handles are drawn as line segments along the inside of each
+   * edge (centred 1/3 of the edge length) plus L-bracket corners
+   * — a softer, more modern look than blocky squares.
    */
   private drawCropOverlay(
     ctx: CanvasRenderingContext2D,
     imgX: number,
     imgY: number,
     imgW: number,
-    imgH: number
+    imgH: number,
   ) {
     const f = this.cropFrame!;
     const fx = imgX + f.x * imgW;
@@ -736,14 +919,14 @@ export class PfImageCanvas extends LitElement {
     ctx.rect(fx, fy, fw, fh);
     ctx.fill("evenodd");
     ctx.restore();
-    // Frame border.
     const dpr = window.devicePixelRatio || 1;
+    // Frame border.
     ctx.save();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = 1 * dpr;
     ctx.strokeRect(fx, fy, fw, fh);
     // Rule-of-thirds guides.
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
     ctx.lineWidth = 1 * dpr;
     ctx.beginPath();
     for (let i = 1; i <= 2; i++) {
@@ -755,21 +938,90 @@ export class PfImageCanvas extends LitElement {
       ctx.lineTo(fx + fw, gy);
     }
     ctx.stroke();
-    // Corner + edge handles.
-    const hs = 8 * dpr;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-    const handles: [number, number][] = [
-      [fx, fy],
-      [fx + fw / 2, fy],
-      [fx + fw, fy],
-      [fx + fw, fy + fh / 2],
-      [fx + fw, fy + fh],
-      [fx + fw / 2, fy + fh],
-      [fx, fy + fh],
-      [fx, fy + fh / 2],
-    ];
-    for (const [hx, hy] of handles) {
-      ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+    // Edge bars (centred on each side, ~1/3 of the edge length).
+    const barLen = (axis: "h" | "v") =>
+      Math.max(20 * dpr, ((axis === "h" ? fw : fh) * 1) / 3);
+    const barW = 3 * dpr;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.lineWidth = barW;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    {
+      const lh = barLen("h");
+      // North
+      ctx.moveTo(fx + fw / 2 - lh / 2, fy);
+      ctx.lineTo(fx + fw / 2 + lh / 2, fy);
+      // South
+      ctx.moveTo(fx + fw / 2 - lh / 2, fy + fh);
+      ctx.lineTo(fx + fw / 2 + lh / 2, fy + fh);
+    }
+    {
+      const lv = barLen("v");
+      // West
+      ctx.moveTo(fx, fy + fh / 2 - lv / 2);
+      ctx.lineTo(fx, fy + fh / 2 + lv / 2);
+      // East
+      ctx.moveTo(fx + fw, fy + fh / 2 - lv / 2);
+      ctx.lineTo(fx + fw, fy + fh / 2 + lv / 2);
+    }
+    ctx.stroke();
+    // L-shaped corner brackets.
+    const cornerLen = Math.min(20 * dpr, fw / 4, fh / 4);
+    ctx.lineWidth = 3 * dpr;
+    ctx.beginPath();
+    // NW
+    ctx.moveTo(fx, fy + cornerLen);
+    ctx.lineTo(fx, fy);
+    ctx.lineTo(fx + cornerLen, fy);
+    // NE
+    ctx.moveTo(fx + fw - cornerLen, fy);
+    ctx.lineTo(fx + fw, fy);
+    ctx.lineTo(fx + fw, fy + cornerLen);
+    // SE
+    ctx.moveTo(fx + fw, fy + fh - cornerLen);
+    ctx.lineTo(fx + fw, fy + fh);
+    ctx.lineTo(fx + fw - cornerLen, fy + fh);
+    // SW
+    ctx.moveTo(fx + cornerLen, fy + fh);
+    ctx.lineTo(fx, fy + fh);
+    ctx.lineTo(fx, fy + fh - cornerLen);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Draw the in-progress horizon line during a horizon-pick drag. */
+  private drawHorizonLine(
+    ctx: CanvasRenderingContext2D,
+    imgX: number,
+    imgY: number,
+    imgW: number,
+    imgH: number,
+  ) {
+    const d = this.horizonDrag;
+    if (!d) return;
+    const dpr = window.devicePixelRatio || 1;
+    const ax = imgX + d.ax * imgW;
+    const ay = imgY + d.ay * imgH;
+    const bx = imgX + d.bx * imgW;
+    const by = imgY + d.by * imgH;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 230, 90, 0.95)";
+    ctx.lineWidth = 2 * dpr;
+    ctx.setLineDash([6 * dpr, 4 * dpr]);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Endpoint dots.
+    ctx.fillStyle = "rgba(255, 230, 90, 0.95)";
+    for (const [px, py] of [
+      [ax, ay],
+      [bx, by],
+    ] as const) {
+      ctx.beginPath();
+      ctx.arc(px, py, 3 * dpr, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.restore();
   }
@@ -827,9 +1079,9 @@ export class PfImageCanvas extends LitElement {
    * locked to 0 to keep it centred.
    */
   private clampOffsets() {
-    const bm = this.currentBitmap;
-    if (!bm || !this.canvas) return;
-    const { dispW, dispH } = this.effectiveRect(bm);
+    const src = this.effectiveSource();
+    if (!src || !this.canvas) return;
+    const { dispW, dispH } = this.effectiveRect(src);
     const viewW = Math.max(1, this.canvas.width);
     const viewH = Math.max(1, this.canvas.height);
     const drawW = dispW * this.scale;
@@ -951,30 +1203,127 @@ export class PfImageCanvas extends LitElement {
    * as large as possible inside the original image.
    */
   private computeInitialCropFrame(): CropFrame | null {
-    const bm = this.currentBitmap;
-    if (!bm) return null;
+    const src = this.effectiveSource();
+    if (!src) return null;
     const aspect = this.cropAspect;
-    if (!aspect || !Number.isFinite(aspect) || aspect <= 0) {
-      return { x: 0, y: 0, width: 1, height: 1 };
-    }
-    const imgAspect = bm.width / bm.height;
-    let w: number;
-    let h: number;
-    if (imgAspect >= aspect) {
-      // Image is wider than crop — pillarbox.
-      h = 1;
-      w = aspect / imgAspect;
+    const bm = this.currentBitmap;
+    const θ = (this.normalizedRotation() * Math.PI) / 180;
+    const rotated = Math.abs(θ) > 1e-6 && bm != null;
+    // Maximum centred axis-aligned rectangle (in canvas pixels) that
+    // fits inside the rotated original. With no rotation this is just
+    // the canvas itself; with rotation, we solve the two corner-fit
+    // inequalities for the largest (W,H) of the requested aspect.
+    let maxWpx: number;
+    let maxHpx: number;
+    if (!rotated) {
+      maxWpx = src.width;
+      maxHpx = src.height;
     } else {
-      // Image is taller than crop — letterbox.
-      w = 1;
-      h = imgAspect / aspect;
+      const acθ = Math.abs(Math.cos(θ));
+      const asθ = Math.abs(Math.sin(θ));
+      const W = bm!.width;
+      const H = bm!.height;
+      if (aspect && Number.isFinite(aspect) && aspect > 0) {
+        // Rect of width 2a, height 2b centred at origin must satisfy
+        //   a·|cos| + b·|sin| ≤ W/2
+        //   a·|sin| + b·|cos| ≤ H/2
+        // With a = aspect·b → b = min(W/(2(aspect·acθ + asθ)),
+        //                              H/(2(aspect·asθ + acθ))).
+        const bMax = Math.min(
+          W / (2 * (aspect * acθ + asθ)),
+          H / (2 * (aspect * asθ + acθ)),
+        );
+        maxHpx = 2 * bMax;
+        maxWpx = aspect * maxHpx;
+      } else {
+        // No aspect lock: the largest centred AABB inscribed in the
+        // rotated rectangle has half-extents
+        //   a* = (W·|cos| − H·|sin|) / (cos²−sin²) when |cos|≠|sin|
+        // (and the symmetric formula for b*). We just take min of the
+        // two binding constraints assuming square — good enough as a
+        // default; the user can drag handles outward up to the
+        // clamp-to-rotated boundary.
+        const denom = Math.max(1e-6, acθ * acθ - asθ * asθ);
+        const a = Math.max(0, (W * acθ - H * asθ) / (2 * denom));
+        const b = Math.max(0, (H * acθ - W * asθ) / (2 * denom));
+        maxWpx = 2 * Math.min(a, src.width / 2);
+        maxHpx = 2 * Math.min(b, src.height / 2);
+        // Fallback if math degenerates near 45°.
+        if (!(maxWpx > 0) || !(maxHpx > 0)) {
+          maxWpx = src.width * 0.7;
+          maxHpx = src.height * 0.7;
+        }
+      }
     }
+    const fw = Math.min(1, maxWpx / src.width);
+    const fh = Math.min(1, maxHpx / src.height);
     return {
-      x: (1 - w) / 2,
-      y: (1 - h) / 2,
-      width: w,
-      height: h,
+      x: (1 - fw) / 2,
+      y: (1 - fh) / 2,
+      width: fw,
+      height: fh,
     };
+  }
+
+  /** Test whether all four corners of `f` (in canvas-normalised
+   * coords) lie inside the rotated original rectangle. */
+  private isFrameInsideRotated(f: CropFrame): boolean {
+    const θ = (this.normalizedRotation() * Math.PI) / 180;
+    if (Math.abs(θ) < 1e-6) return true;
+    const src = this.effectiveSource();
+    const bm = this.currentBitmap;
+    if (!src || !bm) return true;
+    const cθ = Math.cos(θ);
+    const sθ = Math.sin(θ);
+    const Wp = src.width;
+    const Hp = src.height;
+    // Half-extents of the original (with a sub-pixel tolerance to
+    // forgive floating-point noise at the boundary).
+    const W2 = bm.width / 2 + 0.5;
+    const H2 = bm.height / 2 + 0.5;
+    const corners: Array<[number, number]> = [
+      [f.x, f.y],
+      [f.x + f.width, f.y],
+      [f.x + f.width, f.y + f.height],
+      [f.x, f.y + f.height],
+    ];
+    for (const [nx, ny] of corners) {
+      const x = nx * Wp - Wp / 2;
+      const y = ny * Hp - Hp / 2;
+      const u = x * cθ + y * sθ;
+      const v = -x * sθ + y * cθ;
+      if (Math.abs(u) > W2 || Math.abs(v) > H2) return false;
+    }
+    return true;
+  }
+
+  /** Clamp `proposed` so that all of its corners lie inside the
+   * rotated original. If the proposed frame is already valid it is
+   * returned unchanged; otherwise we binary-search a parameter `t` in
+   * [0, 1] that linearly interpolates from `fallback` (presumed
+   * valid) to `proposed`, picking the largest `t` that still fits.
+   * This works for both translation (move) and uniform scaling
+   * (resize) drags because both endpoints share the same aspect. */
+  private clampFrameToRotated(
+    proposed: CropFrame,
+    fallback: CropFrame,
+  ): CropFrame {
+    if (this.isFrameInsideRotated(proposed)) return proposed;
+    if (!this.isFrameInsideRotated(fallback)) return proposed;
+    const lerp = (t: number): CropFrame => ({
+      x: fallback.x + (proposed.x - fallback.x) * t,
+      y: fallback.y + (proposed.y - fallback.y) * t,
+      width: fallback.width + (proposed.width - fallback.width) * t,
+      height: fallback.height + (proposed.height - fallback.height) * t,
+    });
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2;
+      if (this.isFrameInsideRotated(lerp(mid))) lo = mid;
+      else hi = mid;
+    }
+    return lerp(lo);
   }
 
   /**
@@ -983,9 +1332,9 @@ export class PfImageCanvas extends LitElement {
    * outside the displayed image.
    */
   private cursorToImageNorm(e: PointerEvent): { ix: number; iy: number } | null {
-    const bm = this.currentBitmap;
-    if (!bm || !this.canvas) return null;
-    const { dispW, dispH } = this.effectiveRect(bm);
+    const src = this.effectiveSource();
+    if (!src || !this.canvas) return null;
+    const { dispW, dispH } = this.effectiveRect(src);
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
     const px = (e.clientX - rect.left) * dpr;
@@ -1001,70 +1350,111 @@ export class PfImageCanvas extends LitElement {
     return { ix, iy };
   }
 
+  /** Pick the crop interaction (move / resize edge / corner) for a
+   * pointer position over the image, or `null` if the pointer is
+   * outside the frame. The same hit-test drives both the cursor on
+   * hover and the drag kind on pointerdown. */
+  private hitCropHandle(
+    norm: { ix: number; iy: number },
+  ): "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw" | null {
+    const f = this.cropFrame;
+    const src = this.effectiveSource();
+    if (!f || !src) return null;
+    const { dispW, dispH } = this.effectiveRect(src);
+    const dpr = window.devicePixelRatio || 1;
+    const tolPx = 14 * dpr;
+    const tolNormX = tolPx / (dispW * this.scale);
+    const tolNormY = tolPx / (dispH * this.scale);
+    const ix = norm.ix;
+    const iy = norm.iy;
+    const left = f.x;
+    const right = f.x + f.width;
+    const top = f.y;
+    const bottom = f.y + f.height;
+    const nearLeft = Math.abs(ix - left) <= tolNormX;
+    const nearRight = Math.abs(ix - right) <= tolNormX;
+    const nearTop = Math.abs(iy - top) <= tolNormY;
+    const nearBottom = Math.abs(iy - bottom) <= tolNormY;
+    // Inside-vertical-band test ensures we don't activate a horizontal
+    // edge when the cursor is well above/below the frame.
+    const insideY = iy >= top - tolNormY && iy <= bottom + tolNormY;
+    const insideX = ix >= left - tolNormX && ix <= right + tolNormX;
+    if (nearLeft && nearTop) return "nw";
+    if (nearRight && nearTop) return "ne";
+    if (nearLeft && nearBottom) return "sw";
+    if (nearRight && nearBottom) return "se";
+    if (nearLeft && insideY) return "w";
+    if (nearRight && insideY) return "e";
+    if (nearTop && insideX) return "n";
+    if (nearBottom && insideX) return "s";
+    if (
+      ix >= left &&
+      ix <= right &&
+      iy >= top &&
+      iy <= bottom
+    ) {
+      return "move";
+    }
+    return null;
+  }
+
+  /** Map a hit-test result to the CSS cursor token reflected as a
+   * host attribute (see the `:host([cursor=...])` selectors). */
+  private cursorTokenFor(
+    kind: "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw" | null,
+  ): "" | "move" | "ns" | "ew" | "nwse" | "nesw" {
+    switch (kind) {
+      case "move":
+        return "move";
+      case "n":
+      case "s":
+        return "ns";
+      case "e":
+      case "w":
+        return "ew";
+      case "nw":
+      case "se":
+        return "nwse";
+      case "ne":
+      case "sw":
+        return "nesw";
+      default:
+        return "";
+    }
+  }
+
+  /** Hover handler that updates the cursor token when no drag is in
+   * progress. Attached on cropMode entry, detached on exit. */
+  private onCropHover = (e: PointerEvent) => {
+    if (this.cropDrag || this.horizonDrag) return;
+    if (this.horizonMode) {
+      this.cursor = "horizon";
+      return;
+    }
+    const norm = this.cursorToImageNorm(e);
+    if (!norm) {
+      this.cursor = "";
+      return;
+    }
+    const kind = this.hitCropHandle(norm);
+    this.cursor = this.cursorTokenFor(kind);
+  };
+
   private startCropDrag(e: PointerEvent) {
+    if (this.horizonMode) {
+      this.startHorizonDrag(e);
+      return;
+    }
     if (!this.cropFrame) return;
     const norm = this.cursorToImageNorm(e);
     if (!norm) return;
-    const f = this.cropFrame;
-    // Pick the closest handle (within tolerance) or the body.
-    const handles: Array<{
-      kind:
-        | "n"
-        | "s"
-        | "e"
-        | "w"
-        | "ne"
-        | "nw"
-        | "se"
-        | "sw";
-      x: number;
-      y: number;
-    }> = [
-      { kind: "nw", x: f.x, y: f.y },
-      { kind: "n", x: f.x + f.width / 2, y: f.y },
-      { kind: "ne", x: f.x + f.width, y: f.y },
-      { kind: "e", x: f.x + f.width, y: f.y + f.height / 2 },
-      { kind: "se", x: f.x + f.width, y: f.y + f.height },
-      { kind: "s", x: f.x + f.width / 2, y: f.y + f.height },
-      { kind: "sw", x: f.x, y: f.y + f.height },
-      { kind: "w", x: f.x, y: f.y + f.height / 2 },
-    ];
-    // Tolerance: ~12 CSS px translated to normalised coords.
-    const dpr = window.devicePixelRatio || 1;
-    const tolPx = 14 * dpr;
-    const bm = this.currentBitmap!;
-    const { dispW, dispH } = this.effectiveRect(bm);
-    const tolNormX = tolPx / (dispW * this.scale);
-    const tolNormY = tolPx / (dispH * this.scale);
-    let chosen: typeof handles[number] | null = null;
-    let bestDist = Infinity;
-    for (const h of handles) {
-      const dx = (norm.ix - h.x) / tolNormX;
-      const dy = (norm.iy - h.y) / tolNormY;
-      const d = dx * dx + dy * dy;
-      if (d <= 1 && d < bestDist) {
-        bestDist = d;
-        chosen = h;
-      }
-    }
-    let kind: "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-    if (chosen) {
-      kind = chosen.kind;
-    } else if (
-      norm.ix >= f.x &&
-      norm.ix <= f.x + f.width &&
-      norm.iy >= f.y &&
-      norm.iy <= f.y + f.height
-    ) {
-      kind = "move";
-    } else {
-      return;
-    }
+    const kind = this.hitCropHandle(norm);
+    if (!kind) return;
     this.cropDrag = {
       kind,
       startX: norm.ix,
       startY: norm.iy,
-      startFrame: { ...f },
+      startFrame: { ...this.cropFrame },
     };
     this.canvas!.setPointerCapture(e.pointerId);
     this.canvas!.addEventListener("pointermove", this.onCropPointerMove);
@@ -1079,7 +1469,7 @@ export class PfImageCanvas extends LitElement {
     const dx = norm.ix - this.cropDrag.startX;
     const dy = norm.iy - this.cropDrag.startY;
     const start = this.cropDrag.startFrame;
-    const aspect = this.cropAspect;
+    let aspect = this.cropAspect;
     let nf: CropFrame = { ...start };
     if (this.cropDrag.kind === "move") {
       nf.x = clamp(start.x + dx, 0, 1 - start.width);
@@ -1098,20 +1488,52 @@ export class PfImageCanvas extends LitElement {
       if (k.includes("s"))
         bottom = clamp(start.y + start.height + dy, top + 0.02, 1);
       nf = { x: left, y: top, width: right - left, height: bottom - top };
+      // Auto orientation flip: if a corner drag inverts the dominant
+      // axis (e.g. user drags an SE handle past the original NW
+      // anchor's diagonal so the "natural" frame is now portrait), we
+      // swap aspect to its reciprocal and re-derive. This makes the
+      // frame snap from landscape↔portrait at the centre as the user
+      // crosses it, matching Lightroom / Photos behaviour.
+      if (
+        aspect &&
+        Number.isFinite(aspect) &&
+        aspect > 0 &&
+        aspect !== 1 &&
+        (k === "ne" || k === "nw" || k === "se" || k === "sw")
+      ) {
+        const src = this.effectiveSource()!;
+        const startW = start.width * src.width;
+        const startH = start.height * src.height;
+        const newW = nf.width * src.width;
+        const newH = nf.height * src.height;
+        const startLandscape = startW >= startH;
+        const proposedLandscape = newW >= newH;
+        if (startLandscape !== proposedLandscape) {
+          aspect = 1 / aspect;
+          this.dispatchEvent(
+            new CustomEvent("orientation-flip", { bubbles: true }),
+          );
+        }
+      }
       // Lock aspect: re-derive whichever dimension is "free" given the
       // dragged edge(s).
       if (aspect && Number.isFinite(aspect) && aspect > 0) {
+        const src = this.effectiveSource()!;
         nf = enforceAspect(
           nf,
           start,
           aspect,
           this.cropDrag.kind,
-          this.currentBitmap!
+          { width: src.width, height: src.height },
         );
       }
     }
+    // Constrain to the inscribed rectangle of the rotated original so
+    // the crop never includes blank corners introduced by rotation.
+    nf = this.clampFrameToRotated(nf, start);
     this.cropFrame = nf;
     this.draw();
+    this.dispatchCropChange();
   };
 
   private onCropPointerUp = (e: PointerEvent) => {
@@ -1124,6 +1546,109 @@ export class PfImageCanvas extends LitElement {
     this.canvas?.removeEventListener("pointermove", this.onCropPointerMove);
     this.canvas?.removeEventListener("pointerup", this.onCropPointerUp);
     this.canvas?.removeEventListener("pointercancel", this.onCropPointerUp);
+    this.dispatchCropChange();
+    this.dispatchEvent(
+      new CustomEvent("crop-commit", { bubbles: true }),
+    );
+  };
+
+  /** Emit `crop-change` with the live frame so the host can persist
+   * incremental edits without an explicit Apply button. */
+  private dispatchCropChange() {
+    if (!this.cropFrame) return;
+    this.dispatchEvent(
+      new CustomEvent<CropFrame>("crop-change", {
+        bubbles: true,
+        detail: { ...this.cropFrame },
+      }),
+    );
+  }
+
+  // --- Horizon (straighten) interaction --------------------------------
+  /** Drag state for a horizon line — two pointer-defined points whose
+   * angle becomes the implied straighten correction. */
+  private horizonDrag:
+    | null
+    | {
+        ax: number;
+        ay: number;
+        bx: number;
+        by: number;
+        pointerId: number;
+      } = null;
+
+  private startHorizonDrag(e: PointerEvent) {
+    const norm = this.cursorToImageNorm(e);
+    if (!norm) return;
+    this.horizonDrag = {
+      ax: norm.ix,
+      ay: norm.iy,
+      bx: norm.ix,
+      by: norm.iy,
+      pointerId: e.pointerId,
+    };
+    this.canvas!.setPointerCapture(e.pointerId);
+    this.canvas!.addEventListener("pointermove", this.onHorizonPointerMove);
+    this.canvas!.addEventListener("pointerup", this.onHorizonPointerUp);
+    this.canvas!.addEventListener("pointercancel", this.onHorizonPointerUp);
+    this.draw();
+  }
+
+  private onHorizonPointerMove = (e: PointerEvent) => {
+    if (!this.horizonDrag) return;
+    const norm = this.cursorToImageNorm(e);
+    if (!norm) return;
+    this.horizonDrag.bx = norm.ix;
+    this.horizonDrag.by = norm.iy;
+    this.draw();
+  };
+
+  private onHorizonPointerUp = (e: PointerEvent) => {
+    const drag = this.horizonDrag;
+    this.horizonDrag = null;
+    try {
+      this.canvas?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* no-op */
+    }
+    this.canvas?.removeEventListener(
+      "pointermove",
+      this.onHorizonPointerMove,
+    );
+    this.canvas?.removeEventListener("pointerup", this.onHorizonPointerUp);
+    this.canvas?.removeEventListener(
+      "pointercancel",
+      this.onHorizonPointerUp,
+    );
+    if (!drag) return;
+    const src = this.effectiveSource();
+    if (!src) return;
+    // Convert to pixel offsets (so pixel-aspect distortion of the
+    // normalised coordinates doesn't tilt the angle).
+    const dx = (drag.bx - drag.ax) * src.width;
+    const dy = (drag.by - drag.ay) * src.height;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
+      this.draw();
+      return;
+    }
+    // Angle of the drawn line vs horizontal. Negate so a line that
+    // slopes up-to-the-right (positive angle in screen coords) yields
+    // a positive correction that rotates the image counter-clockwise
+    // back to level.
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    // Pick the closest horizontal/vertical reference (the user might
+    // draw along a vertical edge like a building corner instead of
+    // the horizon).
+    let correction = -angleDeg;
+    if (correction > 90) correction -= 180;
+    if (correction < -90) correction += 180;
+    this.dispatchEvent(
+      new CustomEvent<number>("horizon-line", {
+        bubbles: true,
+        detail: correction,
+      }),
+    );
+    this.draw();
   };
 
   render() {
@@ -1468,13 +1993,18 @@ function toneCoefficients(t: ToneEdit): {
  * upload is the expensive part). Re-rendering with new tone uniforms
  * is essentially free.
  */
+type ToneSource =
+  | ImageBitmap
+  | HTMLCanvasElement
+  | OffscreenCanvas;
+
 class TonePipeline {
   readonly canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext | null = null;
   private program: WebGLProgram | null = null;
   private vao: WebGLVertexArrayObject | null = null;
   private texture: WebGLTexture | null = null;
-  private uploadedBitmap: ImageBitmap | null = null;
+  private uploadedBitmap: ToneSource | null = null;
   private uniforms: {
     exposure: WebGLUniformLocation | null;
     contrast: WebGLUniformLocation | null;
@@ -1514,11 +2044,11 @@ class TonePipeline {
    * not 40 MP, and the subsequent `drawImage` copy is cheap.
    */
   render(
-    bm: ImageBitmap,
+    bm: ToneSource,
     tone: ToneEdit,
     srcRect: { sx: number; sy: number; sw: number; sh: number },
     outW: number,
-    outH: number
+    outH: number,
   ): HTMLCanvasElement | null {
     if (this.failed) return null;
     if (!this.gl) {
@@ -1586,7 +2116,7 @@ class TonePipeline {
    * upload `bm` as a texture so the next `render()` only needs to
    * issue a draw call. Safe to call repeatedly with the same bitmap;
    * a no-op if the pipeline is already warm for that bitmap. */
-  warmup(bm: ImageBitmap): void {
+  warmup(bm: ToneSource): void {
     if (this.failed) return;
     if (!this.gl) {
       const gl = this.canvas.getContext("webgl2", {

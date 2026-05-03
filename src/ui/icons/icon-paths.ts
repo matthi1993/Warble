@@ -40,6 +40,10 @@ export const ICON_PATHS = {
     '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
   "rotate-ccw":
     '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+  "rotate-cw":
+    '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  "horizon-line":
+    '<path d="M3 12h18"/><path d="m7 16 10-8"/><circle cx="7" cy="16" r="1.5"/><circle cx="17" cy="8" r="1.5"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   compare:
     '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M16 8l3 3-3 3"/><path d="M8 8l-3 3 3 3"/>',

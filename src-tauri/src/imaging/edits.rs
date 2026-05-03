@@ -27,6 +27,11 @@ pub struct CropEdit {
     pub width: f32,
     /// Height as a fraction of original height (0..1).
     pub height: f32,
+    /// Rotation applied to the source bitmap (in degrees) before
+    /// the normalised crop rectangle is interpreted. Combines
+    /// 90° snaps with fine straightening.
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 /// Tonal adjustments grouped under the frontend's "Basic" card.

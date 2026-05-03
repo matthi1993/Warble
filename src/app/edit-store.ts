@@ -13,6 +13,8 @@ export type AspectRatioKey =
   | "3:2"
   | "1:1"
   | "4:3"
+  | "16:9"
+  | "16:10"
   | "panavision"
   | "super-panavision";
 
@@ -31,6 +33,11 @@ export interface CropEdit {
   aspectRatio: AspectRatioKey;
   /** Orientation that produced this crop (for UI restore). */
   orientation: Orientation;
+  /** Rotation in degrees applied to the source bitmap before the
+   * normalised x/y/width/height are interpreted. Combines a 90°
+   * snap component (0/90/180/270) with a fine straighten in roughly
+   * (-45..+45). */
+  rotation: number;
 }
 
 /** Tonal adjustments under the "Basic" group in the editor side panel.
@@ -84,6 +91,8 @@ export const ASPECT_RATIO_VALUES: Record<AspectRatioKey, number> = {
   "3:2": 3 / 2,
   "1:1": 1,
   "4:3": 4 / 3,
+  "16:9": 16 / 9,
+  "16:10": 16 / 10,
   panavision: 2.35,
   "super-panavision": 2.76,
 };
@@ -92,8 +101,10 @@ export const ASPECT_RATIO_LABELS: Record<AspectRatioKey, string> = {
   "3:2": "3:2",
   "1:1": "1:1",
   "4:3": "4:3",
-  panavision: "Panavision",
-  "super-panavision": "Super Panavision",
+  "16:9": "16:9",
+  "16:10": "16:10",
+  panavision: "2.35:1",
+  "super-panavision": "2.76:1",
 };
 
 interface PersistedRow {
@@ -191,12 +202,13 @@ export async function flushPhotoEdit(path: string): Promise<void> {
 /**
  * Persist a crop (or `null` to clear). The in-memory store and
  * subscribers update synchronously so the canvas can repaint on the
- * same frame; the backend write happens in the background.
+ * same frame; the backend write happens on a debounce so dragging
+ * crop handles doesn't saturate the IPC channel.
  */
-export async function setPhotoCrop(
+export function setPhotoCrop(
   path: string,
-  crop: CropEdit | null
-): Promise<void> {
+  crop: CropEdit | null,
+): void {
   const prev = edits.get(path);
   const tone = prev?.tone ?? null;
   if (!crop && isToneZero(tone)) {
@@ -205,11 +217,7 @@ export async function setPhotoCrop(
     edits.set(path, { crop, tone });
   }
   notify(path);
-  // Crop saves are user-initiated single events (Apply button); flush
-  // any pending tone debounce and persist immediately so the caller
-  // can await the actual DB write.
-  await flushPhotoEdit(path);
-  await persist(path);
+  schedulePersist(path);
 }
 
 /**

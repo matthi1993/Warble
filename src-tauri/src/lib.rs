@@ -5,6 +5,7 @@ mod imaging;
 mod library;
 mod menu;
 mod settings;
+mod tasks;
 
 use std::path::PathBuf;
 
@@ -22,6 +23,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Spin up the priority task pool early so worker threads
+            // are warm before the first image request.
+            let _ = tasks::pool();
             init_thumbnail_cache(app);
             init_library_repository(app);
             init_settings_and_caches(app);
@@ -36,6 +40,7 @@ pub fn run() {
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,
+            commands::cancel_image_request,
             commands::get_exif_metadata,
             commands::get_cache_settings,
             commands::set_thumbnail_cache_max,

@@ -1,10 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  cancelTaskRequest,
+  nextRequestId,
+  type TaskPriority,
+} from "./task-manager";
 
 /**
  * Centralised thumbnail loader. Limits concurrent Rust invocations so that
  * opening a large folder of big images does not flood the backend with
  * `spawn_blocking` jobs (each decoding multi-MB files). Also caches results
  * so re-visiting a folder is instant.
+ *
+ * Requests are routed at one of three priority tiers:
+ *
+ *   - `urgent`     — the photo currently on screen.
+ *   - `foreground` — visible thumbnail cards in the grid.
+ *   - `background` — folder-wide batch prefetch.
+ *
+ * The renderer drains its three queues in priority order so an
+ * urgent request issued while a 1000-image batch is mid-pump runs
+ * before any further batch jobs leave the renderer. The backend
+ * additionally splits work across two thread pools so background
+ * decodes can never starve a foreground one.
  */
 
 const MAX_CONCURRENT = Math.min(
@@ -16,14 +33,36 @@ const CACHE_LIMIT = 500;
 
 type Job = {
   path: string;
+  priority: TaskPriority;
+  requestId: number;
   cancelled: boolean;
+  /** True once this job has actually been sent to the backend. Once
+   * dispatched we can't pull it back out of the priority queue, so
+   * cancellation has to go through the backend cancel command. */
+  dispatched: boolean;
   resolve: (value: string) => void;
   reject: (err: unknown) => void;
 };
 
 const cache = new Map<string, string>(); // path -> base64
-const inflight = new Map<string, Promise<string>>();
-const queue: Job[] = [];
+const inflight = new Map<
+  string,
+  { promise: Promise<string>; priority: TaskPriority }
+>();
+
+/** One queue per priority tier so a flood of background jobs can never
+ * push a fresh urgent/foreground job to the back of the line. */
+const queues: Record<TaskPriority, Job[]> = {
+  urgent: [],
+  foreground: [],
+  background: [],
+};
+const PRIORITY_ORDER: TaskPriority[] = ["urgent", "foreground", "background"];
+const PRIORITY_RANK: Record<TaskPriority, number> = {
+  urgent: 0,
+  foreground: 1,
+  background: 2,
+};
 let active = 0;
 
 function rememberInCache(path: string, b64: string) {
@@ -36,24 +75,55 @@ function rememberInCache(path: string, b64: string) {
   }
 }
 
-function pump() {
-  while (active < MAX_CONCURRENT && queue.length > 0) {
-    const job = queue.shift()!;
-    if (job.cancelled) {
-      job.reject(new DOMException("cancelled", "AbortError"));
-      continue;
+function nextJob(): Job | undefined {
+  for (const p of PRIORITY_ORDER) {
+    const q = queues[p];
+    while (q.length > 0) {
+      const job = q.shift()!;
+      if (!job.cancelled) return job;
     }
+  }
+  return undefined;
+}
+
+function isBackendCancellation(err: unknown): boolean {
+  if (err == null) return false;
+  const s =
+    typeof err === "string" ? err : (err as Error).message ?? String(err);
+  return s.toLowerCase().includes("cancelled");
+}
+
+function pump() {
+  while (active < MAX_CONCURRENT) {
+    const job = nextJob();
+    if (!job) return;
     active += 1;
-    invoke<string>("get_thumbnail", { photoPath: job.path })
+    job.dispatched = true;
+    invoke<string>("get_thumbnail", {
+      photoPath: job.path,
+      requestId: job.requestId,
+      priority: job.priority,
+    })
       .then((b64) => {
         rememberInCache(job.path, b64);
         if (!job.cancelled) job.resolve(b64);
         else job.reject(new DOMException("cancelled", "AbortError"));
       })
-      .catch((err) => job.reject(err))
+      .catch((err) => {
+        if (job.cancelled || isBackendCancellation(err)) {
+          job.reject(new DOMException("cancelled", "AbortError"));
+        } else {
+          job.reject(err);
+        }
+      })
       .finally(() => {
         active -= 1;
-        inflight.delete(job.path);
+        const slot = inflight.get(job.path);
+        // Only remove the inflight entry if it's still ours; a
+        // priority-upgrade may have replaced it with a fresher one.
+        if (slot && slot.priority === job.priority) {
+          inflight.delete(job.path);
+        }
         pump();
       });
   }
@@ -64,31 +134,55 @@ export interface ThumbnailHandle {
   cancel(): void;
 }
 
-export function requestThumbnail(path: string): ThumbnailHandle {
+export function requestThumbnail(
+  path: string,
+  priority: TaskPriority = "foreground"
+): ThumbnailHandle {
   const cached = cache.get(path);
   if (cached !== undefined) {
-    // Refresh LRU position.
     rememberInCache(path, cached);
     return { promise: Promise.resolve(cached), cancel: () => {} };
   }
 
   const existing = inflight.get(path);
-  if (existing) {
-    return { promise: existing, cancel: () => {} };
+  if (
+    existing &&
+    PRIORITY_RANK[existing.priority] <= PRIORITY_RANK[priority]
+  ) {
+    // Existing in-flight request is at same or higher priority; share it.
+    return { promise: existing.promise, cancel: () => {} };
   }
+
+  // Either no in-flight request, or it's at a *lower* priority. Issue a
+  // fresh request so the urgent/foreground caller doesn't get stuck
+  // behind a batch entry. Both will land via the disk cache.
 
   let job!: Job;
   const promise = new Promise<string>((resolve, reject) => {
-    job = { path, cancelled: false, resolve, reject };
-    queue.push(job);
+    job = {
+      path,
+      priority,
+      requestId: nextRequestId(),
+      cancelled: false,
+      dispatched: false,
+      resolve,
+      reject,
+    };
+    queues[priority].push(job);
   });
-  inflight.set(path, promise);
+  inflight.set(path, { promise, priority });
   pump();
 
   return {
     promise,
     cancel: () => {
+      if (job.cancelled) return;
       job.cancelled = true;
+      if (job.dispatched) {
+        // Already sent to the backend — ask the pool to drop it before
+        // it actually runs.
+        cancelTaskRequest(job.requestId);
+      }
     },
   };
 }
@@ -172,7 +266,9 @@ export function startThumbnailBatch(paths: string[]): number {
 
   const handles: ThumbnailHandle[] = [];
   for (const path of paths) {
-    const handle = requestThumbnail(path);
+    // Folder-wide prefetch is strictly background work — visible
+    // cards and the active photo upgrade priority on their own.
+    const handle = requestThumbnail(path, "background");
     handles.push(handle);
     handle.promise.then(
       () => {
@@ -231,8 +327,10 @@ export function clearThumbnailBatch() {
  */
 export function dropAllThumbnailState(): void {
   cache.clear();
-  for (const job of queue) job.cancelled = true;
-  queue.length = 0;
+  for (const p of PRIORITY_ORDER) {
+    for (const job of queues[p]) job.cancelled = true;
+    queues[p].length = 0;
+  }
   inflight.clear();
   for (const h of activeBatchHandles) h.cancel();
   activeBatchHandles = [];

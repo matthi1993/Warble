@@ -789,34 +789,62 @@ export class PfFullView extends LitElement {
       background: var(--pf-accent-soft);
       color: var(--pf-accent);
     }
-    .edit-side-panel .crop-actions {
+    .edit-side-panel .crop-tools-row {
       display: flex;
       align-items: center;
-      justify-content: flex-end;
-      gap: var(--pf-space-2);
+      justify-content: center;
+      gap: var(--pf-space-3);
       margin-top: var(--pf-space-1);
     }
-    .edit-side-panel .edit-action {
+    .edit-side-panel .crop-tool-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
       background: var(--pf-surface-2);
       color: var(--pf-text);
       border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
-      padding: 4px 12px;
-      font-size: var(--pf-text-xs);
-      font-weight: 600;
       cursor: pointer;
+      transition:
+        background 80ms ease,
+        border-color 80ms ease;
     }
-    .edit-side-panel .edit-action:hover {
+    .edit-side-panel .crop-tool-btn:hover {
       background: var(--pf-surface-hover);
       border-color: var(--pf-accent);
     }
-    .edit-side-panel .edit-action.primary {
-      background: var(--pf-accent);
-      color: var(--pf-on-accent);
-      border-color: transparent;
+    .edit-side-panel .crop-tool-btn[aria-pressed="true"] {
+      background: var(--pf-accent-soft);
+      border-color: var(--pf-accent);
+      color: var(--pf-accent);
     }
-    .edit-side-panel .edit-action.primary:hover {
-      background: var(--pf-accent-hover);
+    .edit-side-panel .crop-tool-btn pf-icon {
+      width: 18px;
+      height: 18px;
+    }
+    .edit-side-panel .rotation-row {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      margin-top: var(--pf-space-1);
+    }
+    .edit-side-panel .rotation-row .rotation-label {
+      flex: 0 0 auto;
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      min-width: 56px;
+    }
+    .edit-side-panel .rotation-row .rotation-value {
+      flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+      font-size: var(--pf-text-xs);
+      min-width: 36px;
+      text-align: right;
+    }
+    .edit-side-panel .rotation-row pf-slider {
+      flex: 1 1 auto;
     }
     /* Hover hot-zone on the right edge in fullscreen mode so the
        floating panel can be summoned without grazing the right edge
@@ -1072,6 +1100,18 @@ export class PfFullView extends LitElement {
 
   @state()
   private editOrientation: Orientation = "landscape";
+
+  /** Live straighten/rotation in degrees applied during a crop edit.
+   * Mirrors the persisted `crop.rotation` while the crop card is
+   * open; written back to the store after every interaction. */
+  @state()
+  private editRotation = 0;
+
+  /** When `true`, the canvas is in horizon-pick mode: the next pointer
+   * drag inside the image draws a reference line and its angle is
+   * folded into `editRotation`. */
+  @state()
+  private horizonModeActive = false;
 
   /** Bumped when the edit store changes so the "Edit" button reflects
    * whether the current photo has a saved crop. */
@@ -1420,21 +1460,29 @@ export class PfFullView extends LitElement {
     // coordinate window fullscreen + view stack across grid and full
     // views. We deliberately do not handle them here.
     if (this.activeEditTool) {
-      // Esc / Enter are owned by the active tool; stop them so
-      // app-shell doesn't also act on them (e.g. closing the full
-      // view) and so view-mode shortcuts don't fire underneath.
+      // Esc closes the active tool. Edits are persisted incrementally
+      // as the user works, so there is no separate cancel/apply
+      // distinction to honour here.
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        this.cancelEdit();
+        if (this.horizonModeActive) {
+          this.horizonModeActive = false;
+          return;
+        }
+        this.cropCardOpen = false;
+        this.activeEditTool = null;
+        const target = this.editTargetPath();
+        if (target) void flushPhotoEdit(target);
         return;
       }
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        if (this.activeEditTool === "crop") {
-          void this.saveEdit();
-        }
+        this.cropCardOpen = false;
+        this.activeEditTool = null;
+        const target = this.editTargetPath();
+        if (target) void flushPhotoEdit(target);
         return;
       }
       // Arrows still navigate so the user can step through photos
@@ -1736,7 +1784,11 @@ export class PfFullView extends LitElement {
       if (saved) {
         this.editAspect = saved.aspectRatio;
         this.editOrientation = saved.orientation;
+        this.editRotation = saved.rotation ?? 0;
+      } else {
+        this.editRotation = 0;
       }
+      this.horizonModeActive = false;
       this.cropCardOpen = true;
     }
     this.activeEditTool = tool;
@@ -1745,9 +1797,14 @@ export class PfFullView extends LitElement {
   private toggleCropCard = () => {
     if (this.cropCardOpen) {
       this.cropCardOpen = false;
+      this.horizonModeActive = false;
       if (this.activeEditTool === "crop") {
         this.activeEditTool = null;
       }
+      // Flush any pending debounced crop writes so the on-disk state
+      // matches what the canvas now renders from the saved crop.
+      const target = this.editTargetPath();
+      if (target) void flushPhotoEdit(target);
     } else {
       this.openTool("crop");
     }
@@ -1755,23 +1812,25 @@ export class PfFullView extends LitElement {
 
   private setEditAspect = (a: AspectRatioKey) => {
     this.editAspect = a;
+    this.persistCropFromCanvas();
   };
 
   private setEditOrientation = (o: Orientation) => {
     this.editOrientation = o;
+    this.persistCropFromCanvas();
   };
 
-  private saveEdit = async () => {
+  /** Pull the current frame from the canvas and persist as the saved
+   * crop, debounced via the edit store. Used as the common write
+   * path for slider/button/drag events while the crop card is open. */
+  private persistCropFromCanvas = () => {
     const target = this.editTargetPath();
     if (!target) return;
     const cv = this.renderRoot.querySelector(
-      "pf-image-canvas"
+      "pf-image-canvas",
     ) as PfImageCanvas | null;
     const frame = cv?.getCropFrame();
-    if (!frame) {
-      this.activeEditTool = null;
-      return;
-    }
+    if (!frame) return;
     const crop: CropEdit = {
       x: frame.x,
       y: frame.y,
@@ -1779,17 +1838,70 @@ export class PfFullView extends LitElement {
       height: frame.height,
       aspectRatio: this.editAspect,
       orientation: this.editOrientation,
+      rotation: this.editRotation,
     };
-    // Await persistence + cache invalidation BEFORE leaving crop mode
-    // so the canvas's subsequent reload reads the freshly-written edit.
-    await setPhotoCrop(target, crop);
-    this.activeEditTool = null;
-    this.cropCardOpen = false;
+    setPhotoCrop(target, crop);
   };
 
-  private cancelEdit = () => {
-    this.activeEditTool = null;
-    this.cropCardOpen = false;
+  /** Handler for `crop-change` from the canvas: a frame edge moved. */
+  private onCanvasCropChange = () => {
+    this.persistCropFromCanvas();
+  };
+
+  /** Handler for `orientation-flip`: the canvas detected a corner
+   * drag that crossed the centre, so swap orientation to match. */
+  private onCanvasOrientationFlip = () => {
+    this.editOrientation =
+      this.editOrientation === "landscape" ? "portrait" : "landscape";
+  };
+
+  /** Handler for `horizon-line`: the user drew a reference line; fold
+   * its angle into `editRotation` and exit horizon mode. */
+  private onCanvasHorizonLine = (e: Event) => {
+    const ce = e as CustomEvent<number>;
+    const delta = Number(ce.detail);
+    if (!Number.isFinite(delta)) return;
+    let next = (this.editRotation || 0) + delta;
+    // Clamp to (-45..45] which matches the slider's range.
+    while (next > 45) next -= 90;
+    while (next < -45) next += 90;
+    this.editRotation = next;
+    this.horizonModeActive = false;
+    this.persistCropFromCanvas();
+  };
+
+  private toggleHorizonMode = () => {
+    this.horizonModeActive = !this.horizonModeActive;
+  };
+
+  private rotate90Left = () => {
+    // 90° CCW rotation of the crop relative to the bitmap. We treat it
+    // as a discrete bump on top of the live straighten value, then let
+    // the canvas's rotation cache handle the geometry.
+    let next = (this.editRotation || 0) - 90;
+    while (next > 180) next -= 360;
+    while (next <= -180) next += 360;
+    this.editRotation = next;
+    this.persistCropFromCanvas();
+  };
+
+  private rotate90Right = () => {
+    let next = (this.editRotation || 0) + 90;
+    while (next > 180) next -= 360;
+    while (next <= -180) next += 360;
+    this.editRotation = next;
+    this.persistCropFromCanvas();
+  };
+
+  private onRotationSlider = (e: Event) => {
+    const ce = e as CustomEvent<number>;
+    const v = Number(ce.detail);
+    if (!Number.isFinite(v)) return;
+    // Slider only spans -45..45; preserve any 90° increments already
+    // stamped in by the rotate-left/right buttons.
+    const base = Math.round((this.editRotation || 0) / 90) * 90;
+    this.editRotation = base + v;
+    this.persistCropFromCanvas();
   };
 
   /** Drop the persisted crop on the active photo (per-tool revert). */
@@ -1798,8 +1910,9 @@ export class PfFullView extends LitElement {
     if (!target) return;
     const saved = getPhotoEdit(target)?.crop ?? null;
     if (!saved) return;
-    await setPhotoCrop(target, null);
-    if (this.activeEditTool === "crop") this.activeEditTool = null;
+    setPhotoCrop(target, null);
+    this.editRotation = 0;
+    this.horizonModeActive = false;
   };
 
   private hasCropEdit(): boolean {
@@ -2099,10 +2212,20 @@ export class PfFullView extends LitElement {
       "3:2",
       "1:1",
       "4:3",
+      "16:9",
+      "16:10",
       "panavision",
       "super-panavision",
     ];
     const canRevert = this.hasCropEdit();
+    // Slider value = the residual fine-straighten angle in (-45..45].
+    // We strip any 90° increments stamped in by the rotate buttons so
+    // the slider stays centred at 0 after a 90° rotation.
+    const sliderValue = (() => {
+      const r = this.editRotation || 0;
+      const base = Math.round(r / 90) * 90;
+      return Math.max(-45, Math.min(45, r - base));
+    })();
     return html`
       <section class="edit-card" data-open=${open ? "true" : "false"}>
         <div class="edit-card-header-row">
@@ -2139,7 +2262,7 @@ export class PfFullView extends LitElement {
                 @click=${() => this.setEditAspect(a)}
               >
                 ${ASPECT_RATIO_LABELS[a]}
-              </button>`
+              </button>`,
             )}
           </div>
           <div
@@ -2162,21 +2285,51 @@ export class PfFullView extends LitElement {
               Portrait
             </button>
           </div>
-          <div class="crop-actions">
+          <div
+            class="crop-tools-row"
+            role="group"
+            aria-label="Rotate"
+          >
             <button
               type="button"
-              class="edit-action"
-              @click=${this.cancelEdit}
+              class="crop-tool-btn"
+              title="Rotate 90° left"
+              aria-label="Rotate 90° left"
+              @click=${this.rotate90Left}
             >
-              Cancel
+              <pf-icon name="rotate-ccw"></pf-icon>
             </button>
             <button
               type="button"
-              class="edit-action primary"
-              @click=${this.saveEdit}
+              class="crop-tool-btn"
+              title="Straighten by drawing a horizon line"
+              aria-label="Straighten by drawing a horizon line"
+              aria-pressed=${this.horizonModeActive}
+              @click=${this.toggleHorizonMode}
             >
-              Apply
+              <pf-icon name="horizon-line"></pf-icon>
             </button>
+            <button
+              type="button"
+              class="crop-tool-btn"
+              title="Rotate 90° right"
+              aria-label="Rotate 90° right"
+              @click=${this.rotate90Right}
+            >
+              <pf-icon name="rotate-cw"></pf-icon>
+            </button>
+          </div>
+          <div class="rotation-row">
+            <span class="rotation-label">Straighten</span>
+            <pf-slider
+              min="-45"
+              max="45"
+              step="0.1"
+              .value=${sliderValue}
+              fillFrom="0"
+              @change=${this.onRotationSlider}
+            ></pf-slider>
+            <span class="rotation-value">${sliderValue.toFixed(1)}°</span>
           </div>
         </div>
       </section>
@@ -2360,9 +2513,17 @@ export class PfFullView extends LitElement {
             .cropAspect=${this.activeEditTool === "crop"
               ? this.effectiveAspect()
               : null}
+            .rotation=${this.activeEditTool === "crop"
+              ? this.editRotation
+              : 0}
+            ?horizonMode=${this.activeEditTool === "crop" &&
+            this.horizonModeActive}
             .previewOriginal=${this.previewOriginal}
             .editing=${this.editMode}
             background=${this.bgCss(this.bg)}
+            @crop-change=${this.onCanvasCropChange}
+            @orientation-flip=${this.onCanvasOrientationFlip}
+            @horizon-line=${this.onCanvasHorizonLine}
           ></pf-image-canvas>
           <button
             class="nav prev"
