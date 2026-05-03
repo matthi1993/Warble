@@ -1,8 +1,9 @@
 import { LitElement, css, html } from "lit";
-import { customElement, property } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { Photo } from "./types";
 import "../ui/photos/pf-thumbnail-card";
+import "../ui/controls/pf-slider";
 
 function variantCount(photo: Photo): number {
   const files = photo.files ?? [];
@@ -12,6 +13,22 @@ function variantCount(photo: Photo): number {
   return Math.max(1, variants.size);
 }
 
+const COLUMNS_STORAGE_KEY = "pf-grid-columns";
+const MIN_COLUMNS = 1;
+const MAX_COLUMNS = 8;
+const DEFAULT_COLUMNS = 6;
+
+function readStoredColumns(): number {
+  try {
+    const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
+    const n = raw == null ? NaN : Number(raw);
+    if (!Number.isFinite(n)) return DEFAULT_COLUMNS;
+    return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, Math.round(n)));
+  } catch {
+    return DEFAULT_COLUMNS;
+  }
+}
+
 @customElement("pf-photo-grid")
 export class PfPhotoGrid extends LitElement {
   static styles = css`
@@ -19,9 +36,43 @@ export class PfPhotoGrid extends LitElement {
       display: block;
       position: relative;
     }
+    .grid-header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-2) var(--pf-space-1);
+      margin-bottom: var(--pf-space-3);
+      background: var(--pf-bg);
+      border-bottom: 1px solid var(--pf-border);
+    }
+    :host([full-view-open]) .grid-header {
+      display: none;
+    }
+    .grid-header .label {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      flex: 0 0 auto;
+    }
+    .grid-header pf-slider {
+      flex: 0 1 220px;
+    }
+    .grid-header .count {
+      flex: 0 0 auto;
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .grid-header .spacer {
+      flex: 1 1 auto;
+    }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      grid-template-columns: repeat(var(--pf-grid-cols, 6), 1fr);
       gap: var(--pf-space-3);
     }
   `;
@@ -31,6 +82,15 @@ export class PfPhotoGrid extends LitElement {
 
   @property({ type: String })
   selectedPath: string | null = null;
+
+  /** When the full image view is open the grid is hidden behind the
+   * overlay; suppress the sticky size header so it doesn't peek
+   * through (e.g. while the overlay is fading in). */
+  @property({ type: Boolean, reflect: true, attribute: "full-view-open" })
+  fullViewOpen = false;
+
+  @state()
+  private columns: number = readStoredColumns();
 
   /**
    * Move grid selection by (dx, dy) cells. Determines the column count
@@ -89,9 +149,43 @@ export class PfPhotoGrid extends LitElement {
     );
   }
 
+  private setColumns(n: number) {
+    const clamped = Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, Math.round(n)));
+    if (clamped === this.columns) return;
+    this.columns = clamped;
+    try {
+      localStorage.setItem(COLUMNS_STORAGE_KEY, String(clamped));
+    } catch {
+      /* ignore quota / privacy errors */
+    }
+  }
+
   render() {
+    // Slider is visually inverted: dragging right reduces column
+    // count (bigger thumbnails). We pass `MIN + MAX - columns` to the
+    // slider so the right edge corresponds to 1 thumbnail per row,
+    // and undo the mapping in the change handler.
+    const sliderValue = MIN_COLUMNS + MAX_COLUMNS - this.columns;
     return html`
-      <div class="grid">
+      <div class="grid-header">
+        <span class="label">Size</span>
+        <pf-slider
+          min=${MIN_COLUMNS}
+          max=${MAX_COLUMNS}
+          step="1"
+          fill-from=${MIN_COLUMNS}
+          .value=${sliderValue}
+          .label=${"Thumbnails per row"}
+          @change=${(e: CustomEvent<number>) =>
+            this.setColumns(MIN_COLUMNS + MAX_COLUMNS - e.detail)}
+        ></pf-slider>
+        <span class="count">${this.columns} / row</span>
+        <span class="spacer"></span>
+      </div>
+      <div
+        class="grid"
+        style=${`--pf-grid-cols: ${this.columns}`}
+      >
         ${repeat(
           this.photos,
           (p) => p.path,

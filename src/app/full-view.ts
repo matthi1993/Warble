@@ -57,6 +57,37 @@ import type {
 
 type BgColor = "black" | "grey" | "white";
 
+interface ExifMetadata {
+  cameraMake?: string | null;
+  cameraModel?: string | null;
+  cameraSerial?: string | null;
+  software?: string | null;
+  lensMake?: string | null;
+  lensModel?: string | null;
+  lensSerial?: string | null;
+  iso?: string | null;
+  shutterSpeed?: string | null;
+  aperture?: string | null;
+  focalLength?: string | null;
+  focalLength35mm?: string | null;
+  exposureCompensation?: string | null;
+  exposureProgram?: string | null;
+  exposureMode?: string | null;
+  meteringMode?: string | null;
+  whiteBalance?: string | null;
+  flash?: string | null;
+  pixelWidth?: number | null;
+  pixelHeight?: number | null;
+  orientation?: string | null;
+  colorSpace?: string | null;
+  dateTaken?: string | null;
+  artist?: string | null;
+  copyright?: string | null;
+  gpsLatitude?: number | null;
+  gpsLongitude?: number | null;
+  gpsAltitude?: string | null;
+}
+
 @customElement("pf-full-view")
 export class PfFullView extends LitElement {
   static styles = css`
@@ -82,9 +113,9 @@ export class PfFullView extends LitElement {
       align-items: center;
       gap: var(--pf-space-2);
       padding: var(--pf-space-2) var(--pf-space-3);
-      background: #111;
-      color: #fff;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      border-bottom: 1px solid var(--pf-border);
     }
     .toolbar-left,
     .toolbar-right {
@@ -112,9 +143,9 @@ export class PfFullView extends LitElement {
       align-items: center;
       gap: var(--pf-space-2);
       padding: var(--pf-space-2) var(--pf-space-3);
-      background: #111;
-      color: #fff;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      border-top: 1px solid var(--pf-border);
       min-height: 32px;
       box-sizing: border-box;
     }
@@ -125,6 +156,7 @@ export class PfFullView extends LitElement {
     .filename {
       font-size: var(--pf-text-sm);
       font-weight: 600;
+      color: var(--pf-text);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -133,7 +165,7 @@ export class PfFullView extends LitElement {
     }
     .counter {
       font-size: var(--pf-text-xs);
-      color: rgba(255, 255, 255, 0.7);
+      color: var(--pf-text-muted);
       font-variant-numeric: tabular-nums;
     }
     .group {
@@ -141,7 +173,7 @@ export class PfFullView extends LitElement {
       align-items: center;
       gap: 2px;
       padding: 2px;
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--pf-surface-2);
       border-radius: var(--pf-radius-md);
     }
     .format-switch {
@@ -149,13 +181,13 @@ export class PfFullView extends LitElement {
       align-items: center;
       gap: 2px;
       padding: 2px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface-2);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
     }
     .format-switch button {
       background: transparent;
-      color: #fff;
+      color: var(--pf-text);
       border: none;
       padding: 2px 10px;
       font-size: var(--pf-text-xs);
@@ -167,16 +199,17 @@ export class PfFullView extends LitElement {
       white-space: nowrap;
     }
     .format-switch button[aria-pressed="true"] {
-      background: rgba(255, 255, 255, 0.18);
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent);
     }
     .menu-wrap {
       position: relative;
       display: inline-flex;
     }
     .menu-trigger {
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
       padding: 4px 10px;
       font-size: var(--pf-text-xs);
       font-weight: 600;
@@ -187,22 +220,23 @@ export class PfFullView extends LitElement {
       gap: 6px;
     }
     .menu-trigger:hover {
-      background: rgba(255, 255, 255, 0.16);
+      background: var(--pf-surface-hover);
+      border-color: var(--pf-accent);
     }
     .menu-trigger .swatch {
       width: 14px;
       height: 14px;
       border-radius: 3px;
-      border: 1px solid rgba(255, 255, 255, 0.25);
+      border: 1px solid var(--pf-border-strong);
     }
     .menu-popup {
       position: absolute;
       top: calc(100% + 6px);
       left: 0;
-      background: #1a1a1a;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      box-shadow: var(--pf-shadow-md);
       padding: 4px;
       z-index: 5;
       min-width: 140px;
@@ -212,7 +246,7 @@ export class PfFullView extends LitElement {
     }
     .menu-item {
       background: transparent;
-      color: #fff;
+      color: var(--pf-text);
       border: none;
       padding: 6px 10px;
       text-align: left;
@@ -224,10 +258,11 @@ export class PfFullView extends LitElement {
       gap: 8px;
     }
     .menu-item:hover {
-      background: rgba(255, 255, 255, 0.1);
+      background: var(--pf-surface-hover);
     }
     .menu-item[aria-pressed="true"] {
-      background: rgba(255, 255, 255, 0.16);
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent);
     }
     .edit-mark {
       color: var(--pf-accent);
@@ -238,7 +273,7 @@ export class PfFullView extends LitElement {
       width: 1.4rem;
       height: 1.4rem;
       border-radius: var(--pf-radius-sm);
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      border: 1px solid var(--pf-border-strong);
       cursor: pointer;
       padding: 0;
     }
@@ -257,7 +292,7 @@ export class PfFullView extends LitElement {
     }
     .seg {
       background: transparent;
-      color: #fff;
+      color: var(--pf-text);
       border: none;
       padding: 4px 10px;
       font-size: var(--pf-text-xs);
@@ -265,7 +300,8 @@ export class PfFullView extends LitElement {
       cursor: pointer;
     }
     .seg[aria-pressed="true"] {
-      background: rgba(255, 255, 255, 0.18);
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent);
     }
     .stage {
       flex: 1;
@@ -299,7 +335,7 @@ export class PfFullView extends LitElement {
       left: 0;
       right: 0;
       z-index: 3;
-      background: rgba(17, 17, 17, 0.85);
+      background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
       backdrop-filter: blur(6px);
     }
     :host([fullscreen]) .bottombar {
@@ -308,7 +344,7 @@ export class PfFullView extends LitElement {
       left: 0;
       right: 0;
       z-index: 3;
-      background: rgba(17, 17, 17, 0.85);
+      background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
       backdrop-filter: blur(6px);
     }
     .nav {
@@ -347,9 +383,9 @@ export class PfFullView extends LitElement {
     /* Native close button, never a custom element — guarantees clicks
        reach this handler even if shadow-DOM children get weird. */
     .close-btn {
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
       width: 32px;
       height: 32px;
@@ -360,7 +396,8 @@ export class PfFullView extends LitElement {
       padding: 0;
     }
     .close-btn:hover {
-      background: rgba(255, 255, 255, 0.16);
+      background: var(--pf-surface-hover);
+      border-color: var(--pf-accent);
     }
     .close-btn svg {
       width: 18px;
@@ -403,9 +440,9 @@ export class PfFullView extends LitElement {
       cursor: none;
     }
     .edit-btn {
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
       width: 32px;
       height: 32px;
@@ -417,10 +454,12 @@ export class PfFullView extends LitElement {
       transition: background var(--pf-transition);
     }
     .edit-btn:hover {
-      background: rgba(255, 255, 255, 0.16);
+      background: var(--pf-surface-hover);
+      border-color: var(--pf-accent);
     }
     .edit-btn[aria-pressed="true"] {
-      background: var(--pf-accent, #4a90e2);
+      background: var(--pf-accent);
+      color: var(--pf-on-accent);
       border-color: transparent;
     }
     .edit-btn pf-icon {
@@ -560,13 +599,14 @@ export class PfFullView extends LitElement {
     .edit-side-panel {
       flex: 0 0 280px;
       max-width: 90vw;
-      background: var(--pf-surface, #181818);
-      border-left: 1px solid rgba(255, 255, 255, 0.08);
-      color: #fff;
+      background: var(--pf-surface);
+      border-left: 1px solid var(--pf-border);
+      color: var(--pf-text);
       display: flex;
       flex-direction: column;
       overflow: hidden;
       box-sizing: border-box;
+      min-height: 0;
     }
     /* Permanent thin rail that hosts the panel's expand/collapse
        toggle. Mirrors the folder sidebar's left rail — the toggle
@@ -574,9 +614,9 @@ export class PfFullView extends LitElement {
        affordance and the panel feel like a unit. */
     .edit-side-rail {
       flex: 0 0 32px;
-      border-left: 1px solid rgba(255, 255, 255, 0.08);
-      background: var(--pf-surface, #181818);
-      color: #fff;
+      border-left: 1px solid var(--pf-border);
+      background: var(--pf-surface);
+      color: var(--pf-text);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -599,7 +639,7 @@ export class PfFullView extends LitElement {
       bottom: 49px;
       flex: none;
       z-index: 5;
-      background: rgba(24, 24, 24, 0.92);
+      background: color-mix(in srgb, var(--pf-surface) 92%, transparent);
       backdrop-filter: blur(6px);
       opacity: 0;
       transform: translateX(8px);
@@ -623,11 +663,23 @@ export class PfFullView extends LitElement {
     }
     .edit-side-panel-body {
       flex: 1 1 auto;
+      /* min-height: 0 lets this flex item shrink below its content
+         height so overflow-y can actually scroll. Without it, the
+         cards push the body taller than the panel and visually
+         collide with the footer / each other. */
+      min-height: 0;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: var(--pf-space-2);
       padding: var(--pf-space-2);
+    }
+    /* Edit cards keep their natural (open) height — no flex-shrink —
+       so opening a card simply makes the body scroll instead of
+       squashing siblings. This is what keeps the Basic edits panel
+       reachable while the Crop card is expanded. */
+    .edit-side-panel-body > .edit-card {
+      flex: 0 0 auto;
     }
     /* Footer with Before/After (left) and Revert-all (right). */
     .edit-side-panel-footer {
@@ -637,13 +689,13 @@ export class PfFullView extends LitElement {
       justify-content: space-between;
       gap: var(--pf-space-2);
       padding: var(--pf-space-2);
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(0, 0, 0, 0.18);
+      border-top: 1px solid var(--pf-border);
+      background: var(--pf-surface-2);
     }
     .edit-side-panel-footer .footer-btn {
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
       padding: 4px 10px;
       font-size: var(--pf-text-xs);
@@ -655,17 +707,20 @@ export class PfFullView extends LitElement {
       transition: background var(--pf-transition);
     }
     .edit-side-panel-footer .footer-btn:hover {
-      background: rgba(255, 255, 255, 0.16);
+      background: var(--pf-surface-hover);
+      border-color: var(--pf-accent);
     }
     .edit-side-panel-footer .footer-btn:disabled {
-      opacity: 0.35;
+      opacity: 0.4;
       cursor: default;
     }
     .edit-side-panel-footer .footer-btn:disabled:hover {
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--pf-surface);
+      border-color: var(--pf-border);
     }
     .edit-side-panel-footer .footer-btn[aria-pressed="true"] {
-      background: var(--pf-accent, #4a90e2);
+      background: var(--pf-accent);
+      color: var(--pf-on-accent);
       border-color: transparent;
     }
     .edit-side-panel-footer .footer-btn pf-icon {
@@ -674,9 +729,9 @@ export class PfFullView extends LitElement {
     /* Reset button styling — reuse the .tool-btn look from the
        former edit toolbar so the visual remains familiar. */
     .edit-side-panel .tool-btn {
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
       width: 32px;
       height: 32px;
@@ -688,14 +743,16 @@ export class PfFullView extends LitElement {
       transition: background var(--pf-transition);
     }
     .edit-side-panel .tool-btn:hover {
-      background: rgba(255, 255, 255, 0.16);
+      background: var(--pf-surface-hover);
+      border-color: var(--pf-accent);
     }
     .edit-side-panel .tool-btn:disabled {
-      opacity: 0.35;
+      opacity: 0.4;
       cursor: default;
     }
     .edit-side-panel .tool-btn:disabled:hover {
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--pf-surface-2);
+      border-color: var(--pf-border);
     }
     .edit-side-panel .tool-btn pf-icon {
       font-size: 1rem;
@@ -708,7 +765,7 @@ export class PfFullView extends LitElement {
       align-items: center;
       gap: 2px;
       padding: 2px;
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--pf-surface-2);
       border-radius: var(--pf-radius-md);
     }
     .edit-side-panel .edit-group.edit-group-wrap {
@@ -716,7 +773,7 @@ export class PfFullView extends LitElement {
     }
     .edit-side-panel .edit-group button {
       background: transparent;
-      color: #fff;
+      color: var(--pf-text);
       border: none;
       padding: 4px 10px;
       font-size: var(--pf-text-xs);
@@ -726,10 +783,11 @@ export class PfFullView extends LitElement {
       white-space: nowrap;
     }
     .edit-side-panel .edit-group button:hover {
-      background: rgba(255, 255, 255, 0.1);
+      background: var(--pf-surface-hover);
     }
     .edit-side-panel .edit-group button[aria-pressed="true"] {
-      background: rgba(255, 255, 255, 0.22);
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent);
     }
     .edit-side-panel .crop-actions {
       display: flex;
@@ -739,9 +797,9 @@ export class PfFullView extends LitElement {
       margin-top: var(--pf-space-1);
     }
     .edit-side-panel .edit-action {
-      background: rgba(255, 255, 255, 0.08);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
       padding: 4px 12px;
       font-size: var(--pf-text-xs);
@@ -749,11 +807,16 @@ export class PfFullView extends LitElement {
       cursor: pointer;
     }
     .edit-side-panel .edit-action:hover {
-      background: rgba(255, 255, 255, 0.18);
+      background: var(--pf-surface-hover);
+      border-color: var(--pf-accent);
     }
     .edit-side-panel .edit-action.primary {
-      background: var(--pf-accent, #4a90e2);
+      background: var(--pf-accent);
+      color: var(--pf-on-accent);
       border-color: transparent;
+    }
+    .edit-side-panel .edit-action.primary:hover {
+      background: var(--pf-accent-hover);
     }
     /* Hover hot-zone on the right edge in fullscreen mode so the
        floating panel can be summoned without grazing the right edge
@@ -775,9 +838,9 @@ export class PfFullView extends LitElement {
       pointer-events: none;
     }
     .edit-card {
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: 1px solid var(--pf-border);
       border-radius: var(--pf-radius-md);
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--pf-surface-2);
       overflow: hidden;
     }
     .edit-card-header {
@@ -787,7 +850,7 @@ export class PfFullView extends LitElement {
       flex: 1 1 auto;
       min-width: 0;
       background: transparent;
-      color: #fff;
+      color: var(--pf-text);
       border: none;
       padding: 8px 10px;
       font-size: var(--pf-text-sm);
@@ -804,9 +867,9 @@ export class PfFullView extends LitElement {
     .card-revert {
       flex: 0 0 auto;
       background: transparent;
-      color: rgba(255, 255, 255, 0.85);
+      color: var(--pf-text-muted);
       border: none;
-      border-left: 1px solid rgba(255, 255, 255, 0.06);
+      border-left: 1px solid var(--pf-border);
       padding: 0 10px;
       cursor: pointer;
       display: inline-flex;
@@ -814,22 +877,22 @@ export class PfFullView extends LitElement {
       justify-content: center;
     }
     .card-revert:hover {
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
+      background: var(--pf-surface-hover);
+      color: var(--pf-text);
     }
     .card-revert:disabled {
-      opacity: 0.3;
+      opacity: 0.35;
       cursor: default;
     }
     .card-revert:disabled:hover {
       background: transparent;
-      color: rgba(255, 255, 255, 0.85);
+      color: var(--pf-text-muted);
     }
     .card-revert pf-icon {
       font-size: 0.9rem;
     }
     .edit-card-header:hover {
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--pf-surface-hover);
     }
     .edit-card-header pf-icon {
       font-size: 0.9rem;
@@ -856,12 +919,12 @@ export class PfFullView extends LitElement {
     }
     .slider-row .slider-label {
       font-size: var(--pf-text-xs);
-      color: rgba(255, 255, 255, 0.85);
+      color: var(--pf-text);
       grid-column: 1;
     }
     .slider-row .slider-value {
       font-size: var(--pf-text-xs);
-      color: rgba(255, 255, 255, 0.7);
+      color: var(--pf-text-muted);
       font-variant-numeric: tabular-nums;
       grid-column: 2;
       min-width: 3ch;
@@ -869,21 +932,62 @@ export class PfFullView extends LitElement {
       cursor: pointer;
     }
     .slider-row .slider-value:hover {
-      color: #fff;
+      color: var(--pf-text);
     }
     .slider-row input[type="range"] {
       grid-column: 1 / span 2;
       width: 100%;
       margin: 0;
-      accent-color: var(--pf-accent, #4a90e2);
+      accent-color: var(--pf-accent);
     }
     .slider-row input[type="range"]:focus-visible {
-      outline: 1px solid var(--pf-accent, #4a90e2);
+      outline: 1px solid var(--pf-accent);
       outline-offset: 2px;
     }
     .slider-row .slider-input {
       grid-column: 1 / span 2;
       width: 100%;
+    }
+    /* Compact key/value table for EXIF metadata. Labels in a fixed
+       narrow column, values truncate with ellipsis if they overflow. */
+    .exif-list {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      column-gap: 10px;
+      row-gap: 4px;
+      margin: 0;
+      padding: 0;
+    }
+    .exif-list dt {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      align-self: center;
+      margin: 0;
+    }
+    .exif-list dd {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text);
+      margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .exif-section {
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      color: var(--pf-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 10px 0 4px;
+    }
+    .exif-section:first-child {
+      margin-top: 0;
+    }
+    .exif-empty {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      padding: 4px 0;
     }
   `;
 
@@ -989,6 +1093,21 @@ export class PfFullView extends LitElement {
    * memory — opens by default each session. */
   @state()
   private basicCardOpen = true;
+
+  /** Whether the "Info" (EXIF) disclosure card is open. Defaults open. */
+  @state()
+  private infoCardOpen = true;
+
+  /** Cached EXIF metadata for the active photo. `null` while loading
+   * or if the read failed; an empty record means no fields available. */
+  @state()
+  private exif: ExifMetadata | null = null;
+
+  /** Path the cached EXIF was read for, so we can refresh on
+   * navigation / variant switch. */
+  private exifForPath: string | null = null;
+
+  private exifLoadGen = 0;
 
   private unsubscribeEdits: (() => void) | null = null;
 
@@ -1126,6 +1245,19 @@ export class PfFullView extends LitElement {
         }
         this.idle = false;
       }
+      // Toggling fullscreen changes the stage's effective size (the
+      // toolbar/bottombar move from in-flow to absolutely positioned
+      // overlays). Snap pan/zoom back to fit so the image is always
+      // shown fully zoomed out with the correct margin/scale, instead
+      // of inheriting a stale absolute scale from the previous layout.
+      // Defer past the layout change so the canvas measures the new
+      // stage size before refitting.
+      requestAnimationFrame(() => {
+        const cv = this.renderRoot.querySelector(
+          "pf-image-canvas"
+        ) as PfImageCanvas | null;
+        cv?.resetView();
+      });
     }
     if (changed.has("photos") || changed.has("index")) {
       // Flush any debounced tone edit for the photo we're leaving so
@@ -1153,6 +1285,7 @@ export class PfFullView extends LitElement {
     // we're now showing (handles navigation, variant switches, and
     // edit-store change notifications via `editsTick`).
     this.syncToneFromStore();
+    this.syncExifFromPath();
   }
 
   /** Refresh `this.tone` from the edit store when the active edit
@@ -1173,6 +1306,33 @@ export class PfFullView extends LitElement {
     const persisted = getPhotoEdit(target)?.tone ?? null;
     this.tone = persisted ? { ...defaultTone(), ...persisted } : defaultTone();
     this.toneForPath = target;
+  }
+
+  /** Re-read EXIF metadata when the active resolved path changes.
+   * Backend reads happen on a worker thread so this is non-blocking. */
+  private syncExifFromPath() {
+    const target = this.editTargetPath();
+    if (target == null) {
+      if (this.exifForPath !== null) {
+        this.exif = null;
+        this.exifForPath = null;
+      }
+      return;
+    }
+    if (target === this.exifForPath) return;
+    this.exifForPath = target;
+    this.exif = null;
+    const gen = ++this.exifLoadGen;
+    void invoke<ExifMetadata>("get_exif_metadata", { photoPath: target })
+      .then((meta) => {
+        if (gen !== this.exifLoadGen) return;
+        this.exif = meta ?? {};
+      })
+      .catch((err) => {
+        if (gen !== this.exifLoadGen) return;
+        console.warn("Failed to read EXIF metadata", err);
+        this.exif = {};
+      });
   }
 
   /**
@@ -1680,6 +1840,13 @@ export class PfFullView extends LitElement {
       return;
     }
     this.editPanelOpenWindowed = !this.editPanelOpenWindowed;
+    this.dispatchEvent(
+      new CustomEvent("edit-panel-open-changed", {
+        detail: { open: this.editPanelOpenWindowed },
+        bubbles: true,
+        composed: true,
+      })
+    );
   };
 
   // --- Tone slider handlers --------------------------------------------
@@ -1706,6 +1873,178 @@ export class PfFullView extends LitElement {
     this.basicCardOpen = !this.basicCardOpen;
   };
 
+  private toggleInfoCard = () => {
+    this.infoCardOpen = !this.infoCardOpen;
+  };
+
+  /** Build the camera-body label, joining make + model only when the
+   * model doesn't already include the make (e.g. "NIKON D850" already
+   * starts with "NIKON CORPORATION", so don't double up). */
+  private formatCameraName(meta: ExifMetadata): string | null {
+    const make = (meta.cameraMake ?? "").trim();
+    const model = (meta.cameraModel ?? "").trim();
+    if (!make && !model) return null;
+    if (!make) return model;
+    if (!model) return make;
+    if (model.toLowerCase().startsWith(make.toLowerCase())) return model;
+    return `${make} ${model}`;
+  }
+
+  private formatLensName(meta: ExifMetadata): string | null {
+    const make = (meta.lensMake ?? "").trim();
+    const model = (meta.lensModel ?? "").trim();
+    if (!make && !model) return null;
+    if (!make) return model;
+    if (!model) return make;
+    if (model.toLowerCase().startsWith(make.toLowerCase())) return model;
+    return `${make} ${model}`;
+  }
+
+  private formatExifDate(raw: string | null | undefined): string | null {
+    if (!raw) return null;
+    // EXIF DateTimeOriginal is "YYYY:MM:DD HH:MM:SS". Normalise to
+    // a more readable "YYYY-MM-DD HH:MM" without TZ guessing.
+    const m = raw.match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2})/);
+    if (!m) return raw;
+    const [, y, mo, d, h, mi] = m;
+    return `${y}-${mo}-${d} ${h}:${mi}`;
+  }
+
+  private formatGpsCoords(
+    lat: number | null | undefined,
+    lon: number | null | undefined,
+  ): string | null {
+    if (lat == null || lon == null) return null;
+    return `${lat.toFixed(5)}°, ${lon.toFixed(5)}°`;
+  }
+
+  private formatDimensions(
+    w: number | null | undefined,
+    h: number | null | undefined,
+  ): string | null {
+    if (!w || !h) return null;
+    const mp = (w * h) / 1_000_000;
+    return `${w} × ${h} (${mp.toFixed(1)} MP)`;
+  }
+
+  private renderInfoCard() {
+    const open = this.infoCardOpen;
+    const meta = this.exif;
+    const loading = meta === null;
+    const cameraName = meta ? this.formatCameraName(meta) : null;
+    const lensName = meta ? this.formatLensName(meta) : null;
+    const focalDisplay = meta?.focalLength ?? null;
+    const focal35 =
+      meta?.focalLength35mm && meta.focalLength35mm !== meta.focalLength
+        ? meta.focalLength35mm
+        : null;
+    const dateTaken = this.formatExifDate(meta?.dateTaken);
+    const dimensions = this.formatDimensions(
+      meta?.pixelWidth,
+      meta?.pixelHeight,
+    );
+    const gps = this.formatGpsCoords(meta?.gpsLatitude, meta?.gpsLongitude);
+
+    type Row = { label: string; value: string };
+    const cameraRows: Row[] = [];
+    if (cameraName) cameraRows.push({ label: "Camera", value: cameraName });
+    if (lensName) cameraRows.push({ label: "Lens", value: lensName });
+    if (meta?.cameraSerial)
+      cameraRows.push({ label: "Body serial", value: meta.cameraSerial });
+    if (meta?.lensSerial)
+      cameraRows.push({ label: "Lens serial", value: meta.lensSerial });
+    if (meta?.software)
+      cameraRows.push({ label: "Software", value: meta.software });
+
+    const exposureRows: Row[] = [];
+    if (meta?.iso) exposureRows.push({ label: "ISO", value: meta.iso });
+    if (meta?.shutterSpeed)
+      exposureRows.push({ label: "Shutter speed", value: meta.shutterSpeed });
+    if (meta?.aperture)
+      exposureRows.push({ label: "Aperture", value: meta.aperture });
+    if (focalDisplay)
+      exposureRows.push({ label: "Focal length", value: focalDisplay });
+    if (focal35)
+      exposureRows.push({ label: "35mm equiv.", value: focal35 });
+    if (meta?.exposureCompensation)
+      exposureRows.push({
+        label: "Exposure comp.",
+        value: meta.exposureCompensation,
+      });
+    if (meta?.exposureMode)
+      exposureRows.push({ label: "Exposure mode", value: meta.exposureMode });
+    if (meta?.exposureProgram)
+      exposureRows.push({
+        label: "Exposure program",
+        value: meta.exposureProgram,
+      });
+    if (meta?.meteringMode)
+      exposureRows.push({ label: "Metering", value: meta.meteringMode });
+    if (meta?.whiteBalance)
+      exposureRows.push({ label: "White balance", value: meta.whiteBalance });
+    if (meta?.flash) exposureRows.push({ label: "Flash", value: meta.flash });
+
+    const imageRows: Row[] = [];
+    if (dimensions)
+      imageRows.push({ label: "Dimensions", value: dimensions });
+    if (meta?.colorSpace)
+      imageRows.push({ label: "Color space", value: meta.colorSpace });
+    if (meta?.orientation)
+      imageRows.push({ label: "Orientation", value: meta.orientation });
+
+    const captureRows: Row[] = [];
+    if (dateTaken) captureRows.push({ label: "Date taken", value: dateTaken });
+    if (meta?.artist)
+      captureRows.push({ label: "Artist", value: meta.artist });
+    if (meta?.copyright)
+      captureRows.push({ label: "Copyright", value: meta.copyright });
+    if (gps) captureRows.push({ label: "GPS", value: gps });
+    if (meta?.gpsAltitude)
+      captureRows.push({ label: "Altitude", value: meta.gpsAltitude });
+
+    const sections: Array<{ title: string; rows: Row[] }> = [
+      { title: "Camera & lens", rows: cameraRows },
+      { title: "Exposure", rows: exposureRows },
+      { title: "Image", rows: imageRows },
+      { title: "Capture", rows: captureRows },
+    ].filter((s) => s.rows.length > 0);
+
+    return html`
+      <section class="edit-card" data-open=${open ? "true" : "false"}>
+        <div class="edit-card-header-row">
+          <button
+            type="button"
+            class="edit-card-header"
+            aria-expanded=${open}
+            @click=${this.toggleInfoCard}
+          >
+            <pf-icon name="chevron-down"></pf-icon>
+            <span>Info</span>
+          </button>
+        </div>
+        <div class="edit-card-body">
+          ${loading
+            ? html`<div class="exif-empty">Reading EXIF…</div>`
+            : sections.length === 0
+            ? html`<div class="exif-empty">No EXIF metadata.</div>`
+            : sections.map(
+                (section) => html`
+                  <div class="exif-section">${section.title}</div>
+                  <dl class="exif-list">
+                    ${section.rows.map(
+                      (r) => html`
+                        <dt>${r.label}</dt>
+                        <dd title=${r.value}>${r.value}</dd>
+                      `,
+                    )}
+                  </dl>
+                `,
+              )}
+        </div>
+      </section>
+    `;
+  }
+
   private renderEditSidePanel() {
     void this.editsTick;
     const canCompare = this.canPreviewOriginal();
@@ -1718,6 +2057,7 @@ export class PfFullView extends LitElement {
         @mouseenter=${() => (this.editPanelVisible = true)}
       >
         <div class="edit-side-panel-body">
+          ${this.renderInfoCard()}
           ${this.renderCropCard()}
           ${this.renderBasicCard()}
         </div>

@@ -12,6 +12,7 @@ export class PfThumbnailCard extends LitElement {
   static styles = css`
     :host {
       display: block;
+      width: 100%;
     }
     .card {
       display: flex;
@@ -35,8 +36,15 @@ export class PfThumbnailCard extends LitElement {
       box-shadow: 0 0 0 2px var(--pf-accent-soft);
     }
     .thumb {
-      width: 160px;
-      height: 160px;
+      /* Cards stretch to fill their grid cell; the thumbnail is a
+         square of the cell width so the photo-grid's slider drives
+         thumbnail size by changing the column count. The image
+         itself preserves its native aspect (letterboxed inside the
+         square) — full-resolution stretching only happens in the
+         full image view, where the canvas applies the configured
+         scale + margin. */
+      width: 100%;
+      aspect-ratio: 1 / 1;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -49,6 +57,9 @@ export class PfThumbnailCard extends LitElement {
     .thumb img {
       max-width: 100%;
       max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
       display: block;
     }
     .placeholder {
@@ -58,7 +69,7 @@ export class PfThumbnailCard extends LitElement {
     .filename {
       font-size: var(--pf-text-xs);
       color: var(--pf-text-muted);
-      max-width: 160px;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;

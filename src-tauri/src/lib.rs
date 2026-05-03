@@ -36,6 +36,7 @@ pub fn run() {
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,
+            commands::get_exif_metadata,
             commands::get_cache_settings,
             commands::set_thumbnail_cache_max,
             commands::set_full_image_memory_cache_max,

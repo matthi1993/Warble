@@ -8,9 +8,11 @@
 //! to hand the canvas the original decoded bytes (or, for RAW, the
 //! developed preview bytes).
 
+use std::path::PathBuf;
+
 use tauri::ipc::Response;
 
-use crate::imaging::{full_image, thumbnails};
+use crate::imaging::{exif, full_image, thumbnails};
 
 #[tauri::command]
 pub async fn get_thumbnail(photo_path: String) -> Result<String, String> {
@@ -25,4 +27,18 @@ pub async fn get_full_image_bytes(photo_path: String) -> Result<Response, String
         .await
         .map_err(|e| e.to_string())??;
     Ok(Response::new(bytes))
+}
+
+/// Read EXIF metadata for the photo at `photo_path`. Returns an
+/// `ExifMetadata` with `null` for any tags that aren't present so the
+/// frontend can decide whether to render each row.
+#[tauri::command]
+pub async fn get_exif_metadata(
+    photo_path: String,
+) -> Result<exif::ExifMetadata, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok::<_, String>(exif::read_metadata(&PathBuf::from(photo_path)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

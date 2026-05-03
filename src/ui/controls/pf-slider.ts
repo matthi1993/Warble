@@ -17,10 +17,10 @@ export class PfSlider extends LitElement {
   static styles = css`
     :host {
       display: block;
-      --pf-slider-track: rgba(255, 255, 255, 0.16);
+      --pf-slider-track: var(--pf-border-strong, rgba(127, 127, 127, 0.6));
       --pf-slider-fill: var(--pf-accent, #4a90e2);
-      --pf-slider-thumb: #fff;
-      --pf-slider-tick: rgba(255, 255, 255, 0.5);
+      --pf-slider-thumb: var(--pf-text, #fff);
+      --pf-slider-tick: var(--pf-border-strong, rgba(127, 127, 127, 0.8));
       --pf-slider-height: 4px;
       --pf-slider-thumb-size: 14px;
     }

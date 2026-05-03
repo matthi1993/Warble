@@ -101,11 +101,18 @@ pub fn set_view_state(
 /// Last opened photo + which surface (grid or full) the user was on.
 /// Both fields optional so the frontend can clear either independently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppView {
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
     pub view: Option<String>,
+    /// Whether the folder sidebar is collapsed.
+    #[serde(default)]
+    pub sidebar_collapsed: Option<bool>,
+    /// Whether the right-side edit panel is expanded in windowed mode.
+    #[serde(default)]
+    pub edit_panel_open: Option<bool>,
 }
 
 #[tauri::command]

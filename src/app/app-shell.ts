@@ -80,51 +80,12 @@ export class WarbleApp extends LitElement {
        toolbar height and up by the bottombar height so they line up
        with the stage between the bars \u2014 matching the right-side
        edit panel's vertical extent. */
-    :host(.full-view-open):not(.fs-sidebar-overlay) .sidebar-rail,
-    :host(.full-view-open):not(.fs-sidebar-overlay) aside.sidebar {
+    :host(.full-view-open) .sidebar-rail,
+    :host(.full-view-open) aside.sidebar {
       margin-top: 49px;
       margin-bottom: 49px;
     }
 
-    /* Fullscreen overlay mode: when the full view is open and the
-       window is fullscreen, the folder sidebar (and its rail) become
-       a left-edge overlay above the full view, mirroring the edit
-       panel's hover-reveal behaviour. The sidebar slides in from the
-       left when the cursor approaches the left edge or the rail.
-       Top offset matches the full-view toolbar height so the panel
-       sits beneath the header bar, like the edit panel on the right. */
-    :host(.fs-sidebar-overlay) .sidebar-rail,
-    :host(.fs-sidebar-overlay) aside.sidebar {
-      position: fixed;
-      top: 49px;
-      bottom: 49px;
-      z-index: 1001;
-      transition: transform 200ms ease, opacity 200ms ease;
-      opacity: 0;
-      pointer-events: none;
-    }
-    :host(.fs-sidebar-overlay) .sidebar-rail {
-      left: 0;
-      width: 32px;
-      transform: translateX(-100%);
-      background: rgba(24, 24, 24, 0.92);
-      backdrop-filter: blur(6px);
-    }
-    :host(.fs-sidebar-overlay) aside.sidebar {
-      left: 32px;
-      width: 228px;
-      display: flex;
-      transform: translateX(calc(-100% - 32px));
-      background: rgba(24, 24, 24, 0.92);
-      backdrop-filter: blur(6px);
-      color: var(--pf-text);
-    }
-    :host(.fs-sidebar-overlay.sidebar-overlay-visible) .sidebar-rail,
-    :host(.fs-sidebar-overlay.sidebar-overlay-visible) aside.sidebar {
-      transform: translateX(0);
-      opacity: 1;
-      pointer-events: auto;
-    }
     .sidebar-header {
       padding: var(--pf-space-3);
       border-bottom: 1px solid var(--pf-border);
@@ -278,11 +239,11 @@ export class WarbleApp extends LitElement {
   @state()
   private sidebarCollapsed = false;
 
-  /** True while the folder sidebar is revealed as a fullscreen
-   *  overlay (mouse moved to the left edge while in fullscreen full
-   *  view mode). Mirrors the edit panel's hover-reveal behaviour. */
+  /** Whether the right-side edit panel is expanded in windowed mode.
+   * Mirrors `pf-full-view`'s `editPanelOpenWindowed` and is persisted
+   * across sessions. */
   @state()
-  private sidebarOverlayVisible = false;
+  private editPanelOpen = false;
 
 
 
@@ -317,7 +278,6 @@ export class WarbleApp extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener("keydown", this.onGlobalKey);
-    window.addEventListener("mousemove", this.onMouseMoveSidebarOverlay);
     this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
     });
@@ -363,13 +323,23 @@ export class WarbleApp extends LitElement {
       const persisted = await invoke<{
         path?: string | null;
         view?: string | null;
+        sidebarCollapsed?: boolean | null;
+        editPanelOpen?: boolean | null;
       } | null>("get_app_view");
-      if (persisted?.path) {
-        const idx = this.photos.findIndex((p) => p.path === persisted.path);
-        if (idx >= 0) {
-          this.selectedPhoto = this.photos[idx];
-          if (persisted.view === "full") {
-            this.fullViewIndex = idx;
+      if (persisted) {
+        if (typeof persisted.sidebarCollapsed === "boolean") {
+          this.sidebarCollapsed = persisted.sidebarCollapsed;
+        }
+        if (typeof persisted.editPanelOpen === "boolean") {
+          this.editPanelOpen = persisted.editPanelOpen;
+        }
+        if (persisted.path) {
+          const idx = this.photos.findIndex((p) => p.path === persisted.path);
+          if (idx >= 0) {
+            this.selectedPhoto = this.photos[idx];
+            if (persisted.view === "full") {
+              this.fullViewIndex = idx;
+            }
           }
         }
       }
@@ -383,7 +353,6 @@ export class WarbleApp extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onGlobalKey);
-    window.removeEventListener("mousemove", this.onMouseMoveSidebarOverlay);
     this.unsubscribeProgress?.();
     this.unsubscribeProgress = null;
     this.unsubscribeCacheCleared?.();
@@ -635,6 +604,10 @@ export class WarbleApp extends LitElement {
     this.fullViewIndex = null;
   };
 
+  private onEditPanelOpenChanged = (e: CustomEvent<{ open: boolean }>) => {
+    this.editPanelOpen = e.detail.open;
+  };
+
   private toggleSidebar = () => {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
@@ -644,41 +617,21 @@ export class WarbleApp extends LitElement {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
     if (changed.has("windowFullscreen") || changed.has("fullViewIndex")) {
-      const overlayMode =
-        this.windowFullscreen && this.fullViewIndex !== null;
-      this.classList.toggle("fs-sidebar-overlay", overlayMode);
+      // In fullscreen with the full view open the folder sidebar is
+      // hidden entirely (no hover-to-reveal). Keep `full-view-open`
+      // for the windowed-mode chrome alignment.
       this.classList.toggle("full-view-open", this.fullViewIndex !== null);
-      if (!overlayMode) {
-        this.sidebarOverlayVisible = false;
-      }
-    }
-    if (changed.has("sidebarOverlayVisible")) {
-      this.classList.toggle(
-        "sidebar-overlay-visible",
-        this.sidebarOverlayVisible
-      );
     }
     if (
       this.appViewHydrated &&
-      (changed.has("selectedPhoto") || changed.has("fullViewIndex"))
+      (changed.has("selectedPhoto") ||
+        changed.has("fullViewIndex") ||
+        changed.has("sidebarCollapsed") ||
+        changed.has("editPanelOpen"))
     ) {
       void this.persistAppView();
     }
   }
-
-  /** Cursor proximity test for the fullscreen sidebar overlay. The
-   *  rail+sidebar together cover the leftmost 260px when revealed.
-   *  Reveal when the cursor is within 80px of the left edge; hide
-   *  immediately as soon as the cursor leaves the rail+sidebar area. */
-  private onMouseMoveSidebarOverlay = (e: MouseEvent) => {
-    if (!(this.windowFullscreen && this.fullViewIndex !== null)) return;
-    const railWidth = 32;
-    const sidebarWidth = 228;
-    const totalWidth = railWidth + sidebarWidth;
-    const nearLeftEdge = e.clientX < 80;
-    const overOverlay = e.clientX < totalWidth;
-    this.sidebarOverlayVisible = nearLeftEdge || overOverlay;
-  };
 
   private async persistAppView() {
     try {
@@ -686,6 +639,8 @@ export class WarbleApp extends LitElement {
         view: {
           path: this.selectedPhoto?.path ?? null,
           view: this.fullViewIndex !== null ? "full" : "grid",
+          sidebarCollapsed: this.sidebarCollapsed,
+          editPanelOpen: this.editPanelOpen,
         },
       });
     } catch (err) {
@@ -746,6 +701,7 @@ export class WarbleApp extends LitElement {
           : html`<pf-photo-grid
               .photos=${this.photos}
               .selectedPath=${this.selectedPhoto?.path ?? null}
+              ?full-view-open=${this.fullViewIndex !== null}
             ></pf-photo-grid>`}
       </main>
 
@@ -766,8 +722,10 @@ export class WarbleApp extends LitElement {
             .photos=${this.photos}
             .index=${this.fullViewIndex}
             ?fullscreen=${this.windowFullscreen}
+            .editPanelOpenWindowed=${this.editPanelOpen}
             @full-view-navigate=${this.onFullViewNavigate}
             @full-view-close=${this.onFullViewClose}
+            @edit-panel-open-changed=${this.onEditPanelOpenChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
         : null}
@@ -810,13 +768,11 @@ export class WarbleApp extends LitElement {
     const pct = p.total === 0 ? 0 : Math.round((done / p.total) * 100);
     return html`
       <footer class="app-footer" role="status" aria-live="polite">
-        ${p.total === 0
+        ${p.total === 0 || !p.inProgress
           ? html`<span class="footer-label">Ready</span>
               <span class="footer-spacer"></span>`
           : html`
-              <span class="footer-label">
-                ${p.inProgress ? "Generating thumbnails…" : "Thumbnails ready"}
-              </span>
+              <span class="footer-label">Generating thumbnails…</span>
               <div class="footer-bar">
                 <div class="footer-bar-fill" style="width: ${pct}%"></div>
               </div>
