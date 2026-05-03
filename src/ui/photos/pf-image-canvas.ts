@@ -119,11 +119,29 @@ export class PfImageCanvas extends LitElement {
   cropMode = false;
 
   /**
+   * When `true`, the tone pipeline is pre-warmed (WebGL2 context
+   * created, shader compiled, current bitmap uploaded as a texture)
+   * so the first slider movement is responsive. Without this warm-
+   * up the first drag pays the full GL init + 40 MP texture upload
+   * cost on the same frame and the UI feels stuck for ~200 ms.
+   */
+  @property({ type: Boolean, reflect: true })
+  editing = false;
+
+  /**
    * Locked aspect ratio (width / height) of the crop frame. `null`
    * means free-form (currently unused — UI always supplies a ratio).
    */
   @property({ type: Number })
   cropAspect: number | null = null;
+
+  /**
+   * When `true`, persisted crop and tonal adjustments are bypassed at
+   * draw time so the user can momentarily see the unedited original.
+   * Pan/zoom still work; only the edits are suppressed.
+   */
+  @property({ type: Boolean, reflect: true })
+  previewOriginal = false;
 
   @state()
   private status: "idle" | "loading" | "ready" | "error" = "idle";
@@ -333,6 +351,41 @@ export class PfImageCanvas extends LitElement {
       this.style.setProperty("--pf-canvas-bg", this.background);
       this.draw();
     }
+    if (changed.has("previewOriginal")) {
+      // Toggling the preview changes the cropped source rect, so refit
+      // before redrawing or the image jumps off-centre.
+      this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
+      this.scale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      requestAnimationFrame(() => this.onResize());
+    }
+    if (changed.has("editing") && this.editing) {
+      // Pre-warm the GL pipeline so the first slider drag doesn't pay
+      // for context creation + a 40 MP texture upload on the same
+      // frame. If the bitmap isn't here yet, `setBitmap` will run
+      // warmup once it arrives.
+      this.warmupTonePipeline();
+    }
+  }
+
+  /** Warm up the tone pipeline with the current bitmap if `editing`
+   * is on. Scheduled via `requestIdleCallback` (falling back to a
+   * micro-timeout) so the warm-up never delays a paint. */
+  private warmupTonePipeline() {
+    if (!this.editing) return;
+    const bm = this.bitmap;
+    if (!bm) return;
+    const run = () => {
+      if (!this.editing || this.bitmap !== bm) return;
+      this.tonePipeline.warmup(bm);
+    };
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void) => number;
+    }).requestIdleCallback;
+    if (ric) ric(run);
+    else window.setTimeout(run, 0);
   }
 
   private async startLoad() {
@@ -382,6 +435,7 @@ export class PfImageCanvas extends LitElement {
       this.status = "ready";
       this.recomputeFit();
       this.draw();
+      this.warmupTonePipeline();
       return;
     }
 
@@ -440,6 +494,7 @@ export class PfImageCanvas extends LitElement {
       this.status = "ready";
       this.recomputeFit();
       this.draw();
+      this.warmupTonePipeline();
     } catch (err) {
       if (ac.signal.aborted || this.path !== path) return;
       console.error("full image load failed", err);
@@ -460,6 +515,7 @@ export class PfImageCanvas extends LitElement {
    */
   private effectiveCrop(): CropEdit | null {
     if (this.cropMode) return null;
+    if (this.previewOriginal) return null;
     return this.savedCrop;
   }
 
@@ -593,7 +649,8 @@ export class PfImageCanvas extends LitElement {
       // and copied each slider tick. By having the shader sample the
       // cropped sub-rect into a viewport-sized output, the per-tick
       // cost stays proportional to what's actually visible.
-      const applyTone = !this.cropMode && !isToneZero(this.savedTone);
+      const applyTone =
+        !this.cropMode && !this.previewOriginal && !isToneZero(this.savedTone);
       if (applyTone) {
         // Compute the *visible* portion of the displayed image so the
         // GL pipeline only shades pixels that actually land on the
@@ -1285,7 +1342,95 @@ function enforceAspect(
  *     lower / upper midtones. The four regions are designed so a
  *     single slider only nudges its own zone — e.g. dragging Blacks
  *     leaves the highlights untouched.
+ *
+ *   The per-region shape and sensitivity is fully configurable by
+ *   {@link TONE_REGION}: each region declares an `amplitude` (max
+ *   luminance offset at slider ±100 and peak weight) plus a
+ *   `weightExp` shape that drives the GLSL weight expression.
+ *   Endpoint regions use `pow((1-L), n)` / `pow(L, n)`; midtone
+ *   regions use a normalised bump `K · L^a · (1-L)^b` that peaks at
+ *   `L = a/(a+b)` with peak value 1.
  */
+
+/**
+ * Per-region tunables for the Blacks / Shadows / Highlights / Whites
+ * sliders. Tweak these to make the sliders more or less aggressive
+ * and to widen / narrow the luminance band each one targets.
+ *
+ * `amplitude` — maximum signed luminance offset at slider ±100 and
+ *   peak weight. The smaller this number, the less the slider does.
+ *
+ * `weightExp` — the shape of the per-region weight curve:
+ *   - `{ kind: "endpoint-low",  exp: n }` →  weight = (1-L)^n
+ *     (Blacks — bigger `n` = sharper localisation at L≈0, i.e. only
+ *     very dark pixels move).
+ *   - `{ kind: "endpoint-high", exp: n }` →  weight = L^n
+ *     (Whites — bigger `n` = sharper localisation at L≈1).
+ *   - `{ kind: "midtone", a, b }` →  weight = K · L^a · (1-L)^b
+ *     (Shadows / Highlights — bump centred at L = a/(a+b);
+ *     larger a+b narrows the bump). K is auto-computed so the bump
+ *     peaks at exactly 1.0.
+ */
+type RegionWeight =
+  | { kind: "endpoint-low"; exp: number }
+  | { kind: "endpoint-high"; exp: number }
+  | { kind: "midtone"; a: number; b: number };
+
+const TONE_REGION: Record<
+  "blacks" | "shadows" | "highlights" | "whites",
+  { amplitude: number; weightExp: RegionWeight }
+> = {
+  // Endpoint pulls — sharp falloff so only the darkest / brightest
+  // pixels are affected. Higher exponents than the previous (6) make
+  // the slider feel less twitchy and more targeted.
+  blacks: {
+    amplitude: 0.25,
+    weightExp: { kind: "endpoint-low", exp: 10 },
+  },
+  whites: {
+    amplitude: 0.25,
+    weightExp: { kind: "endpoint-high", exp: 10 },
+  },
+  // Midtone bumps — narrowed (a+b raised from 4 to 6) and lower
+  // amplitude so the slider only nudges its lobe.
+  shadows: {
+    amplitude: 0.18,
+    weightExp: { kind: "midtone", a: 1, b: 5 },
+  },
+  highlights: {
+    amplitude: 0.18,
+    weightExp: { kind: "midtone", a: 5, b: 1 },
+  },
+};
+
+/** GLSL float literal with a decimal point, so the WebGL2 compiler
+ *  treats it as a float and not an int. */
+function glslFloat(n: number): string {
+  return Number.isInteger(n) ? `${n}.0` : n.toString();
+}
+
+/** Build the GLSL weight expression for a region from its
+ *  {@link RegionWeight} descriptor. The result is a fragment of
+ *  GLSL that evaluates to a `float` weight in `[0, 1]`. */
+function regionWeightGlsl(w: RegionWeight): string {
+  switch (w.kind) {
+    case "endpoint-low":
+      return `pow(oneMinusL, ${glslFloat(w.exp)})`;
+    case "endpoint-high":
+      return `pow(L, ${glslFloat(w.exp)})`;
+    case "midtone": {
+      // Bump w(L) = L^a · (1-L)^b peaks at L = a/(a+b) with peak
+      // value (a^a · b^b) / (a+b)^(a+b). Multiply by the reciprocal
+      // (`norm`) so the weight tops out at 1.
+      const { a, b } = w;
+      const peak = (Math.pow(a, a) * Math.pow(b, b)) /
+        Math.pow(a + b, a + b);
+      const norm = peak > 0 ? 1 / peak : 1;
+      return `${glslFloat(norm)} * pow(L, ${glslFloat(a)}) * pow(oneMinusL, ${glslFloat(b)})`;
+    }
+  }
+}
+
 function toneCoefficients(t: ToneEdit): {
   exposure: number;
   contrast: number;
@@ -1437,6 +1582,42 @@ class TonePipeline {
     this.uploadedBitmap = null;
   }
 
+  /** Pre-initialise the GL context, compile the shader program, and
+   * upload `bm` as a texture so the next `render()` only needs to
+   * issue a draw call. Safe to call repeatedly with the same bitmap;
+   * a no-op if the pipeline is already warm for that bitmap. */
+  warmup(bm: ImageBitmap): void {
+    if (this.failed) return;
+    if (!this.gl) {
+      const gl = this.canvas.getContext("webgl2", {
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: false,
+      }) as WebGL2RenderingContext | null;
+      if (!gl) {
+        this.failed = true;
+        return;
+      }
+      this.gl = gl;
+      if (!this.initProgram()) {
+        this.failed = true;
+        return;
+      }
+    }
+    if (this.uploadedBitmap === bm) return;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      bm
+    );
+    this.uploadedBitmap = bm;
+  }
+
   dispose() {
     const gl = this.gl;
     if (!gl) return;
@@ -1472,15 +1653,19 @@ class TonePipeline {
     //   2. Region offsets — Capture-One-style Blacks/Shadows/
     //      Highlights/Whites sliders. Each is a luminance-weighted
     //      additive offset using bumps that don't overlap much, so
-    //      e.g. dragging Blacks only moves the dark end.
-    //         w_blacks    = (1-L)^6           — endpoint, sharp at L≈0
-    //         w_whites    = L^6               — endpoint, sharp at L≈1
-    //         w_shadows   = 4·L·(1-L)^3·norm  — bump centred ~L=0.25
-    //         w_highlights= 4·L^3·(1-L)·norm  — bump centred ~L=0.75
-    //      Endpoint sliders move ±0.5 luminance at peak; midtone
-    //      sliders move ±0.4 (mild — they affect a wider band).
+    //      e.g. dragging Blacks only moves the dark end. The exact
+    //      shape and amplitude per region is configured in the
+    //      module-level `TONE_REGION` table.
     //   3. Contrast — S-curve around 0.5.
     //   4. Saturation — interpolate towards luminance.
+    const wB = regionWeightGlsl(TONE_REGION.blacks.weightExp);
+    const wS = regionWeightGlsl(TONE_REGION.shadows.weightExp);
+    const wH = regionWeightGlsl(TONE_REGION.highlights.weightExp);
+    const wW = regionWeightGlsl(TONE_REGION.whites.weightExp);
+    const aB = glslFloat(TONE_REGION.blacks.amplitude);
+    const aS = glslFloat(TONE_REGION.shadows.amplitude);
+    const aH = glslFloat(TONE_REGION.highlights.amplitude);
+    const aW = glslFloat(TONE_REGION.whites.amplitude);
     const fsSource = `#version 300 es
       precision highp float;
       uniform sampler2D u_tex;
@@ -1508,18 +1693,16 @@ class TonePipeline {
         float L = clamp(dot(col, LUMA), 0.0, 1.0);
         float oneMinusL = 1.0 - L;
 
-        float wBlacks    = pow(oneMinusL, 6.0);
-        float wWhites    = pow(L, 6.0);
-        // 4·L·(1-L)^3 peaks at L = 0.25, value 27/64. Normalise to 1.
-        float wShadows   = (4.0 * L * pow(oneMinusL, 3.0)) * (64.0 / 27.0);
-        // 4·L^3·(1-L) peaks at L = 0.75, value 27/64. Normalise to 1.
-        float wHighlights= (4.0 * pow(L, 3.0) * oneMinusL) * (64.0 / 27.0);
+        float wBlacks    = ${wB};
+        float wWhites    = ${wW};
+        float wShadows   = ${wS};
+        float wHighlights= ${wH};
 
         float offset =
-            u_blacks     * 0.5 * wBlacks
-          + u_shadows    * 0.4 * wShadows
-          + u_highlights * 0.4 * wHighlights
-          + u_whites     * 0.5 * wWhites;
+            u_blacks     * ${aB} * wBlacks
+          + u_shadows    * ${aS} * wShadows
+          + u_highlights * ${aH} * wHighlights
+          + u_whites     * ${aW} * wWhites;
         col += vec3(offset);
 
         // S-curve around 0.5.

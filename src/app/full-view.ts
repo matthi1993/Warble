@@ -274,14 +274,16 @@ export class PfFullView extends LitElement {
       background: var(--pf-fv-bg, #000);
       min-height: 0;
     }
-    /* Row that holds the stage and (when editing) the side panel.
-       The stage is "flex: 1" so the image area shrinks when the panel
-       is mounted next to it, instead of being hidden behind. */
+    /* Row that holds the stage and the floating side panel.
+       The panel is positioned absolutely within this row so the
+       stage always renders at full width regardless of whether the
+       panel is currently visible. */
     .stage-row {
       flex: 1;
       display: flex;
       min-height: 0;
       min-width: 0;
+      position: relative;
     }
     pf-image-canvas {
       position: absolute;
@@ -549,27 +551,227 @@ export class PfFullView extends LitElement {
     .edit-btn {
       transition: opacity 200ms ease;
     }
-    /* Right-side editor panel: laid out as a sibling of the stage in
-       a flex row so the image area shrinks to make room for it,
-       rather than being covered. In windowed mode the column-flex
-       host already gives us the right vertical extent; in fullscreen
-       the panel still sits flush against the right edge while the
-       toolbar/bottombar overlay the stage as before. */
+    /* Right-side editor panel: a floating overlay anchored to the
+       right edge of the stage-row in both windowed and fullscreen
+       modes. It only becomes visible (and clickable) once the user
+       hovers near the right edge or moves over the panel itself; the
+       overlay also collapses immediately when the cursor leaves the
+       rail+panel area in fullscreen. */
     .edit-side-panel {
-      flex: 0 0 300px;
+      flex: 0 0 280px;
+      max-width: 90vw;
       background: var(--pf-surface, #181818);
       border-left: 1px solid rgba(255, 255, 255, 0.08);
       color: #fff;
       display: flex;
       flex-direction: column;
-      overflow-y: auto;
+      overflow: hidden;
       box-sizing: border-box;
-      padding: var(--pf-space-2);
-      gap: var(--pf-space-2);
-      transition: opacity 200ms ease;
     }
-    :host([fullscreen][idle]) .edit-side-panel {
+    /* Permanent thin rail that hosts the panel's expand/collapse
+       toggle. Mirrors the folder sidebar's left rail — the toggle
+       lives with the panel rather than in the main toolbar so the
+       affordance and the panel feel like a unit. */
+    .edit-side-rail {
+      flex: 0 0 32px;
+      border-left: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--pf-surface, #181818);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: var(--pf-space-2);
+      box-sizing: border-box;
+    }
+    /* In windowed mode the panel is in flex flow alongside the stage
+       and is shown only when the user has explicitly expanded it via
+       the rail's toggle. The rail itself stays visible. */
+    :host(:not([fullscreen]):not([edit-panel-open])) .edit-side-panel {
+      display: none;
+    }
+    /* In fullscreen, float over the stage and fade in/out via the
+       edit-panel-visible host attribute. Both rail and panel are
+       part of the same overlay. */
+    :host([fullscreen]) .edit-side-rail,
+    :host([fullscreen]) .edit-side-panel {
+      position: absolute;
+      top: 49px;
+      bottom: 49px;
+      flex: none;
+      z-index: 5;
+      background: rgba(24, 24, 24, 0.92);
+      backdrop-filter: blur(6px);
       opacity: 0;
+      transform: translateX(8px);
+      pointer-events: none;
+      transition: opacity 200ms ease, transform 200ms ease;
+    }
+    :host([fullscreen]) .edit-side-rail {
+      right: 280px;
+      width: 32px;
+      height: auto;
+    }
+    :host([fullscreen]) .edit-side-panel {
+      right: 0;
+      width: 280px;
+    }
+    :host([fullscreen][edit-panel-visible]) .edit-side-rail,
+    :host([fullscreen][edit-panel-visible]) .edit-side-panel {
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+    .edit-side-panel-body {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-2);
+    }
+    /* Footer with Before/After (left) and Revert-all (right). */
+    .edit-side-panel-footer {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-2);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(0, 0, 0, 0.18);
+    }
+    .edit-side-panel-footer .footer-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+      padding: 4px 10px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background var(--pf-transition);
+    }
+    .edit-side-panel-footer .footer-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .edit-side-panel-footer .footer-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .edit-side-panel-footer .footer-btn:disabled:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .edit-side-panel-footer .footer-btn[aria-pressed="true"] {
+      background: var(--pf-accent, #4a90e2);
+      border-color: transparent;
+    }
+    .edit-side-panel-footer .footer-btn pf-icon {
+      font-size: 0.95rem;
+    }
+    /* Reset button styling — reuse the .tool-btn look from the
+       former edit toolbar so the visual remains familiar. */
+    .edit-side-panel .tool-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--pf-radius-md);
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      transition: background var(--pf-transition);
+    }
+    .edit-side-panel .tool-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    .edit-side-panel .tool-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .edit-side-panel .tool-btn:disabled:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .edit-side-panel .tool-btn pf-icon {
+      font-size: 1rem;
+    }
+    /* Aspect-ratio + orientation buttons: same visual as the old
+       edit-toolbar groups, but stacked vertically inside the card
+       and allowed to wrap. */
+    .edit-side-panel .edit-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: var(--pf-radius-md);
+    }
+    .edit-side-panel .edit-group.edit-group-wrap {
+      flex-wrap: wrap;
+    }
+    .edit-side-panel .edit-group button {
+      background: transparent;
+      color: #fff;
+      border: none;
+      padding: 4px 10px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      border-radius: var(--pf-radius-sm);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .edit-side-panel .edit-group button:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .edit-side-panel .edit-group button[aria-pressed="true"] {
+      background: rgba(255, 255, 255, 0.22);
+    }
+    .edit-side-panel .crop-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--pf-space-2);
+      margin-top: var(--pf-space-1);
+    }
+    .edit-side-panel .edit-action {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: var(--pf-radius-md);
+      padding: 4px 12px;
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .edit-side-panel .edit-action:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+    .edit-side-panel .edit-action.primary {
+      background: var(--pf-accent, #4a90e2);
+      border-color: transparent;
+    }
+    /* Hover hot-zone on the right edge in fullscreen mode so the
+       floating panel can be summoned without grazing the right edge
+       precisely. Inert (and not rendered) in windowed mode where the
+       panel is permanently in flow. */
+    .edit-panel-hotzone {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 80px;
+      z-index: 4;
+      pointer-events: auto;
+    }
+    :host(:not([fullscreen])) .edit-panel-hotzone {
+      display: none;
+    }
+    :host([fullscreen][idle]) .edit-panel-hotzone {
       pointer-events: none;
     }
     .edit-card {
@@ -582,7 +784,8 @@ export class PfFullView extends LitElement {
       display: flex;
       align-items: center;
       gap: 6px;
-      width: 100%;
+      flex: 1 1 auto;
+      min-width: 0;
       background: transparent;
       color: #fff;
       border: none;
@@ -592,6 +795,38 @@ export class PfFullView extends LitElement {
       letter-spacing: 0.02em;
       cursor: pointer;
       text-align: left;
+    }
+    .edit-card-header-row {
+      display: flex;
+      align-items: stretch;
+      width: 100%;
+    }
+    .card-revert {
+      flex: 0 0 auto;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.85);
+      border: none;
+      border-left: 1px solid rgba(255, 255, 255, 0.06);
+      padding: 0 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card-revert:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+    }
+    .card-revert:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+    .card-revert:disabled:hover {
+      background: transparent;
+      color: rgba(255, 255, 255, 0.85);
+    }
+    .card-revert pf-icon {
+      font-size: 0.9rem;
     }
     .edit-card-header:hover {
       background: rgba(255, 255, 255, 0.06);
@@ -686,17 +921,47 @@ export class PfFullView extends LitElement {
   @property({ type: Boolean, reflect: true })
   idle = false;
 
-  // --- Edit (crop) state -----------------------------------------------
+  /** Reflects whether the floating edit panel is currently revealed in
+   * fullscreen. Driven by cursor proximity to the right edge or hover
+   * over the panel itself. Inert in windowed mode. */
+  @property({ type: Boolean, reflect: true, attribute: "edit-panel-visible" })
+  editPanelVisible = false;
+
+  /** Whether the edit panel is expanded in windowed (non-fullscreen)
+   * mode. The user toggles it explicitly via the toolbar button —
+   * mirroring the folder sidebar's expand/collapse model. In
+   * fullscreen mode this is ignored; the panel reveals on hover. */
+  @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
+  editPanelOpenWindowed = false;
+
+  /** Press-and-hold preview of the original (un-edited) image. While
+   * held, the canvas bypasses crop + tone so the user can compare. */
   @state()
-  private editMode = false;
+  private previewOriginal = false;
+
+  // --- Edit (crop) state -----------------------------------------------
+  /** Edit affordances are always available for JPEGs; toggling is
+   * implicit on selection format. The right-side panel is summoned by
+   * cursor proximity to the right edge in either windowed or fullscreen
+   * mode, so there is no explicit edit toggle. */
+  private get editMode(): boolean {
+    return this.isJpegSelection();
+  }
 
   /**
-   * Currently-active edit tool. `null` means the toolbar shows the
-   * tool palette; non-null means the tool's parameters are shown and
-   * the canvas is in that tool's interactive mode.
+   * Currently-active edit tool. `null` means no tool is active and the
+   * canvas is in normal viewing mode; non-null means the tool's
+   * parameters are visible and the canvas is in that tool's
+   * interactive mode.
    */
   @state()
   private activeEditTool: "crop" | null = null;
+
+  /** Whether the "Crop" disclosure card in the side panel is open.
+   * Opening the card activates the crop tool on the canvas; closing
+   * it deactivates the tool. */
+  @state()
+  private cropCardOpen = false;
 
   @state()
   private editAspect: AspectRatioKey = "3:2";
@@ -730,18 +995,47 @@ export class PfFullView extends LitElement {
   private idleTimer: number | null = null;
 
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
+
   private onMouseMoveGlobal = (e: MouseEvent) => {
-    // While controls are visible, any mouse movement resets the idle timer.
-    // Once hidden (idle), only movement within the upper or lower area of the
-    // viewport brings them back, so casual movement over the image doesn't
-    // reveal them.
-    if (this.idle) {
-      const margin = Math.max(120, window.innerHeight * 0.2);
-      const inTop = e.clientY < margin;
-      const inBottom = e.clientY > window.innerHeight - margin;
-      if (!inTop && !inBottom) return;
+    // In fullscreen the floating edit rail+panel reveal when the
+    // cursor approaches the right edge or hovers the rail/panel
+    // itself, and hide immediately when the cursor leaves that area.
+    if (this.editMode && this.fullscreen) {
+      const nearRight = e.clientX > window.innerWidth - 80;
+      const overRailOrPanel = this.cursorOverEditRailOrPanelXY(
+        e.clientX,
+        e.clientY
+      );
+      this.editPanelVisible = nearRight || overRailOrPanel;
     }
-    this.bumpIdle();
+
+    if (!this.fullscreen) return;
+
+    // Cursor over chrome (toolbar / bottombar / left or right side
+    // panels) keeps controls visible: cancel any pending hide and
+    // never start a new countdown until the cursor returns to the
+    // canvas. The countdown only ticks while the cursor is moving
+    // over the image itself.
+    const onCanvas = this.cursorOnCanvasArea(e.clientX, e.clientY);
+    if (!onCanvas) {
+      if (this.idleTimer !== null) {
+        window.clearTimeout(this.idleTimer);
+        this.idleTimer = null;
+      }
+      if (this.idle) this.idle = false;
+      return;
+    }
+
+    // While idle (controls hidden) require the cursor to enter a
+    // chrome zone to bring them back, so casual movement over the
+    // image doesn't reveal them.
+    if (this.idle) return;
+
+    if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
+    this.idleTimer = window.setTimeout(() => {
+      this.idle = true;
+      this.openMenu = null;
+    }, 1000);
   };
   private onDocClick = (e: MouseEvent) => {
     if (!this.openMenu) return;
@@ -797,6 +1091,11 @@ export class PfFullView extends LitElement {
   private bumpIdle() {
     if (this.idle) this.idle = false;
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
+    // The 1s timer covers two related effects, both fullscreen-only:
+    //   1. Fade the floating toolbar/bottombar.
+    //   2. Collapse the floating right-side edit panel — but only
+    //      if the cursor is currently over the canvas (not hovering
+    //      the panel itself).
     if (!this.fullscreen) return;
     this.idleTimer = window.setTimeout(() => {
       this.idle = true;
@@ -834,10 +1133,20 @@ export class PfFullView extends LitElement {
       const prevTarget = this.toneForPath;
       if (prevTarget) void flushPhotoEdit(prevTarget);
       this.schedulePrefetch();
-      // Navigation cancels any active edit session.
-      if (this.editMode) {
-        this.editMode = false;
+      // Navigation keeps the edit panel available, but any active
+      // per-photo crop tool is cancelled and its disclosure card
+      // collapsed so the next photo doesn't inherit a stale frame.
+      if (this.activeEditTool) {
         this.activeEditTool = null;
+      }
+      this.cropCardOpen = false;
+      // Releasing the before/after preview between photos avoids
+      // sticky state if the pointer is captured elsewhere.
+      this.previewOriginal = false;
+      // Hide the panel between photos so a non-JPEG selection
+      // doesn't surface an empty side panel.
+      if (!this.isJpegSelection()) {
+        this.editPanelVisible = false;
       }
     }
     // Keep the local tone mirror in sync with whatever photo+variant
@@ -950,17 +1259,14 @@ export class PfFullView extends LitElement {
     // `f`, `Escape`, and `g` are owned by the app shell so it can
     // coordinate window fullscreen + view stack across grid and full
     // views. We deliberately do not handle them here.
-    if (this.editMode) {
-      // Esc / Enter are handled by the editor; stop them so app-shell
-      // doesn't also act on them (e.g. closing the full view).
+    if (this.activeEditTool) {
+      // Esc / Enter are owned by the active tool; stop them so
+      // app-shell doesn't also act on them (e.g. closing the full
+      // view) and so view-mode shortcuts don't fire underneath.
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        if (this.activeEditTool) {
-          this.activeEditTool = null;
-        } else {
-          this.editMode = false;
-        }
+        this.cancelEdit();
         return;
       }
       if (e.key === "Enter") {
@@ -971,19 +1277,18 @@ export class PfFullView extends LitElement {
         }
         return;
       }
-      // Block navigation/zoom shortcuts so they don't fight the editor.
-      if (
-        e.key === "ArrowLeft" ||
-        e.key === "ArrowRight" ||
-        e.key === "p" ||
-        e.key === "P" ||
-        e.key === "b" ||
-        e.key === "B" ||
-        e.key === "0" ||
-        e.key === "1" ||
-        e.key === "2"
-      ) {
+      // Arrows still navigate so the user can step through photos
+      // even with a tool open; the active tool is dropped on photo
+      // change via willUpdate.
+      if (e.key === "ArrowLeft") {
         e.preventDefault();
+        this.go(-1);
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        this.go(1);
+        return;
       }
       return;
     }
@@ -1186,17 +1491,84 @@ export class PfFullView extends LitElement {
     return getPhotoEdit(target)?.crop ?? null;
   }
 
-  private toggleEditMode = () => {
+
+  private cursorOverEditPanelXY(x: number, y: number): boolean {
+    const panel = this.renderRoot.querySelector(
+      ".edit-side-panel"
+    ) as HTMLElement | null;
+    if (!panel) return false;
+    const rect = panel.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    return (
+      x >= rect.left &&
+      x <= rect.right &&
+      y >= rect.top &&
+      y <= rect.bottom
+    );
+  }
+
+  /** True when the cursor sits over the image canvas area, i.e. NOT
+   *  over the floating toolbar, bottombar, edit rail/panel, or the
+   *  left-edge folder sidebar overlay zone. The idle timer that
+   *  fades the chrome only counts down while the cursor is on the
+   *  canvas; entering any chrome zone keeps the chrome visible. */
+  private cursorOnCanvasArea(x: number, y: number): boolean {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (y < 49) return false;
+    if (y > h - 49) return false;
     if (this.editMode) {
-      this.editMode = false;
-      this.activeEditTool = null;
-      return;
+      const rightZone = this.editPanelVisible ? 32 + 280 : 80;
+      if (x > w - rightZone) return false;
     }
-    if (!this.isJpegSelection()) return;
-    this.editMode = true;
-    this.activeEditTool = null;
-    this.openMenu = null;
+    // Folder sidebar overlay (rail 32 + sidebar 228 = 260) lives on
+    // the left edge in fullscreen full-view. Treat the whole zone
+    // as chrome so the toolbar/bottombar stay visible while the
+    // user works in the sidebar.
+    if (x < 260) return false;
+    return true;
+  }
+  private cursorOverEditRailOrPanelXY(x: number, y: number): boolean {
+    if (this.cursorOverEditPanelXY(x, y)) return true;
+    const rail = this.renderRoot.querySelector(
+      ".edit-side-rail"
+    ) as HTMLElement | null;
+    if (!rail) return false;
+    const rect = rail.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    return (
+      x >= rect.left &&
+      x <= rect.right &&
+      y >= rect.top &&
+      y <= rect.bottom
+    );
+  }
+
+  // --- Before/After preview --------------------------------------------
+  private startPreviewOriginal = (e: Event) => {
+    if (!this.canPreviewOriginal()) return;
+    e.preventDefault();
+    this.previewOriginal = true;
+    const target = e.currentTarget as HTMLElement;
+    if (target && "setPointerCapture" in target && (e as PointerEvent).pointerId != null) {
+      try {
+        target.setPointerCapture((e as PointerEvent).pointerId);
+      } catch {
+        /* capture is best-effort */
+      }
+    }
   };
+
+  private endPreviewOriginal = () => {
+    if (!this.previewOriginal) return;
+    this.previewOriginal = false;
+  };
+
+  private canPreviewOriginal(): boolean {
+    void this.editsTick;
+    const target = this.editTargetPath();
+    return !!target && hasEdits(target);
+  }
 
   private openTool = (tool: "crop") => {
     if (tool === "crop") {
@@ -1205,8 +1577,20 @@ export class PfFullView extends LitElement {
         this.editAspect = saved.aspectRatio;
         this.editOrientation = saved.orientation;
       }
+      this.cropCardOpen = true;
     }
     this.activeEditTool = tool;
+  };
+
+  private toggleCropCard = () => {
+    if (this.cropCardOpen) {
+      this.cropCardOpen = false;
+      if (this.activeEditTool === "crop") {
+        this.activeEditTool = null;
+      }
+    } else {
+      this.openTool("crop");
+    }
   };
 
   private setEditAspect = (a: AspectRatioKey) => {
@@ -1240,20 +1624,62 @@ export class PfFullView extends LitElement {
     // so the canvas's subsequent reload reads the freshly-written edit.
     await setPhotoCrop(target, crop);
     this.activeEditTool = null;
+    this.cropCardOpen = false;
   };
 
   private cancelEdit = () => {
     this.activeEditTool = null;
+    this.cropCardOpen = false;
   };
 
-  private resetAllEdits = async () => {
+  /** Drop the persisted crop on the active photo (per-tool revert). */
+  private resetCropEdit = async () => {
     const target = this.editTargetPath();
     if (!target) return;
-    if (!hasEdits(target)) return;
-    setPhotoTone(target, null);
+    const saved = getPhotoEdit(target)?.crop ?? null;
+    if (!saved) return;
     await setPhotoCrop(target, null);
+    if (this.activeEditTool === "crop") this.activeEditTool = null;
+  };
+
+  private hasCropEdit(): boolean {
+    void this.editsTick;
+    const target = this.editTargetPath();
+    if (!target) return false;
+    return getPhotoEdit(target)?.crop != null;
+  }
+
+  /** Reset all tone sliders to zero (per-tool revert). */
+  private resetToneEdit = () => {
+    const target = this.editTargetPath();
+    if (!target) return;
+    if (isToneZero(this.tone)) return;
     this.tone = defaultTone();
-    this.activeEditTool = null;
+    this.toneForPath = target;
+    setPhotoTone(target, null);
+  };
+
+  private hasToneEdit(): boolean {
+    return !isToneZero(this.tone);
+  }
+
+  /** Drop both crop and tone edits on the active photo. Backs the
+   *  panel-footer "Revert all" button. */
+  private resetAllEdits = async () => {
+    await this.resetCropEdit();
+    this.resetToneEdit();
+  };
+
+  /** Toggle the edit panel from the rail's button. In windowed mode
+   *  this flips the persistent open/closed state. In fullscreen the
+   *  panel is normally driven by hover, so the toggle dismisses the
+   *  current overlay reveal. */
+  private toggleEditPanelWindowed = () => {
+    if (this.fullscreen) {
+      this.editPanelVisible = false;
+      return;
+    }
+    this.editPanelOpenWindowed = !this.editPanelOpenWindowed;
   };
 
   // --- Tone slider handlers --------------------------------------------
@@ -1281,14 +1707,139 @@ export class PfFullView extends LitElement {
   };
 
   private renderEditSidePanel() {
+    void this.editsTick;
+    const canCompare = this.canPreviewOriginal();
+    const canRevertAll = this.hasCropEdit() || this.hasToneEdit();
     return html`
       <aside
         class="edit-side-panel"
         aria-label="Edit panel"
         @click=${(e: Event) => e.stopPropagation()}
+        @mouseenter=${() => (this.editPanelVisible = true)}
       >
-        ${this.renderBasicCard()}
+        <div class="edit-side-panel-body">
+          ${this.renderCropCard()}
+          ${this.renderBasicCard()}
+        </div>
+        <div class="edit-side-panel-footer">
+          <button
+            type="button"
+            class="footer-btn"
+            aria-pressed=${this.previewOriginal}
+            aria-label="Compare before and after edits"
+            title="Hold to compare before / after edits"
+            ?disabled=${!canCompare}
+            @pointerdown=${this.startPreviewOriginal}
+            @pointerup=${this.endPreviewOriginal}
+            @pointercancel=${this.endPreviewOriginal}
+            @pointerleave=${this.endPreviewOriginal}
+          >
+            <pf-icon name="compare"></pf-icon>
+            <span>Before / After</span>
+          </button>
+          <button
+            type="button"
+            class="footer-btn"
+            title="Revert all edits"
+            aria-label="Revert all edits"
+            ?disabled=${!canRevertAll}
+            @click=${this.resetAllEdits}
+          >
+            <pf-icon name="rotate-ccw"></pf-icon>
+            <span>Revert all</span>
+          </button>
+        </div>
       </aside>
+    `;
+  }
+
+  private renderCropCard() {
+    const open = this.cropCardOpen;
+    const aspects: AspectRatioKey[] = [
+      "3:2",
+      "1:1",
+      "4:3",
+      "panavision",
+      "super-panavision",
+    ];
+    const canRevert = this.hasCropEdit();
+    return html`
+      <section class="edit-card" data-open=${open ? "true" : "false"}>
+        <div class="edit-card-header-row">
+          <button
+            type="button"
+            class="edit-card-header"
+            aria-expanded=${open}
+            @click=${this.toggleCropCard}
+          >
+            <pf-icon name="chevron-down"></pf-icon>
+            <span>Crop</span>
+          </button>
+          <button
+            type="button"
+            class="card-revert"
+            title="Revert crop"
+            aria-label="Revert crop"
+            ?disabled=${!canRevert}
+            @click=${this.resetCropEdit}
+          >
+            <pf-icon name="rotate-ccw"></pf-icon>
+          </button>
+        </div>
+        <div class="edit-card-body">
+          <div
+            class="edit-group edit-group-wrap"
+            role="group"
+            aria-label="Aspect ratio"
+          >
+            ${aspects.map(
+              (a) => html`<button
+                type="button"
+                aria-pressed=${this.editAspect === a}
+                @click=${() => this.setEditAspect(a)}
+              >
+                ${ASPECT_RATIO_LABELS[a]}
+              </button>`
+            )}
+          </div>
+          <div
+            class="edit-group edit-group-wrap"
+            role="group"
+            aria-label="Orientation"
+          >
+            <button
+              type="button"
+              aria-pressed=${this.editOrientation === "landscape"}
+              @click=${() => this.setEditOrientation("landscape")}
+            >
+              Landscape
+            </button>
+            <button
+              type="button"
+              aria-pressed=${this.editOrientation === "portrait"}
+              @click=${() => this.setEditOrientation("portrait")}
+            >
+              Portrait
+            </button>
+          </div>
+          <div class="crop-actions">
+            <button
+              type="button"
+              class="edit-action"
+              @click=${this.cancelEdit}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="edit-action primary"
+              @click=${this.saveEdit}
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      </section>
     `;
   }
 
@@ -1303,17 +1854,30 @@ export class PfFullView extends LitElement {
       shadows: "Shadows",
       blacks: "Blacks",
     };
+    const canRevert = this.hasToneEdit();
     return html`
       <section class="edit-card" data-open=${open ? "true" : "false"}>
-        <button
-          type="button"
-          class="edit-card-header"
-          aria-expanded=${open}
-          @click=${this.toggleBasicCard}
-        >
-          <pf-icon name="chevron-down"></pf-icon>
-          <span>Basic</span>
-        </button>
+        <div class="edit-card-header-row">
+          <button
+            type="button"
+            class="edit-card-header"
+            aria-expanded=${open}
+            @click=${this.toggleBasicCard}
+          >
+            <pf-icon name="chevron-down"></pf-icon>
+            <span>Basic</span>
+          </button>
+          <button
+            type="button"
+            class="card-revert"
+            title="Revert basic adjustments"
+            aria-label="Revert basic adjustments"
+            ?disabled=${!canRevert}
+            @click=${this.resetToneEdit}
+          >
+            <pf-icon name="rotate-ccw"></pf-icon>
+          </button>
+        </div>
         <div class="edit-card-body">
           ${TONE_KEYS.map((key) => this.renderToneSlider(key, labels[key]))}
         </div>
@@ -1345,109 +1909,6 @@ export class PfFullView extends LitElement {
             this.setToneValue(key, e.detail)}
         ></pf-slider>
       </div>
-    `;
-  }
-
-  private renderEditToolbar() {
-    void this.editsTick;
-    const target = this.editTargetPath();
-    const anyEdits = target ? hasEdits(target) : false;
-    return html`
-      <div
-        class="edit-toolbar"
-        role="toolbar"
-        aria-label="Edit tools"
-        @click=${(e: Event) => e.stopPropagation()}
-      >
-        ${this.activeEditTool === null
-          ? this.renderToolPalette()
-          : this.activeEditTool === "crop"
-          ? this.renderCropParams()
-          : null}
-        <span class="spacer" aria-hidden="true"></span>
-        <button
-          type="button"
-          class="tool-btn"
-          title="Reset all edits"
-          aria-label="Reset all edits"
-          ?disabled=${!anyEdits}
-          @click=${this.resetAllEdits}
-        >
-          <pf-icon name="rotate-ccw"></pf-icon>
-        </button>
-      </div>
-    `;
-  }
-
-  private renderToolPalette() {
-    return html`
-      <button
-        type="button"
-        class="tool-btn"
-        title="Crop"
-        aria-label="Crop"
-        @click=${() => this.openTool("crop")}
-      >
-        <pf-icon name="crop"></pf-icon>
-      </button>
-    `;
-  }
-
-  private renderCropParams() {
-    const aspects: AspectRatioKey[] = [
-      "3:2",
-      "1:1",
-      "4:3",
-      "panavision",
-      "super-panavision",
-    ];
-    return html`
-      <div class="edit-group" role="group" aria-label="Aspect ratio">
-        ${aspects.map(
-          (a) => html`<button
-            type="button"
-            aria-pressed=${this.editAspect === a}
-            @click=${() => this.setEditAspect(a)}
-          >
-            ${ASPECT_RATIO_LABELS[a]}
-          </button>`
-        )}
-      </div>
-      <div class="edit-group" role="group" aria-label="Orientation">
-        <button
-          type="button"
-          aria-pressed=${this.editOrientation === "landscape"}
-          @click=${() => this.setEditOrientation("landscape")}
-        >
-          Landscape
-        </button>
-        <button
-          type="button"
-          aria-pressed=${this.editOrientation === "portrait"}
-          @click=${() => this.setEditOrientation("portrait")}
-        >
-          Portrait
-        </button>
-      </div>
-      <span class="sep" aria-hidden="true"></span>
-      <button
-        type="button"
-        class="tool-btn"
-        title="Cancel (Esc)"
-        aria-label="Cancel"
-        @click=${this.cancelEdit}
-      >
-        <pf-icon name="x"></pf-icon>
-      </button>
-      <button
-        type="button"
-        class="tool-btn primary"
-        title="Apply (Enter)"
-        aria-label="Apply"
-        @click=${this.saveEdit}
-      >
-        <pf-icon name="check"></pf-icon>
-      </button>
     `;
   }
 
@@ -1493,7 +1954,7 @@ export class PfFullView extends LitElement {
                 )}
               </div>`
             : null}
-          ${sel !== null && variants.length > 1
+          ${sel !== null && variants.length >= 1
             ? html`<span class="menu-wrap">
                 <button
                   class="menu-trigger"
@@ -1528,18 +1989,6 @@ export class PfFullView extends LitElement {
                   : null}
               </span>`
             : null}
-          ${this.isJpegSelection()
-            ? html`<button
-                class="edit-btn"
-                type="button"
-                aria-pressed=${this.editMode}
-                aria-label=${this.editMode ? "Close edit" : "Edit photo"}
-                title=${this.editMode ? "Close edit" : "Edit photo"}
-                @click=${this.toggleEditMode}
-              >
-                <pf-icon name="pencil"></pf-icon>
-              </button>`
-            : null}
         </div>
         <div class="toolbar-right">
           <pf-icon-button
@@ -1561,17 +2010,18 @@ export class PfFullView extends LitElement {
           </button>
         </div>
       </div>
-      ${this.editMode ? this.renderEditToolbar() : null}
       <div class="stage-row">
         <div class="stage">
           <pf-image-canvas
             .path=${path}
             .fit=${this.fit}
-            .sizing=${this.editMode ? "fit" : this.sizing}
-            .cropMode=${this.editMode && this.activeEditTool === "crop"}
-            .cropAspect=${this.editMode && this.activeEditTool === "crop"
+            .sizing=${this.activeEditTool === "crop" ? "fit" : this.sizing}
+            .cropMode=${this.activeEditTool === "crop"}
+            .cropAspect=${this.activeEditTool === "crop"
               ? this.effectiveAspect()
               : null}
+            .previewOriginal=${this.previewOriginal}
+            .editing=${this.editMode}
             background=${this.bgCss(this.bg)}
           ></pf-image-canvas>
           <button
@@ -1595,7 +2045,32 @@ export class PfFullView extends LitElement {
             P proof · B background · F fullscreen · G grid · Esc to close
           </div>
         </div>
-        ${this.editMode ? this.renderEditSidePanel() : null}
+        ${this.editMode
+          ? html`<div
+              class="edit-panel-hotzone"
+              aria-hidden="true"
+              @mouseenter=${() => (this.editPanelVisible = true)}
+            ></div>`
+          : null}
+        ${this.editMode
+          ? html`<div
+              class="edit-side-rail"
+              @click=${(e: Event) => e.stopPropagation()}
+            >
+              <pf-icon-button
+                icon=${this.editPanelOpenWindowed || this.fullscreen
+                  ? "panel-right-close"
+                  : "panel-right-open"}
+                label=${this.editPanelOpenWindowed
+                  ? "Hide edit panel"
+                  : "Show edit panel"}
+                @click=${this.toggleEditPanelWindowed}
+              ></pf-icon-button>
+            </div>`
+          : null}
+        ${this.editMode
+          ? this.renderEditSidePanel()
+          : null}
       </div>
       <div class="bottombar">
         <span class="menu-wrap">

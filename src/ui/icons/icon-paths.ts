@@ -30,6 +30,10 @@ export const ICON_PATHS = {
     '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>',
   "panel-left-open":
     '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/>',
+  "panel-right-close":
+    '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/>',
+  "panel-right-open":
+    '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m10 15 3-3-3-3"/>',
   pencil:
     '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
   crop:
@@ -37,6 +41,8 @@ export const ICON_PATHS = {
   "rotate-ccw":
     '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  compare:
+    '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M16 8l3 3-3 3"/><path d="M8 8l-3 3 3 3"/>',
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

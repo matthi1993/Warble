@@ -33,10 +33,10 @@ export class WarbleApp extends LitElement {
     :host {
       display: grid;
       grid-template-rows: 1fr auto;
-      grid-template-columns: 260px 1fr 380px;
+      grid-template-columns: 32px 228px 1fr 380px;
       grid-template-areas:
-        "sidebar main detail"
-        "footer footer footer";
+        "rail sidebar main detail"
+        "footer footer footer footer";
       height: 100vh;
       background: var(--pf-bg);
       color: var(--pf-text);
@@ -44,24 +44,26 @@ export class WarbleApp extends LitElement {
       font-size: var(--pf-text-base);
     }
     :host(.sidebar-collapsed) {
-      grid-template-columns: 0 1fr 380px;
+      grid-template-columns: 32px 0 1fr 380px;
     }
     :host(.sidebar-collapsed) aside.sidebar {
       display: none;
     }
 
-    /* When the sidebar is collapsed, the toggle has no obvious home,
-       so we float it as a small floating chip over the top-left of the
-       main content. Re-opens the sidebar with one click. */
-    .floating-sidebar-toggle {
-      position: fixed;
-      top: var(--pf-space-2);
-      left: var(--pf-space-2);
-      z-index: 100;
+    /* Permanent left-rail that always reserves room for the sidebar
+       toggle. Keeping this column in the grid — even when the
+       sidebar itself is collapsed — prevents the toggle from
+       overlapping the main content (e.g. the photo filename in the
+       full view's toolbar). */
+    .sidebar-rail {
+      grid-area: rail;
+      border-right: 1px solid var(--pf-border);
       background: var(--pf-surface);
-      border: 1px solid var(--pf-border);
-      border-radius: var(--pf-radius-md);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: var(--pf-space-2);
+      box-sizing: border-box;
     }
 
     aside.sidebar {
@@ -71,6 +73,57 @@ export class WarbleApp extends LitElement {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+    }
+
+    /* When the full image view is open in windowed (non-fullscreen)
+       mode, push the folder rail+sidebar down by the full-view's
+       toolbar height and up by the bottombar height so they line up
+       with the stage between the bars \u2014 matching the right-side
+       edit panel's vertical extent. */
+    :host(.full-view-open):not(.fs-sidebar-overlay) .sidebar-rail,
+    :host(.full-view-open):not(.fs-sidebar-overlay) aside.sidebar {
+      margin-top: 49px;
+      margin-bottom: 49px;
+    }
+
+    /* Fullscreen overlay mode: when the full view is open and the
+       window is fullscreen, the folder sidebar (and its rail) become
+       a left-edge overlay above the full view, mirroring the edit
+       panel's hover-reveal behaviour. The sidebar slides in from the
+       left when the cursor approaches the left edge or the rail.
+       Top offset matches the full-view toolbar height so the panel
+       sits beneath the header bar, like the edit panel on the right. */
+    :host(.fs-sidebar-overlay) .sidebar-rail,
+    :host(.fs-sidebar-overlay) aside.sidebar {
+      position: fixed;
+      top: 49px;
+      bottom: 49px;
+      z-index: 1001;
+      transition: transform 200ms ease, opacity 200ms ease;
+      opacity: 0;
+      pointer-events: none;
+    }
+    :host(.fs-sidebar-overlay) .sidebar-rail {
+      left: 0;
+      width: 32px;
+      transform: translateX(-100%);
+      background: rgba(24, 24, 24, 0.92);
+      backdrop-filter: blur(6px);
+    }
+    :host(.fs-sidebar-overlay) aside.sidebar {
+      left: 32px;
+      width: 228px;
+      display: flex;
+      transform: translateX(calc(-100% - 32px));
+      background: rgba(24, 24, 24, 0.92);
+      backdrop-filter: blur(6px);
+      color: var(--pf-text);
+    }
+    :host(.fs-sidebar-overlay.sidebar-overlay-visible) .sidebar-rail,
+    :host(.fs-sidebar-overlay.sidebar-overlay-visible) aside.sidebar {
+      transform: translateX(0);
+      opacity: 1;
+      pointer-events: auto;
     }
     .sidebar-header {
       padding: var(--pf-space-3);
@@ -124,7 +177,7 @@ export class WarbleApp extends LitElement {
 
     pf-full-view {
       grid-row: 1;
-      grid-column: 2 / -1;
+      grid-column: 3 / -1;
       min-width: 0;
       min-height: 0;
     }
@@ -225,6 +278,14 @@ export class WarbleApp extends LitElement {
   @state()
   private sidebarCollapsed = false;
 
+  /** True while the folder sidebar is revealed as a fullscreen
+   *  overlay (mouse moved to the left edge while in fullscreen full
+   *  view mode). Mirrors the edit panel's hover-reveal behaviour. */
+  @state()
+  private sidebarOverlayVisible = false;
+
+
+
   /** Mirror of the OS window's fullscreen state. Toggled by the `f`
    * shortcut and the maximize buttons in the detail panel and full
    * view. Drives `pf-full-view`'s overlay styling. */
@@ -256,6 +317,7 @@ export class WarbleApp extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener("keydown", this.onGlobalKey);
+    window.addEventListener("mousemove", this.onMouseMoveSidebarOverlay);
     this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
     });
@@ -321,6 +383,7 @@ export class WarbleApp extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onGlobalKey);
+    window.removeEventListener("mousemove", this.onMouseMoveSidebarOverlay);
     this.unsubscribeProgress?.();
     this.unsubscribeProgress = null;
     this.unsubscribeCacheCleared?.();
@@ -580,6 +643,21 @@ export class WarbleApp extends LitElement {
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
+    if (changed.has("windowFullscreen") || changed.has("fullViewIndex")) {
+      const overlayMode =
+        this.windowFullscreen && this.fullViewIndex !== null;
+      this.classList.toggle("fs-sidebar-overlay", overlayMode);
+      this.classList.toggle("full-view-open", this.fullViewIndex !== null);
+      if (!overlayMode) {
+        this.sidebarOverlayVisible = false;
+      }
+    }
+    if (changed.has("sidebarOverlayVisible")) {
+      this.classList.toggle(
+        "sidebar-overlay-visible",
+        this.sidebarOverlayVisible
+      );
+    }
     if (
       this.appViewHydrated &&
       (changed.has("selectedPhoto") || changed.has("fullViewIndex"))
@@ -587,6 +665,20 @@ export class WarbleApp extends LitElement {
       void this.persistAppView();
     }
   }
+
+  /** Cursor proximity test for the fullscreen sidebar overlay. The
+   *  rail+sidebar together cover the leftmost 260px when revealed.
+   *  Reveal when the cursor is within 80px of the left edge; hide
+   *  immediately as soon as the cursor leaves the rail+sidebar area. */
+  private onMouseMoveSidebarOverlay = (e: MouseEvent) => {
+    if (!(this.windowFullscreen && this.fullViewIndex !== null)) return;
+    const railWidth = 32;
+    const sidebarWidth = 228;
+    const totalWidth = railWidth + sidebarWidth;
+    const nearLeftEdge = e.clientX < 80;
+    const overOverlay = e.clientX < totalWidth;
+    this.sidebarOverlayVisible = nearLeftEdge || overOverlay;
+  };
 
   private async persistAppView() {
     try {
@@ -603,14 +695,13 @@ export class WarbleApp extends LitElement {
 
   render() {
     return html`
-      ${this.sidebarCollapsed
-        ? html`<pf-icon-button
-            class="floating-sidebar-toggle"
-            icon="panel-left-open"
-            label="Show sidebar"
-            @click=${this.toggleSidebar}
-          ></pf-icon-button>`
-        : null}
+      <div class="sidebar-rail">
+        <pf-icon-button
+          icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
+          label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          @click=${this.toggleSidebar}
+        ></pf-icon-button>
+      </div>
 
       <aside class="sidebar">
         <div class="sidebar-header">
@@ -620,11 +711,6 @@ export class WarbleApp extends LitElement {
           </pf-button>
           <span class="header-actions">
             <pf-theme-toggle></pf-theme-toggle>
-            <pf-icon-button
-              icon="panel-left-close"
-              label="Hide sidebar"
-              @click=${this.toggleSidebar}
-            ></pf-icon-button>
           </span>
         </div>
         <div class="tree" @folder-select=${this.onFolderSelect}>
