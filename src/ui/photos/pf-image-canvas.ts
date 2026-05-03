@@ -26,6 +26,11 @@ import {
   setHdImageDecoder,
 } from "../../app/hd-image-cache";
 import {
+  getFullImage,
+  loadFullImage,
+  setFullImageDecoder,
+} from "../../app/full-image-cache";
+import {
   getPhotoEdit,
   isToneZero,
   subscribePhotoEdits,
@@ -35,6 +40,18 @@ import {
 
 export type ImageFit = "contain" | "proof" | "tight";
 export type ImageSizing = "fit" | "fill" | "hybrid";
+
+/** Time the user must linger on a photo before we kick off a full-
+ * resolution decode in addition to the HD preview. Tuned so casual
+ * arrow-key scrubbing through a folder never pays for full-res
+ * decodes the user won't see. */
+const FULL_IMAGE_DELAY_MS = 250;
+
+/** How long after the last edit-store push for the active photo we
+ * keep showing the HD bitmap. Long enough to absorb a slider drag
+ * (60 Hz events back-to-back) without flickering between sources;
+ * short enough that a one-off click reverts to full-res quickly. */
+const EDIT_SETTLE_MS = 400;
 
 /** Pending crop frame state, exposed via `getCrop()`. */
 export interface CropFrame {
@@ -115,6 +132,31 @@ export class PfImageCanvas extends LitElement {
     .status.error {
       color: #ff8080;
     }
+    /**
+     * Loading indicator for the full image view. Lives in the bottom-
+     * left corner so the photo it's loading isn't obscured. Uses a
+     * minimal CSS spinner instead of centred text — by the time the
+     * user sees this they almost always already have the HD bitmap
+     * painted, and we just want to flag that a full-resolution decode
+     * is still in flight.
+     */
+    .loading-spinner {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.18);
+      border-top-color: rgba(255, 255, 255, 0.85);
+      border-radius: 50%;
+      animation: pf-canvas-spin 0.9s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes pf-canvas-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
   `;
 
   @property({ type: String })
@@ -148,6 +190,18 @@ export class PfImageCanvas extends LitElement {
    */
   @property({ type: Boolean, reflect: true })
   editing = false;
+
+  /**
+   * When `true`, the canvas opportunistically upgrades from the HD
+   * (1920px) bitmap to the full-resolution decode after the user has
+   * lingered on the photo for {@link FULL_IMAGE_DELAY_MS}. While the
+   * user is actively editing (slider drag, crop nudge) the canvas
+   * reverts to HD so the WebGL tone pipeline stays interactive — the
+   * full-res texture upload alone takes hundreds of ms on a 40 MP
+   * source. Defaults `false`; only the full-screen viewer opts in.
+   */
+  @property({ type: Boolean })
+  enableFullRes = false;
 
   /**
    * Locked aspect ratio (width / height) of the crop frame. `null`
@@ -194,6 +248,15 @@ export class PfImageCanvas extends LitElement {
   @state()
   private errorMsg = "";
 
+  /**
+   * `true` while the deferred full-resolution decode is pending or
+   * running for the active photo. Drives the bottom-left spinner so
+   * the user knows a higher-quality bitmap is on its way without
+   * obscuring the HD preview that's already on screen.
+   */
+  @state()
+  private fullLoading = false;
+
   private canvas?: HTMLCanvasElement;
   private ctx?: CanvasRenderingContext2D;
   /**
@@ -205,6 +268,29 @@ export class PfImageCanvas extends LitElement {
   private bitmapForPath: string | null = null;
   private thumbBitmap: ImageBitmap | null = null;
   private thumbForPath: string | null = null;
+  /**
+   * Optional full-resolution decode of the current photo. Lives in
+   * the shared `full-image-cache` LRU; we just hold a reference. Only
+   * populated when {@link enableFullRes} is on and the user has
+   * lingered on the photo for {@link FULL_IMAGE_DELAY_MS}.
+   */
+  private fullBitmap: ImageBitmap | null = null;
+  private fullBitmapForPath: string | null = null;
+  /** Pending timer that kicks off the deferred full-res load. */
+  private fullLoadTimer: number | null = null;
+  /** Abort handle for the deferred full-res load itself. */
+  private fullLoadAbort: AbortController | null = null;
+  /**
+   * `true` while the user is actively editing this photo (recent
+   * tone/crop store push). The canvas pins itself to the HD bitmap
+   * while this flag is set so the tone pipeline keeps working on a
+   * cheap texture; once the user pauses (no edit pushes for
+   * {@link EDIT_SETTLE_MS}) the flag clears and the full-res bitmap,
+   * if available, takes over again.
+   */
+  @state()
+  private editingActive = false;
+  private editSettleTimer: number | null = null;
 
   private scale = 1;
   private offsetX = 0; // device px, relative to canvas centre
@@ -311,6 +397,14 @@ export class PfImageCanvas extends LitElement {
           this.cropFrame = this.computeInitialCropFrame();
         }
       }
+      // Path-targeted edit pushes (i.e. NOT the bulk-load broadcast
+      // that fires with `path === ""`) mean the user just touched a
+      // slider or nudged the crop. Pin the canvas to the HD bitmap
+      // until the dust settles so the WebGL tone pipeline doesn't
+      // burn frames re-uploading a 40 MP texture per drag tick.
+      if (path && path === this.path) {
+        this.markEditingActive();
+      }
       this.scheduleDraw();
     });
   }
@@ -328,14 +422,74 @@ export class PfImageCanvas extends LitElement {
     this.savedTone = edit?.tone ?? null;
   }
 
+  /**
+   * Pin the canvas to the HD bitmap for {@link EDIT_SETTLE_MS} so a
+   * burst of edit-store pushes (slider drag, crop nudge) doesn't keep
+   * forcing a 40 MP texture re-upload through the tone pipeline. When
+   * the timer expires we drop back to the full-resolution bitmap (if
+   * available) and invalidate the tone texture so the next paint
+   * re-uploads the now-larger source.
+   *
+   * No-op when full-res mode is off — there's only one bitmap source
+   * to choose from.
+   */
+  private markEditingActive() {
+    if (!this.enableFullRes) return;
+    const wasActive = this.editingActive;
+    if (!wasActive) {
+      // Capture the source dims BEFORE flipping the flag so we can
+      // adjust user-zoom for the full→HD downsize.
+      const prevSrc = this.effectiveSource();
+      const prevW = prevSrc?.width ?? 0;
+      this.editingActive = true;
+      this.rotatedCache = null;
+      this.tonePipeline.invalidate();
+      if (this.userInteracted && prevW > 0) {
+        const newSrc = this.effectiveSource();
+        const newW = newSrc?.width ?? 0;
+        if (newW > 0 && newW !== prevW) {
+          this.scale = (this.scale * prevW) / newW;
+        }
+      }
+      this.recomputeFit();
+    }
+    if (this.editSettleTimer !== null) {
+      window.clearTimeout(this.editSettleTimer);
+    }
+    this.editSettleTimer = window.setTimeout(() => {
+      this.editSettleTimer = null;
+      if (!this.editingActive) return;
+      const prevSrc = this.effectiveSource();
+      const prevW = prevSrc?.width ?? 0;
+      this.editingActive = false;
+      this.rotatedCache = null;
+      this.tonePipeline.invalidate();
+      if (this.userInteracted && prevW > 0) {
+        const newSrc = this.effectiveSource();
+        const newW = newSrc?.width ?? 0;
+        if (newW > 0 && newW !== prevW) {
+          this.scale = (this.scale * prevW) / newW;
+        }
+      }
+      this.recomputeFit();
+      this.scheduleDraw();
+    }, EDIT_SETTLE_MS);
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.resizeObserver?.disconnect();
     this.loadAbort?.abort();
+    this.cancelFullImageLoad();
+    if (this.editSettleTimer !== null) {
+      window.clearTimeout(this.editSettleTimer);
+      this.editSettleTimer = null;
+    }
     // Full bitmap is owned by `full-image-cache`; do NOT close it here.
     this.thumbBitmap?.close?.();
     this.bitmap = null;
     this.thumbBitmap = null;
+    this.fullBitmap = null;
     this.editsUnsubscribe?.();
     this.editsUnsubscribe = null;
     this.tonePipeline.dispose();
@@ -492,6 +646,10 @@ export class PfImageCanvas extends LitElement {
 
   private async startLoad() {
     this.loadAbort?.abort();
+    // Any pending full-res load is for the previous path; cancel both
+    // the linger timer and the in-flight backend job.
+    this.cancelFullImageLoad();
+
     const ac = new AbortController();
     this.loadAbort = ac;
 
@@ -504,6 +662,8 @@ export class PfImageCanvas extends LitElement {
       this.thumbBitmap?.close?.();
       this.thumbBitmap = null;
       this.thumbForPath = null;
+      this.fullBitmap = null;
+      this.fullBitmapForPath = null;
       this.draw();
       return;
     }
@@ -522,6 +682,11 @@ export class PfImageCanvas extends LitElement {
       this.thumbBitmap = null;
       this.thumbForPath = null;
     }
+    if (this.fullBitmapForPath !== path) {
+      // Full-res bitmaps are owned by full-image-cache; never close.
+      this.fullBitmap = null;
+      this.fullBitmapForPath = null;
+    }
 
     // Fast path: HD image already in the cross-instance LRU cache.
     // Skip the thumbnail roundtrip and the deferred-decode entirely so
@@ -534,6 +699,7 @@ export class PfImageCanvas extends LitElement {
       this.recomputeFit();
       this.draw();
       this.warmupTonePipeline();
+      this.scheduleFullImageLoad(path, ac);
       return;
     }
 
@@ -574,6 +740,114 @@ export class PfImageCanvas extends LitElement {
     // still safe: the priority pool drops queued jobs whose request id
     // is cancelled by `loadAbort`.
     void this.loadFullImage(path, ac);
+
+    // Phase 3 (optional): after the user has lingered on this photo
+    // for FULL_IMAGE_DELAY_MS, kick off a true full-resolution decode
+    // and swap it in once available. Cancelled implicitly when the
+    // user navigates away (via `loadAbort`) so arrow-key scrubbing
+    // never queues full decodes nobody will see.
+    this.scheduleFullImageLoad(path, ac);
+  }
+
+  /** Cancel any pending full-res load timer and in-flight decode. */
+  private cancelFullImageLoad() {
+    if (this.fullLoadTimer !== null) {
+      window.clearTimeout(this.fullLoadTimer);
+      this.fullLoadTimer = null;
+    }
+    this.fullLoadAbort?.abort();
+    this.fullLoadAbort = null;
+    this.fullLoading = false;
+  }
+
+  /**
+   * Wait FULL_IMAGE_DELAY_MS, then start fetching the full-resolution
+   * bitmap (or use the cache if already populated). The delay matters
+   * because rapid arrow-key navigation should never trigger a 40 MP
+   * decode the user won't actually look at — pinning the cache full
+   * of huge bitmaps would also evict the HD entries we *do* want hot.
+   *
+   * Even a cache hit waits the full {@link FULL_IMAGE_DELAY_MS} so
+   * the on-screen experience is consistent: the HD preview is what
+   * the user sees first, every time, and the full-res swap is always
+   * a deliberate post-linger upgrade. Without this, revisits would
+   * pop straight to full-res while first-views go through the HD
+   * stage, which made the viewer feel inconsistent on slower
+   * machines where the swap is visible.
+   */
+  private scheduleFullImageLoad(path: string, parent: AbortController) {
+    if (!this.enableFullRes) return;
+    if (parent.signal.aborted) return;
+
+    this.fullLoading = true;
+    this.fullLoadTimer = window.setTimeout(() => {
+      this.fullLoadTimer = null;
+      if (parent.signal.aborted || this.path !== path) {
+        this.fullLoading = false;
+        return;
+      }
+
+      // Cache hits still go through the linger gate (above) so the
+      // user always sees the HD preview first, but the actual swap
+      // is synchronous from here on.
+      const cached = getFullImage(path);
+      if (cached) {
+        this.applyFullBitmap(path, cached);
+        this.fullLoading = false;
+        return;
+      }
+
+      const fullAc = new AbortController();
+      this.fullLoadAbort = fullAc;
+      const onParentAbort = () => fullAc.abort();
+      parent.signal.addEventListener("abort", onParentAbort, { once: true });
+
+      void loadFullImage(path, {
+        priority: "urgent",
+        signal: fullAc.signal,
+      })
+        .then((bm) => {
+          if (fullAc.signal.aborted || this.path !== path) return;
+          this.applyFullBitmap(path, bm);
+        })
+        .catch((err) => {
+          if (fullAc.signal.aborted) return;
+          console.warn("full-resolution image load failed", err);
+        })
+        .finally(() => {
+          parent.signal.removeEventListener("abort", onParentAbort);
+          if (this.fullLoadAbort === fullAc) this.fullLoadAbort = null;
+          if (this.path === path) this.fullLoading = false;
+        });
+    }, FULL_IMAGE_DELAY_MS);
+  }
+
+  /**
+   * Swap in a full-resolution bitmap for the active photo. Preserves
+   * the on-screen display size of any user-driven zoom by adjusting
+   * `scale` for the change in source dimensions, so a 200% HD view
+   * doesn't jump to a much smaller display when the larger bitmap
+   * arrives.
+   */
+  private applyFullBitmap(path: string, bm: ImageBitmap) {
+    if (this.path !== path) return;
+    const prevSrc = this.effectiveSource();
+    const prevW = prevSrc?.width ?? 0;
+    this.fullBitmap = bm;
+    this.fullBitmapForPath = path;
+    // The rotated cache and tone texture are keyed on the underlying
+    // source bitmap; swapping in a new one must drop both.
+    this.rotatedCache = null;
+    this.tonePipeline.invalidate();
+    if (this.userInteracted && prevW > 0) {
+      const newSrc = this.effectiveSource();
+      const newW = newSrc?.width ?? 0;
+      if (newW > 0 && newW !== prevW) {
+        this.scale = (this.scale * prevW) / newW;
+      }
+    }
+    this.recomputeFit();
+    this.scheduleDraw();
   }
 
   private async loadFullImage(path: string, ac: AbortController) {
@@ -609,6 +883,21 @@ export class PfImageCanvas extends LitElement {
   }
 
   private get currentBitmap(): ImageBitmap | null {
+    // Prefer the full-resolution bitmap when:
+    //   * the host opted in (the windowed viewer doesn't),
+    //   * we actually have a decoded full-res bitmap for the *current*
+    //     photo, and
+    //   * the user isn't actively editing this photo right now (during
+    //     edits we stay on the HD bitmap so the WebGL tone pipeline
+    //     doesn't keep reuploading a 40 MP texture every slider tick).
+    if (
+      this.enableFullRes &&
+      !this.editingActive &&
+      this.fullBitmap &&
+      this.fullBitmapForPath === this.path
+    ) {
+      return this.fullBitmap;
+    }
     return this.bitmap ?? this.thumbBitmap;
   }
 
@@ -1667,13 +1956,30 @@ export class PfImageCanvas extends LitElement {
   };
 
   render() {
-    const showLoading = this.status === "loading" && !this.currentBitmap;
+    // Initial blank-canvas load (no bitmap of any kind painted yet)
+    // still gets a centred status — the photo isn't on screen so
+    // there's nothing to obscure. Once anything is on the canvas, we
+    // switch to the bottom-left spinner for the full-res linger
+    // step so the picture itself stays visible.
+    const initialLoading = this.status === "loading" && !this.currentBitmap;
+    const fullResLoading =
+      this.enableFullRes &&
+      this.fullLoading &&
+      !!this.currentBitmap &&
+      this.fullBitmapForPath !== this.path;
     return html`
       <canvas></canvas>
       ${this.status === "error"
         ? html`<div class="status error">Failed to load: ${this.errorMsg}</div>`
         : null}
-      ${showLoading ? html`<div class="status">Loading…</div>` : null}
+      ${initialLoading ? html`<div class="status">Loading…</div>` : null}
+      ${fullResLoading
+        ? html`<div
+            class="loading-spinner"
+            role="status"
+            aria-label="Loading full resolution"
+          ></div>`
+        : null}
     `;
   }
 }
@@ -1751,6 +2057,10 @@ function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
 // `pf-full-view`). Registering at module load means any code path that
 // imports the cache after this module is wired up.
 setHdImageDecoder(decodeInWorker);
+// Same decoder backs the full-resolution cache. The two caches use
+// independent LRU stores but share this single decode worker, so
+// concurrent HD + full-res decodes are still serialised cooperatively.
+setFullImageDecoder(decodeInWorker);
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;

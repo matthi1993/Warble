@@ -53,7 +53,10 @@ pub fn run() {
             commands::clear_thumbnail_cache,
             commands::clear_hd_image_cache,
             commands::clear_full_image_memory_cache,
+            commands::set_background_pool_workers,
+            commands::get_cache_disk_usage,
             commands::get_task_stats,
+            commands::cancel_all_tasks,
             commands::reveal_in_file_manager,
             commands::get_photo_variants,
             commands::set_photo_variant,
@@ -100,6 +103,7 @@ fn init_settings_and_caches(app: &tauri::App) {
     thumbnails::set_disk_cache_max_entries(s.thumbnail_disk_max_entries);
     hd_image::set_disk_cache_max_entries(s.hd_image_disk_max_entries);
     full_image::set_memory_cache_capacity(s.full_image_memory_max_entries);
+    tasks::pool().set_bg_concurrency(s.background_pool_workers);
 }
 
 fn init_menu(app: &tauri::App) {

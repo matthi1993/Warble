@@ -25,6 +25,12 @@ pub const DEFAULT_FULL_MEM_CACHE_MAX: usize = 8;
 /// Decoded `ImageBitmap`s pinned in the renderer (frontend). A 24 MP RGBA
 /// bitmap pins ~96 MB, so keep this small.
 pub const DEFAULT_FULL_BITMAP_CACHE_MAX: usize = 4;
+/// Cap on the number of background image jobs the task pool will run
+/// in parallel. Defaults to 4 — high enough to saturate disk I/O on
+/// most machines while leaving headroom for foreground decodes (the
+/// canvas-active photo) to never queue behind a folder-wide
+/// pre-warm. Configurable from the macOS Cache menu.
+pub const DEFAULT_BACKGROUND_POOL_WORKERS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,6 +39,11 @@ pub struct CacheSettings {
     pub hd_image_disk_max_entries: usize,
     pub full_image_memory_max_entries: usize,
     pub full_image_bitmap_max_entries: usize,
+    /// Maximum number of `Background`-priority jobs the task pool will
+    /// execute concurrently. The number of OS threads spawned is fixed
+    /// at startup; this value caps how many of them can be running
+    /// background work at once.
+    pub background_pool_workers: usize,
 }
 
 impl Default for CacheSettings {
@@ -42,6 +53,7 @@ impl Default for CacheSettings {
             hd_image_disk_max_entries: DEFAULT_HD_CACHE_MAX,
             full_image_memory_max_entries: DEFAULT_FULL_MEM_CACHE_MAX,
             full_image_bitmap_max_entries: DEFAULT_FULL_BITMAP_CACHE_MAX,
+            background_pool_workers: DEFAULT_BACKGROUND_POOL_WORKERS,
         }
     }
 }

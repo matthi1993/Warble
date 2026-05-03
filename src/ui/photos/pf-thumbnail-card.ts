@@ -5,6 +5,7 @@ import {
   requestThumbnail,
   type ThumbnailHandle,
 } from "../../app/thumbnail-service";
+import { isHdCached, onHdCached } from "../../app/hd-image-cache";
 import "../icons/pf-icon";
 
 @customElement("pf-thumbnail-card")
@@ -105,6 +106,29 @@ export class PfThumbnailCard extends LitElement {
       background: var(--pf-accent, #4a7);
       text-transform: none;
     }
+    /**
+     * Small grey checkmark badge in the bottom-left corner indicating
+     * the HD-resolution rendition for this photo is already cached on
+     * disk. Lights up when the folder-wide HD prewarm finishes for
+     * this image, or when the user opens the photo in the full view
+     * (which also caches the HD JPEG).
+     */
+    .hd-badge {
+      position: absolute;
+      bottom: var(--pf-space-1);
+      left: var(--pf-space-1);
+      width: 14px;
+      height: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.55);
+      color: rgba(255, 255, 255, 0.7);
+      border-radius: 999px;
+      font-size: 0.55rem;
+      line-height: 1;
+      pointer-events: none;
+    }
   `;
 
   @property({ type: String })
@@ -134,13 +158,27 @@ export class PfThumbnailCard extends LitElement {
   @state()
   private loading = false;
 
+  @state()
+  private hdCached = false;
+
   private observer: IntersectionObserver | null = null;
   private loadedPath: string | null = null;
   private pending: ThumbnailHandle | null = null;
+  private unsubscribeHdCached: (() => void) | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
     this.startObserving();
+    this.hdCached = isHdCached(this.path);
+    this.unsubscribeHdCached = onHdCached((cachedPath) => {
+      if (cachedPath !== this.path) return;
+      if (this.hdCached) return;
+      this.hdCached = true;
+      // Belt-and-braces: ensure Lit re-renders even if the @state
+      // setter optimisation thinks nothing changed (e.g. after a
+      // disconnect/reconnect cycle preserved an older value).
+      this.requestUpdate();
+    });
   }
 
   /**
@@ -166,6 +204,8 @@ export class PfThumbnailCard extends LitElement {
     this.observer = null;
     this.pending?.cancel();
     this.pending = null;
+    this.unsubscribeHdCached?.();
+    this.unsubscribeHdCached = null;
   }
 
   willUpdate(changed: Map<string, unknown>): void {
@@ -176,6 +216,7 @@ export class PfThumbnailCard extends LitElement {
       this.error = null;
       this.loading = false;
       this.loadedPath = null;
+      this.hdCached = isHdCached(this.path);
       if (this.isConnected) {
         this.startObserving();
       }
@@ -266,6 +307,14 @@ export class PfThumbnailCard extends LitElement {
                     >`
                   : null}
               </div>`
+            : null}
+          ${this.hdCached
+            ? html`<span
+                class="hd-badge"
+                title="HD preview cached on disk"
+                aria-label="HD preview cached"
+                >✓</span
+              >`
             : null}
         </div>
         <div class="filename" title=${this.filename}>${this.filename}</div>

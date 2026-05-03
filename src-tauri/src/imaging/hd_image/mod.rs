@@ -70,6 +70,18 @@ pub fn clear_disk_cache() {
     }
 }
 
+/// Filesystem path of the HD image cache directory, or `None` if the
+/// cache hasn't been initialised yet.
+pub fn cache_root_path() -> Option<PathBuf> {
+    DISK_CACHE.get().map(|c| c.root().to_path_buf())
+}
+
+/// `(total_bytes, file_count)` for the on-disk HD image cache. `None`
+/// if the cache hasn't been initialised yet.
+pub fn cache_disk_usage() -> Option<(u64, usize)> {
+    DISK_CACHE.get().map(|c| c.disk_usage())
+}
+
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
 /// Load an HD JPEG (1920px long side) for the photo at `path`. Returns

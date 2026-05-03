@@ -14,6 +14,12 @@ import {
   startThumbnailBatch,
   type ThumbnailBatchProgress,
 } from "./thumbnail-service";
+import { prewarmHdImageBytesForFolder } from "./hd-image-cache";
+import {
+  getHdPrewarmProgress,
+  onHdPrewarmProgress,
+  type HdPrewarmProgress,
+} from "./hd-image-cache";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
@@ -73,17 +79,6 @@ export class WarbleApp extends LitElement {
       display: flex;
       flex-direction: column;
       overflow: hidden;
-    }
-
-    /* When the full image view is open in windowed (non-fullscreen)
-       mode, push the folder rail+sidebar down by the full-view's
-       toolbar height and up by the bottombar height so they line up
-       with the stage between the bars \u2014 matching the right-side
-       edit panel's vertical extent. */
-    :host(.full-view-open) .sidebar-rail,
-    :host(.full-view-open) aside.sidebar {
-      margin-top: 49px;
-      margin-bottom: 49px;
     }
 
     .sidebar-header {
@@ -181,6 +176,10 @@ export class WarbleApp extends LitElement {
     .footer-spacer {
       flex: 1;
     }
+    .footer-restart {
+      flex-shrink: 0;
+      margin-left: auto;
+    }
 
     .ctx-menu-backdrop {
       position: fixed;
@@ -257,6 +256,9 @@ export class WarbleApp extends LitElement {
   private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
 
   @state()
+  private hdProgress: HdPrewarmProgress = getHdPrewarmProgress();
+
+  @state()
   private contextMenu: {
     path: string;
     filename: string;
@@ -265,7 +267,18 @@ export class WarbleApp extends LitElement {
   } | null = null;
 
   private unsubscribeProgress: (() => void) | null = null;
+  private unsubscribeHdProgress: (() => void) | null = null;
   private unsubscribeCacheCleared: UnlistenFn | null = null;
+
+  /** Active HD-image disk-cache prewarm for the currently selected
+   * folder. Replaced (and the previous one cancelled) every time the
+   * user picks a new folder or restarts the thumbnail batch, so we
+   * never accumulate background HD jobs across folders. */
+  private hdPrewarmHandle: { cancel(): void } | null = null;
+  /** Batch id of the most recent thumbnail batch we kicked off HD
+   * prewarm for. Prevents firing prewarm twice for the same batch as
+   * progress events stream in. */
+  private hdPrewarmedBatchId: number = 0;
 
   /** Suppresses the persistence side-effect during the initial restore
    * pass so we don't immediately write back what we just read. */
@@ -280,6 +293,10 @@ export class WarbleApp extends LitElement {
     window.addEventListener("keydown", this.onGlobalKey);
     this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
+      this.maybeStartHdPrewarm(state);
+    });
+    this.unsubscribeHdProgress = onHdPrewarmProgress((state) => {
+      this.hdProgress = state;
     });
     // Menu-driven "Clear Thumbnail Cache" wipes the disk cache; here we
     // also drop the renderer-side base64 LRU and re-issue the active
@@ -355,9 +372,33 @@ export class WarbleApp extends LitElement {
     window.removeEventListener("keydown", this.onGlobalKey);
     this.unsubscribeProgress?.();
     this.unsubscribeProgress = null;
+    this.unsubscribeHdProgress?.();
+    this.unsubscribeHdProgress = null;
     this.unsubscribeCacheCleared?.();
     this.unsubscribeCacheCleared = null;
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
     clearThumbnailBatch();
+  }
+
+  /**
+   * Once the active thumbnail batch has finished running every job,
+   * kick off a folder-wide HD-image disk-cache prewarm at background
+   * priority. Idempotent across progress events for the same batch
+   * (we only fire it once per `batchId`) and cancels itself
+   * automatically when the user switches folders (which starts a new
+   * batch and thus advances `batchId`).
+   */
+  private maybeStartHdPrewarm(state: ThumbnailBatchProgress): void {
+    if (state.batchId === 0) return;
+    if (state.inProgress) return;
+    if (state.batchId === this.hdPrewarmedBatchId) return;
+    if (this.photos.length === 0) return;
+    this.hdPrewarmedBatchId = state.batchId;
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = prewarmHdImageBytesForFolder(
+      this.photos.map((p) => p.path)
+    );
   }
 
   private refreshAfterThumbnailCacheClear(): void {
@@ -541,6 +582,10 @@ export class WarbleApp extends LitElement {
       folderPath: path,
     });
     this.selectedPhoto = null;
+    // Cancel any in-flight HD prewarm for the previous folder so its
+    // background jobs don't keep running once the user has moved on.
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
     startThumbnailBatch(this.photos.map((p) => p.path));
     void invoke("set_last_folder", { path }).catch((err) =>
       console.error("Failed to persist last folder", err)
@@ -764,27 +809,100 @@ export class WarbleApp extends LitElement {
   }
 
   private renderFooter() {
-    const p = this.thumbProgress;
-    const done = p.loaded + p.failed;
-    const pct = p.total === 0 ? 0 : Math.round((done / p.total) * 100);
+    const t = this.thumbProgress;
+    const h = this.hdProgress;
+
+    // Thumbnail batch wins as long as it's running — it's the
+    // user-visible work that gates the grid showing pictures.
+    if (t.total > 0 && t.inProgress) {
+      const done = t.loaded + t.failed;
+      const pct = t.total === 0 ? 0 : Math.round((done / t.total) * 100);
+      return html`
+        <footer class="app-footer" role="status" aria-live="polite">
+          <span class="footer-label">Generating thumbnails…</span>
+          <div class="footer-bar">
+            <div class="footer-bar-fill" style="width: ${pct}%"></div>
+          </div>
+          <span class="footer-count">${done} / ${t.total}</span>
+          ${t.failed > 0
+            ? html`<span class="footer-failed">${t.failed} failed</span>`
+            : null}
+          ${this.renderRestartButton()}
+        </footer>
+      `;
+    }
+
+    // Once thumbnails are done, surface the HD-disk-cache prewarm
+    // progress in the same slot. Same visual treatment, different
+    // label, so the user knows there's still background work
+    // happening (and roughly how far along it is) without it being
+    // mistaken for a stalled grid.
+    if (h.total > 0 && h.inProgress) {
+      const done = h.loaded + h.failed;
+      const pct = h.total === 0 ? 0 : Math.round((done / h.total) * 100);
+      return html`
+        <footer class="app-footer" role="status" aria-live="polite">
+          <span class="footer-label">Building HD cache…</span>
+          <div class="footer-bar">
+            <div class="footer-bar-fill" style="width: ${pct}%"></div>
+          </div>
+          <span class="footer-count">${done} / ${h.total}</span>
+          ${h.failed > 0
+            ? html`<span class="footer-failed">${h.failed} failed</span>`
+            : null}
+          ${this.renderRestartButton()}
+        </footer>
+      `;
+    }
+
     return html`
       <footer class="app-footer" role="status" aria-live="polite">
-        ${p.total === 0 || !p.inProgress
-          ? html`<span class="footer-label">Ready</span>
-              <span class="footer-spacer"></span>`
-          : html`
-              <span class="footer-label">Generating thumbnails…</span>
-              <div class="footer-bar">
-                <div class="footer-bar-fill" style="width: ${pct}%"></div>
-              </div>
-              <span class="footer-count">${done} / ${p.total}</span>
-              ${p.failed > 0
-                ? html`<span class="footer-failed">${p.failed} failed</span>`
-                : null}
-            `}
+        <span class="footer-label">Ready</span>
+        <span class="footer-spacer"></span>
       </footer>
     `;
   }
+
+  /** Inline icon button shown next to the active progress bar. Cancels
+   * every queued + running task in the backend pool, drops the
+   * frontend's batch state, and re-kicks off thumbnail generation +
+   * HD prewarm for the active folder. Useful when the queue gets
+   * stuck or the user wants a clean retry without changing folders. */
+  private renderRestartButton() {
+    if (this.photos.length === 0) return null;
+    return html`
+      <pf-icon-button
+        class="footer-restart"
+        icon="rotate-cw"
+        label="Restart caching"
+        @click=${this.restartCaching}
+      ></pf-icon-button>
+    `;
+  }
+
+  private restartCaching = async () => {
+    if (this.photos.length === 0) return;
+    // Stop everything in flight first: the backend pool flips every
+    // CancelToken so workers bail out at their next checkpoint, then
+    // the frontend forgets the current thumbnail batch + HD prewarm
+    // so the next start() doesn't see stale progress.
+    try {
+      await invoke<number>("cancel_all_tasks");
+    } catch (err) {
+      console.warn("cancel_all_tasks failed", err);
+    }
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
+    this.hdPrewarmedBatchId = 0;
+    clearThumbnailBatch();
+    // Re-issue the thumbnail batch. Already-cached entries return
+    // instantly from the disk cache and the bar will jump near 100%
+    // — that's expected: nothing remains to do for them. Anything
+    // missing or invalidated since last time is what the user
+    // actually wants to see refilled. `maybeStartHdPrewarm` re-fires
+    // HD prewarm once thumbnails settle.
+    startThumbnailBatch(this.photos.map((p) => p.path));
+  };
 }
 
 declare global {

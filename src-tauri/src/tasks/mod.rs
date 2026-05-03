@@ -20,7 +20,7 @@
 //! Jobs that arrive already-cancelled are skipped without running.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
@@ -193,6 +193,19 @@ pub struct TaskPool {
     /// Ring buffer of finished jobs (most recent at the back).
     history: Arc<Mutex<VecDeque<FinishedJob>>>,
     counters: Arc<Counters>,
+    /// Maximum number of `Background`-priority jobs allowed to run
+    /// concurrently. The number of background OS threads spawned at
+    /// startup is `bg_thread_capacity`; this value caps how many of
+    /// them are permitted to be executing a job at any one time.
+    bg_concurrency: AtomicUsize,
+    /// Number of background jobs currently running. Compared against
+    /// `bg_concurrency` by `run_bg` to throttle parallelism without
+    /// having to spawn / join threads at runtime.
+    bg_active: AtomicUsize,
+    /// Total number of background OS threads spawned. Acts as the
+    /// upper bound for `bg_concurrency` — setting the limit higher
+    /// than this is silently clamped.
+    bg_thread_capacity: AtomicUsize,
 }
 
 impl TaskPool {
@@ -219,13 +232,6 @@ impl TaskPool {
         });
         let running = Arc::new(Mutex::new(HashMap::new()));
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAPACITY)));
-        let pool = Arc::new(Self {
-            state,
-            requests,
-            running,
-            history,
-            counters,
-        });
 
         let cpus = thread::available_parallelism()
             .map(|n| n.get())
@@ -235,21 +241,31 @@ impl TaskPool {
         // bytes / on-screen thumbnails) so a saturated background
         // pool can never delay them.
         let fg_workers = (cpus / 2).clamp(2, 4);
-        // Background workers run the bulk of the image work
-        // (folder-wide thumbnails, neighbour prefetch). Image decode +
-        // SIMD resize is CPU-bound, so we want roughly one worker per
-        // logical core. We oversubscribe slightly past `cpus - fg` so
-        // background throughput is closer to full machine width while
-        // leaving one core for the UI/main thread; the OS scheduler
-        // handles the slight overlap with FG workers when both pools
-        // are busy at the same time.
-        let bg_workers = cpus.saturating_sub(1).max(2);
+        // Spawn a generous upper bound of background OS threads at
+        // startup so concurrency can be raised at runtime via
+        // `set_bg_concurrency` without having to spawn more. Idle
+        // threads just sleep on the bg condvar (cheap), so it's fine
+        // to park more than we'll typically use.
+        let bg_thread_capacity = (cpus * 2).max(8).min(16);
+        let default_bg_concurrency = cpus.saturating_sub(1).max(2).min(bg_thread_capacity);
+
+        let pool = Arc::new(Self {
+            state,
+            requests,
+            running,
+            history,
+            counters,
+            bg_concurrency: AtomicUsize::new(default_bg_concurrency),
+            bg_active: AtomicUsize::new(0),
+            bg_thread_capacity: AtomicUsize::new(bg_thread_capacity),
+        });
+
         pool.counters
             .fg_workers
             .store(fg_workers as u64, Ordering::Relaxed);
         pool.counters
             .bg_workers
-            .store(bg_workers as u64, Ordering::Relaxed);
+            .store(default_bg_concurrency as u64, Ordering::Relaxed);
 
         for i in 0..fg_workers {
             let p = pool.clone();
@@ -258,7 +274,7 @@ impl TaskPool {
                 .spawn(move || p.run_fg())
                 .expect("spawn foreground worker");
         }
-        for i in 0..bg_workers {
+        for i in 0..bg_thread_capacity {
             let p = pool.clone();
             thread::Builder::new()
                 .name(format!("warble-bg-{i}"))
@@ -266,6 +282,32 @@ impl TaskPool {
                 .expect("spawn background worker");
         }
         pool
+    }
+
+    /// Update the runtime cap on concurrent background jobs. Clamped
+    /// to `[1, bg_thread_capacity]`. Wakes all parked background
+    /// workers so any newly-permitted slots can be filled
+    /// immediately.
+    pub fn set_bg_concurrency(&self, n: usize) {
+        let cap = self.bg_thread_capacity.load(Ordering::Relaxed).max(1);
+        let clamped = n.clamp(1, cap);
+        self.bg_concurrency.store(clamped, Ordering::Relaxed);
+        self.counters
+            .bg_workers
+            .store(clamped as u64, Ordering::Relaxed);
+        let (_, _, bg_cv) = &*self.state;
+        bg_cv.notify_all();
+    }
+
+    /// Maximum number of background OS threads — i.e. the upper
+    /// bound `set_bg_concurrency` will accept.
+    pub fn bg_thread_capacity(&self) -> usize {
+        self.bg_thread_capacity.load(Ordering::Relaxed)
+    }
+
+    /// Currently configured concurrency cap.
+    pub fn bg_concurrency(&self) -> usize {
+        self.bg_concurrency.load(Ordering::Relaxed)
     }
 
     /// Submit a job for execution at the given priority.
@@ -360,6 +402,44 @@ impl TaskPool {
         }
     }
 
+    /// Cancel every job currently tracked by the pool — both queued
+    /// and running. Each affected `CancelToken` is flipped, so the
+    /// next cooperative checkpoint in the worker bails out. Workers
+    /// then drain the rest of their queues normally; the cancelled
+    /// jobs are skipped via the `is_cancelled` guard at the top of
+    /// `run`. Returns the number of tokens we flipped.
+    pub fn cancel_all(&self) -> usize {
+        let mut count = 0usize;
+        // Grab the queue lock first so a racing `submit` either
+        // arrives before us (and gets cancelled) or after (and is
+        // never seen). Then walk active request tokens too.
+        {
+            let (lock, _, _) = &*self.state;
+            let g = lock.lock().unwrap();
+            for j in g.fg_queue.iter().chain(g.bg_queue.iter()) {
+                if !j.cancel.is_cancelled() {
+                    j.cancel.cancel();
+                    count += 1;
+                }
+            }
+        }
+        let mut r = self.requests.lock().unwrap();
+        for (_, tok) in r.active.drain() {
+            if !tok.is_cancelled() {
+                tok.cancel();
+                count += 1;
+            }
+        }
+        // Also block any in-flight submits from racing past us.
+        r.pre_cancelled.clear();
+        if count > 0 {
+            self.counters
+                .cancelled
+                .fetch_add(count as u64, Ordering::Relaxed);
+        }
+        count
+    }
+
     fn run_fg(&self) {
         let (lock, fg_cv, _bg_cv) = &*self.state;
         loop {
@@ -382,13 +462,22 @@ impl TaskPool {
             let job = {
                 let mut g = lock.lock().unwrap();
                 loop {
-                    if let Some(j) = g.bg_queue.pop_front() {
-                        break j;
+                    let limit = self.bg_concurrency.load(Ordering::Relaxed);
+                    let active = self.bg_active.load(Ordering::Relaxed);
+                    if active < limit {
+                        if let Some(j) = g.bg_queue.pop_front() {
+                            break j;
+                        }
                     }
                     g = bg_cv.wait(g).unwrap();
                 }
             };
+            self.bg_active.fetch_add(1, Ordering::Relaxed);
             self.execute(job);
+            self.bg_active.fetch_sub(1, Ordering::Relaxed);
+            // A concurrency slot just opened up — wake the next
+            // parked worker so a queued job can start immediately.
+            bg_cv.notify_one();
         }
     }
 

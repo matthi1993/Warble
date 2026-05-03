@@ -57,6 +57,49 @@ impl DiskCache {
         self.max_entries.lock().map(|g| *g).unwrap_or(0)
     }
 
+    /// Filesystem location of this cache. Useful for surfacing the
+    /// path to the user (e.g. in the macOS Cache menu) or for
+    /// "Reveal in Finder".
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Walks the cache directory and returns `(total_bytes,
+    /// file_count)` across every entry matching this cache's
+    /// extension. Best-effort: unreadable shards are skipped.
+    pub fn disk_usage(&self) -> (u64, usize) {
+        let mut total: u64 = 0;
+        let mut count: usize = 0;
+        let Ok(shards) = fs::read_dir(&self.root) else {
+            return (0, 0);
+        };
+        for shard in shards.flatten() {
+            let shard_path = shard.path();
+            if !shard_path.is_dir() {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(&shard_path) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                let matches_ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case(self.file_extension))
+                    .unwrap_or(false);
+                if !matches_ext {
+                    continue;
+                }
+                if let Ok(meta) = file.metadata() {
+                    total = total.saturating_add(meta.len());
+                    count += 1;
+                }
+            }
+        }
+        (total, count)
+    }
+
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
         // Reading the file updates its atime on macOS APFS, which is
         // what `enforce_limit` uses as the recency signal for the LRU.

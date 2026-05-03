@@ -2567,6 +2567,7 @@ export class PfFullView extends LitElement {
             this.horizonModeActive}
             .previewOriginal=${this.previewOriginal}
             .editing=${this.editMode}
+            .enableFullRes=${true}
             background=${this.bgCss(this.bg)}
             @crop-change=${this.onCanvasCropChange}
             @orientation-flip=${this.onCanvasOrientationFlip}
