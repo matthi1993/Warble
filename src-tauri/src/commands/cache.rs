@@ -3,7 +3,7 @@
 use tauri::{Emitter, State};
 
 use crate::app_state::AppState;
-use crate::imaging::{full_image, thumbnails};
+use crate::imaging::{full_image, hd_image, thumbnails};
 use crate::settings::CacheSettings;
 
 #[tauri::command]
@@ -22,6 +22,21 @@ pub fn set_thumbnail_cache_max(
         .settings
         .update(repo, |s| s.thumbnail_disk_max_entries = max);
     thumbnails::set_disk_cache_max_entries(max);
+    let _ = app.emit("cache-settings-changed", snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn set_hd_image_cache_max(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    max: usize,
+) -> Result<CacheSettings, String> {
+    let repo = state.repository()?;
+    let snapshot = state
+        .settings
+        .update(repo, |s| s.hd_image_disk_max_entries = max);
+    hd_image::set_disk_cache_max_entries(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
 }
@@ -59,6 +74,12 @@ pub fn set_full_image_bitmap_cache_max(
 pub fn clear_thumbnail_cache(app: tauri::AppHandle) {
     thumbnails::clear_disk_cache();
     let _ = app.emit("cache-cleared", "thumbnail_disk");
+}
+
+#[tauri::command]
+pub fn clear_hd_image_cache(app: tauri::AppHandle) {
+    hd_image::clear_disk_cache();
+    let _ = app.emit("cache-cleared", "hd_image_disk");
 }
 
 #[tauri::command]

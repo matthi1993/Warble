@@ -16,19 +16,23 @@ use tauri::menu::{
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::app_state::AppState;
-use crate::imaging::{full_image, thumbnails};
+use crate::imaging::{full_image, hd_image, thumbnails};
 
 /// Menu IDs are namespaced so the event handler can route by prefix.
 const ID_THUMB_PREFIX: &str = "cache.thumb.";
+const ID_HD_PREFIX: &str = "cache.hd.";
 const ID_FULL_MEM_PREFIX: &str = "cache.full_mem.";
 const ID_FULL_BITMAP_PREFIX: &str = "cache.full_bitmap.";
 const ID_THUMB_CLEAR: &str = "cache.thumb.clear";
+const ID_HD_CLEAR: &str = "cache.hd.clear";
 const ID_FULL_MEM_CLEAR: &str = "cache.full_mem.clear";
+const ID_DEBUG_STATS_TOGGLE: &str = "window.debug_stats";
 
 /// Preset choices surfaced as check items in the menu. Values are entry
 /// counts; conservative on the low end, generous on the high end so users
 /// with large libraries can opt in.
 const THUMB_PRESETS: &[usize] = &[1_000, 5_000, 10_000, 25_000, 50_000];
+const HD_PRESETS: &[usize] = &[500, 1_000, 2_000, 5_000, 10_000];
 const FULL_MEM_PRESETS: &[usize] = &[4, 8, 16, 32];
 const FULL_BITMAP_PRESETS: &[usize] = &[2, 4, 8, 16];
 
@@ -101,9 +105,13 @@ fn build_view_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
 }
 
 fn build_window_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
+    let debug_stats =
+        MenuItemBuilder::with_id(ID_DEBUG_STATS_TOGGLE, "Show Task Debug Stats").build(app)?;
     SubmenuBuilder::new(app, "Window")
         .item(&PredefinedMenuItem::minimize(app, None)?)
         .item(&PredefinedMenuItem::close_window(app, None)?)
+        .separator()
+        .item(&debug_stats)
         .build()
 }
 
@@ -125,6 +133,14 @@ fn build_cache_submenu(
         settings.thumbnail_disk_max_entries,
         |n| format_count_label(n, "files"),
     )?;
+    let hd_group = build_preset_group(
+        app,
+        "HD Image Disk Cache",
+        ID_HD_PREFIX,
+        HD_PRESETS,
+        settings.hd_image_disk_max_entries,
+        |n| format_count_label(n, "files"),
+    )?;
     let full_mem_group = build_preset_group(
         app,
         "Full Image Memory Cache",
@@ -143,14 +159,18 @@ fn build_cache_submenu(
     )?;
     let clear_thumb =
         MenuItemBuilder::with_id(ID_THUMB_CLEAR, "Clear Thumbnail Cache").build(app)?;
+    let clear_hd =
+        MenuItemBuilder::with_id(ID_HD_CLEAR, "Clear HD Image Cache").build(app)?;
     let clear_full_mem =
         MenuItemBuilder::with_id(ID_FULL_MEM_CLEAR, "Clear Full Image Memory Cache").build(app)?;
     SubmenuBuilder::new(app, "Cache")
         .item(&thumb_group)
+        .item(&hd_group)
         .item(&full_mem_group)
         .item(&full_bitmap_group)
         .separator()
         .item(&clear_thumb)
+        .item(&clear_hd)
         .item(&clear_full_mem)
         .build()
 }
@@ -200,6 +220,15 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
         let _ = app.emit("cache-cleared", "thumbnail_disk");
         return;
     }
+    if id == ID_DEBUG_STATS_TOGGLE {
+        let _ = app.emit("debug-stats:toggle", ());
+        return;
+    }
+    if id == ID_HD_CLEAR {
+        hd_image::clear_disk_cache();
+        let _ = app.emit("cache-cleared", "hd_image_disk");
+        return;
+    }
     if id == ID_FULL_MEM_CLEAR {
         full_image::clear_memory_cache();
         let _ = app.emit("cache-cleared", "full_image_memory");
@@ -208,6 +237,12 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
     if let Some(rest) = id.strip_prefix(ID_THUMB_PREFIX) {
         if let Ok(n) = rest.parse::<usize>() {
             apply_thumb_max(app, n);
+        }
+        return;
+    }
+    if let Some(rest) = id.strip_prefix(ID_HD_PREFIX) {
+        if let Ok(n) = rest.parse::<usize>() {
+            apply_hd_max(app, n);
         }
         return;
     }
@@ -232,6 +267,17 @@ fn apply_thumb_max(app: &AppHandle<Wry>, n: usize) {
         .update(repo, |s| s.thumbnail_disk_max_entries = n);
     thumbnails::set_disk_cache_max_entries(n);
     sync_group_check_state(ID_THUMB_PREFIX, THUMB_PRESETS, n);
+    let _ = app.emit("cache-settings-changed", snapshot);
+}
+
+fn apply_hd_max(app: &AppHandle<Wry>, n: usize) {
+    let state = app.state::<AppState>();
+    let Ok(repo) = state.repository() else { return };
+    let snapshot = state
+        .settings
+        .update(repo, |s| s.hd_image_disk_max_entries = n);
+    hd_image::set_disk_cache_max_entries(n);
+    sync_group_check_state(ID_HD_PREFIX, HD_PRESETS, n);
     let _ = app.emit("cache-settings-changed", snapshot);
 }
 

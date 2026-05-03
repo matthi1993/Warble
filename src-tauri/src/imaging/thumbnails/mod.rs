@@ -6,7 +6,13 @@
 //! 3. Resize to the target width with `fast_image_resize` (SIMD).
 //! 4. Re-encode JPEG, persist to the disk cache, return base64.
 
-mod jpeg_fast_path;
+//! Thumbnail rendering pipeline.
+//!
+//! 1. Look up an on-disk cached JPEG keyed by `(path, mtime, size)`.
+//! 2. On miss, decode the source. JPEGs (and embedded RAW previews) take a
+//!    fast DCT-scaled path; everything else falls back to `image`.
+//! 3. Resize to the target width with `fast_image_resize` (SIMD).
+//! 4. Re-encode JPEG, persist to the disk cache, return base64.
 
 use std::fs;
 use std::io::Cursor;
@@ -18,9 +24,12 @@ use base64::Engine;
 use image::{ImageFormat, ImageReader};
 
 use super::exif::{self, IDENTITY};
+use super::exif_cache;
+use super::jpeg_fast_path;
 use super::raw_preview;
 use super::resize::{downscale_dynamic_to_jpeg, downscale_rgb_to_jpeg};
 use crate::caching::{CacheKeyBuilder, DiskCache};
+use crate::tasks::CancelToken;
 
 const TARGET_WIDTH: u32 = 320;
 const JPEG_QUALITY: u8 = 80;
@@ -55,7 +64,11 @@ pub fn clear_disk_cache() {
 }
 
 /// Generate a base64-encoded JPEG thumbnail for the given photo path.
-pub fn render(path: &str) -> Result<String, String> {
+///
+/// `cancel` is checked between the major steps (cache lookup, source
+/// read, decode, resize) so a cancelled request frees the worker
+/// promptly.
+pub fn render(path: &str, cancel: &CancelToken) -> Result<String, String> {
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
@@ -74,11 +87,12 @@ pub fn render(path: &str) -> Result<String, String> {
         }
     }
 
+    cancel.check()?;
     let ext = lowercase_extension(p);
     let jpeg_bytes = if raw_preview::is_raw_extension(&ext) {
-        render_from_raw(p)?
+        render_from_raw(p, cancel)?
     } else if JPEG_EXTENSIONS.iter().any(|e| *e == ext) {
-        render_from_jpeg_file(p)?
+        render_from_jpeg_file(p, cancel)?
     } else {
         render_via_image_crate(p, IDENTITY)?
     };
@@ -89,14 +103,27 @@ pub fn render(path: &str) -> Result<String, String> {
     Ok(B64.encode(&jpeg_bytes))
 }
 
-fn render_from_jpeg_file(path: &Path) -> Result<Vec<u8>, String> {
+fn render_from_jpeg_file(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let raw = fs::read(path).map_err(|e| e.to_string())?;
-    let orient = exif::read_orientation(&raw);
+    cancel.check()?;
+    // First-touch EXIF parse populates the SQLite metadata cache so
+    // the detail panel (and any subsequent HD/full re-render) skips
+    // its own parse.
+    let orient = exif_cache::orientation_or_warm(path, &raw);
     render_from_jpeg_bytes(&raw, orient).or_else(|_| render_via_image_crate(path, orient))
 }
 
-fn render_from_raw(path: &Path) -> Result<Vec<u8>, String> {
+fn render_from_raw(path: &Path, _cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let preview = raw_preview::extract_preview(path)?;
+    // The RAW preview's EXIF tags belong to the original RAW file,
+    // not the embedded JPEG. Parse them once from the RAW bytes via
+    // `read_full_metadata` so the cache row is populated; we already
+    // have orientation from `extract_preview`.
+    if exif_cache::get(path).is_none() {
+        if let Some((_, metadata)) = exif::read_full_metadata(path) {
+            exif_cache::warm_with(path, preview.orientation, &metadata);
+        }
+    }
 
     if let Ok(out) = render_from_jpeg_bytes(&preview.jpeg_bytes, preview.orientation) {
         return Ok(out);

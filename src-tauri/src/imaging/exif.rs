@@ -5,22 +5,10 @@ use std::path::Path;
 
 use exif::{Exif, In, Tag, Value};
 use image::DynamicImage;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// EXIF orientation `1` = identity (no rotation, no flip).
 pub const IDENTITY: u32 = 1;
-
-/// Read the primary IFD orientation tag, or `IDENTITY` if missing/unreadable.
-pub fn read_orientation(bytes: &[u8]) -> u32 {
-    exif::Reader::new()
-        .read_from_container(&mut Cursor::new(bytes))
-        .ok()
-        .and_then(|exif| {
-            exif.get_field(Tag::Orientation, In::PRIMARY)
-                .and_then(|f| f.value.get_uint(0))
-        })
-        .unwrap_or(IDENTITY)
-}
 
 pub fn apply_to_dynamic(img: DynamicImage, orient: u32) -> DynamicImage {
     match orient {
@@ -53,8 +41,8 @@ pub fn apply_to_rgb8(rgb: Vec<u8>, w: u32, h: u32, orient: u32) -> (Vec<u8>, u32
 /// Human-readable EXIF metadata for the edit panel. All fields optional —
 /// the frontend hides any that are empty so non-camera images don't show
 /// blank rows.
-#[derive(Debug, Serialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ExifMetadata {
     // Camera body
     pub camera_make: Option<String>,
@@ -97,21 +85,34 @@ pub struct ExifMetadata {
     pub gps_altitude: Option<String>,
 }
 
-/// Read EXIF metadata from the file at `path`. Returns an empty struct on
-/// any error (missing file, unsupported container, missing IFD, …) so the
-/// frontend can simply render whatever fields came back.
-pub fn read_metadata(path: &Path) -> ExifMetadata {
-    match read_metadata_inner(path) {
-        Ok(m) => m,
-        Err(_) => ExifMetadata::default(),
-    }
+/// Read EXIF metadata from the file at `path`. Returns the raw
+/// orientation tag (1..=8 — see [`IDENTITY`]) alongside the parsed
+/// metadata. Returns `None` when the file has no readable EXIF
+/// container at all so callers can distinguish "no EXIF" from
+/// "EXIF present, fields all blank".
+pub fn read_full_metadata(path: &Path) -> Option<(u32, ExifMetadata)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bufreader = std::io::BufReader::new(&file);
+    let exif = exif::Reader::new()
+        .read_from_container(&mut bufreader)
+        .ok()?;
+    Some((orientation_value(&exif), extract(&exif)))
 }
 
-fn read_metadata_inner(path: &Path) -> Result<ExifMetadata, exif::Error> {
-    let file = std::fs::File::open(path).map_err(exif::Error::Io)?;
-    let mut bufreader = std::io::BufReader::new(&file);
-    let exif = exif::Reader::new().read_from_container(&mut bufreader)?;
-    Ok(extract(&exif))
+/// Same as [`read_full_metadata`] but for in-memory bytes (e.g. a
+/// JPEG already loaded for decoding). Lets callers warm the metadata
+/// cache without reopening the file.
+pub fn read_full_metadata_from_bytes(bytes: &[u8]) -> Option<(u32, ExifMetadata)> {
+    let exif = exif::Reader::new()
+        .read_from_container(&mut Cursor::new(bytes))
+        .ok()?;
+    Some((orientation_value(&exif), extract(&exif)))
+}
+
+fn orientation_value(exif: &Exif) -> u32 {
+    exif.get_field(Tag::Orientation, In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .unwrap_or(IDENTITY)
 }
 
 fn extract(exif: &Exif) -> ExifMetadata {

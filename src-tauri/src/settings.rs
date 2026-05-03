@@ -18,6 +18,8 @@ const SETTINGS_KEY: &str = "cache_settings";
 
 /// Default ~10k thumbnail JPEGs at ~50KB each ≈ 500 MB on disk.
 pub const DEFAULT_THUMB_CACHE_MAX: usize = 10_000;
+/// Default ~2k HD JPEGs (1920px long side) at ~300KB each ≈ 600 MB on disk.
+pub const DEFAULT_HD_CACHE_MAX: usize = 2_000;
 /// Encoded full-resolution bytes held in process memory. ~5–20 MB each.
 pub const DEFAULT_FULL_MEM_CACHE_MAX: usize = 8;
 /// Decoded `ImageBitmap`s pinned in the renderer (frontend). A 24 MP RGBA
@@ -28,6 +30,7 @@ pub const DEFAULT_FULL_BITMAP_CACHE_MAX: usize = 4;
 #[serde(default)]
 pub struct CacheSettings {
     pub thumbnail_disk_max_entries: usize,
+    pub hd_image_disk_max_entries: usize,
     pub full_image_memory_max_entries: usize,
     pub full_image_bitmap_max_entries: usize,
 }
@@ -36,6 +39,7 @@ impl Default for CacheSettings {
     fn default() -> Self {
         Self {
             thumbnail_disk_max_entries: DEFAULT_THUMB_CACHE_MAX,
+            hd_image_disk_max_entries: DEFAULT_HD_CACHE_MAX,
             full_image_memory_max_entries: DEFAULT_FULL_MEM_CACHE_MAX,
             full_image_bitmap_max_entries: DEFAULT_FULL_BITMAP_CACHE_MAX,
         }

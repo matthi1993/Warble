@@ -8,11 +8,12 @@ mod settings;
 mod tasks;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tauri::Manager;
 
 use app_state::AppState;
-use imaging::{full_image, thumbnails};
+use imaging::{exif_cache, full_image, hd_image, thumbnails};
 use library::LibraryRepository;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,6 +28,7 @@ pub fn run() {
             // are warm before the first image request.
             let _ = tasks::pool();
             init_thumbnail_cache(app);
+            init_hd_image_cache(app);
             init_library_repository(app);
             init_settings_and_caches(app);
             init_menu(app);
@@ -40,14 +42,18 @@ pub fn run() {
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,
+            commands::get_hd_image_bytes,
             commands::cancel_image_request,
             commands::get_exif_metadata,
             commands::get_cache_settings,
             commands::set_thumbnail_cache_max,
+            commands::set_hd_image_cache_max,
             commands::set_full_image_memory_cache_max,
             commands::set_full_image_bitmap_cache_max,
             commands::clear_thumbnail_cache,
+            commands::clear_hd_image_cache,
             commands::clear_full_image_memory_cache,
+            commands::get_task_stats,
             commands::reveal_in_file_manager,
             commands::get_photo_variants,
             commands::set_photo_variant,
@@ -73,6 +79,14 @@ fn init_thumbnail_cache(app: &tauri::App) {
     }
 }
 
+fn init_hd_image_cache(app: &tauri::App) {
+    if let Ok(mut dir) = app.path().app_cache_dir() {
+        dir.push("hd_images");
+        let _ = std::fs::create_dir_all(&dir);
+        hd_image::init_cache_dir(dir);
+    }
+}
+
 /// Load persisted cache settings (or defaults), then apply them to every
 /// in-memory and on-disk cache before the app processes its first request.
 /// Must run *after* `init_library_repository` because settings live in the
@@ -84,6 +98,7 @@ fn init_settings_and_caches(app: &tauri::App) {
     }
     let s = state.settings.get();
     thumbnails::set_disk_cache_max_entries(s.thumbnail_disk_max_entries);
+    hd_image::set_disk_cache_max_entries(s.hd_image_disk_max_entries);
     full_image::set_memory_cache_capacity(s.full_image_memory_max_entries);
 }
 
@@ -108,8 +123,10 @@ fn init_library_repository(app: &tauri::App) {
     let state = app.state::<AppState>();
     match LibraryRepository::open(&db_path) {
         Ok(repo) => {
-            rehydrate_imported_roots(&repo, &state);
-            let _ = state.repository.set(repo);
+            let arc = Arc::new(repo);
+            rehydrate_imported_roots(arc.as_ref(), &state);
+            exif_cache::init(Arc::clone(&arc));
+            let _ = state.repository.set(arc);
         }
         Err(e) => eprintln!("failed to open library repository at {db_path:?}: {e}"),
     }

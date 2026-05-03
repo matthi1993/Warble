@@ -62,6 +62,28 @@ pub fn downscale_dynamic_to_jpeg(
     downscale_rgb_to_jpeg(rgb.as_raw(), w, h, target_width, quality)
 }
 
+/// Convert `img` to RGB8 and downscale so its longest side fits in
+/// `target_long_side`, preserving aspect ratio. Pass-through if the
+/// source is already small enough.
+pub fn downscale_dynamic_long_side_to_jpeg(
+    img: DynamicImage,
+    target_long_side: u32,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    // Map "long side" to an equivalent target_width for `downscale_rgb_to_jpeg`.
+    let target_width = if w >= h {
+        target_long_side
+    } else {
+        // Portrait: pick the width that scales the height down to
+        // `target_long_side`. Round up so we never overshoot.
+        let ratio = target_long_side as f32 / h as f32;
+        ((w as f32 * ratio).round() as u32).max(1)
+    };
+    downscale_rgb_to_jpeg(rgb.as_raw(), w, h, target_width, quality)
+}
+
 fn encode_jpeg(rgb: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(32 * 1024);
     JpegEncoder::new_with_quality(&mut out, quality)

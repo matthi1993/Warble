@@ -20,9 +20,12 @@
 //! Jobs that arrive already-cancelled are skipped without running.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
+use std::time::Instant;
+
+use serde::Serialize;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Priority {
@@ -45,6 +48,14 @@ impl Priority {
             _ => Priority::Foreground,
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Priority::Urgent => "urgent",
+            Priority::Foreground => "foreground",
+            Priority::Background => "background",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -63,9 +74,26 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+    /// Convenience for cooperative bail-out: returns `Err("cancelled")`
+    /// when the flag is set, `Ok(())` otherwise.
+    pub fn check(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err("cancelled".to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct JobMeta {
+    job_id: u64,
+    label: &'static str,
+    priority: Priority,
+    submitted_at: Instant,
 }
 
 struct Job {
+    meta: JobMeta,
     cancel: CancelToken,
     work: Box<dyn FnOnce(&CancelToken) + Send + 'static>,
 }
@@ -85,9 +113,86 @@ struct Requests {
     pre_cancelled: HashSet<u64>,
 }
 
+/// Per-job snapshot row used by the debug overlay.
+#[derive(Clone, Debug, Serialize)]
+pub struct JobSnapshot {
+    pub job_id: u64,
+    pub label: &'static str,
+    pub priority: &'static str,
+    /// Milliseconds the job has spent in its current state (queued or
+    /// running). Computed at snapshot time.
+    pub age_ms: u64,
+    /// `true` once a worker has popped the job and started running it.
+    pub running: bool,
+    /// `true` if the job's cancel flag was flipped.
+    pub cancelled: bool,
+}
+
+/// A finished job kept in the ring buffer so the debug overlay can
+/// show recent timings (queue + run latency) and cancellations.
+#[derive(Clone, Debug, Serialize)]
+pub struct FinishedJob {
+    pub job_id: u64,
+    pub label: &'static str,
+    pub priority: &'static str,
+    /// Milliseconds the job spent waiting in the queue before a worker
+    /// picked it up.
+    pub queued_ms: u64,
+    /// Milliseconds the worker spent actually executing the job.
+    pub run_ms: u64,
+    /// `true` if the cancel flag was set at any point during the job's
+    /// lifetime (queued or running).
+    pub cancelled: bool,
+}
+
+/// Maximum number of recently-finished jobs retained for the debug
+/// overlay. Bounded so a long-running session can't grow the buffer
+/// without limit.
+const HISTORY_CAPACITY: usize = 256;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PoolStats {
+    pub fg_workers: usize,
+    pub bg_workers: usize,
+    pub fg_queued: usize,
+    pub bg_queued: usize,
+    pub fg_running: usize,
+    pub bg_running: usize,
+    pub total_submitted: u64,
+    pub total_completed: u64,
+    pub total_cancelled: u64,
+    /// All jobs currently in the system (queued + running), most
+    /// recent submission first.
+    pub jobs: Vec<JobSnapshot>,
+    /// Recently finished jobs, most-recent-first. Capped at
+    /// [`HISTORY_CAPACITY`] entries.
+    pub recent: Vec<FinishedJob>,
+}
+
+/// Tracks a job a worker is actively executing.
+struct RunningJob {
+    label: &'static str,
+    priority: Priority,
+    started_at: Instant,
+    cancel: CancelToken,
+}
+
+struct Counters {
+    next_job_id: AtomicU64,
+    submitted: AtomicU64,
+    completed: AtomicU64,
+    cancelled: AtomicU64,
+    fg_workers: AtomicU64,
+    bg_workers: AtomicU64,
+}
+
 pub struct TaskPool {
     state: Arc<(Mutex<Inner>, Condvar, Condvar)>, // (lock, fg_cv, bg_cv)
     requests: Arc<Mutex<Requests>>,
+    running: Arc<Mutex<HashMap<u64, RunningJob>>>,
+    /// Ring buffer of finished jobs (most recent at the back).
+    history: Arc<Mutex<VecDeque<FinishedJob>>>,
+    counters: Arc<Counters>,
 }
 
 impl TaskPool {
@@ -104,7 +209,23 @@ impl TaskPool {
             active: HashMap::new(),
             pre_cancelled: HashSet::new(),
         }));
-        let pool = Arc::new(Self { state, requests });
+        let counters = Arc::new(Counters {
+            next_job_id: AtomicU64::new(1),
+            submitted: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+            cancelled: AtomicU64::new(0),
+            fg_workers: AtomicU64::new(0),
+            bg_workers: AtomicU64::new(0),
+        });
+        let running = Arc::new(Mutex::new(HashMap::new()));
+        let history = Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAPACITY)));
+        let pool = Arc::new(Self {
+            state,
+            requests,
+            running,
+            history,
+            counters,
+        });
 
         let cpus = thread::available_parallelism()
             .map(|n| n.get())
@@ -114,7 +235,21 @@ impl TaskPool {
         // bytes / on-screen thumbnails) so a saturated background
         // pool can never delay them.
         let fg_workers = (cpus / 2).clamp(2, 4);
-        let bg_workers = cpus.saturating_sub(fg_workers).max(1);
+        // Background workers run the bulk of the image work
+        // (folder-wide thumbnails, neighbour prefetch). Image decode +
+        // SIMD resize is CPU-bound, so we want roughly one worker per
+        // logical core. We oversubscribe slightly past `cpus - fg` so
+        // background throughput is closer to full machine width while
+        // leaving one core for the UI/main thread; the OS scheduler
+        // handles the slight overlap with FG workers when both pools
+        // are busy at the same time.
+        let bg_workers = cpus.saturating_sub(1).max(2);
+        pool.counters
+            .fg_workers
+            .store(fg_workers as u64, Ordering::Relaxed);
+        pool.counters
+            .bg_workers
+            .store(bg_workers as u64, Ordering::Relaxed);
 
         for i in 0..fg_workers {
             let p = pool.clone();
@@ -138,8 +273,13 @@ impl TaskPool {
     /// `request_id`, when present, lets the frontend cancel the job via
     /// [`Self::cancel`] before (or while) it runs. The job's closure
     /// receives a [`CancelToken`] it can poll between sub-steps.
-    pub fn submit<F>(&self, priority: Priority, request_id: Option<u64>, work: F)
-    where
+    pub fn submit<F>(
+        &self,
+        priority: Priority,
+        request_id: Option<u64>,
+        label: &'static str,
+        work: F,
+    ) where
         F: FnOnce(&CancelToken) + Send + 'static,
     {
         // Register the cancel token first so a cancel command racing
@@ -170,7 +310,16 @@ impl TaskPool {
                 }
             });
 
+        let job_id = self.counters.next_job_id.fetch_add(1, Ordering::Relaxed);
+        self.counters.submitted.fetch_add(1, Ordering::Relaxed);
+        let meta = JobMeta {
+            job_id,
+            label,
+            priority,
+            submitted_at: Instant::now(),
+        };
         let job = Job {
+            meta,
             cancel,
             work: work_box,
         };
@@ -200,6 +349,7 @@ impl TaskPool {
         let mut r = self.requests.lock().unwrap();
         if let Some(tok) = r.active.remove(&request_id) {
             tok.cancel();
+            self.counters.cancelled.fetch_add(1, Ordering::Relaxed);
         } else {
             r.pre_cancelled.insert(request_id);
             // Bound the pre-cancel set so a misbehaving caller can't
@@ -222,7 +372,7 @@ impl TaskPool {
                     g = fg_cv.wait(g).unwrap();
                 }
             };
-            (job.work)(&job.cancel);
+            self.execute(job);
         }
     }
 
@@ -238,7 +388,122 @@ impl TaskPool {
                     g = bg_cv.wait(g).unwrap();
                 }
             };
-            (job.work)(&job.cancel);
+            self.execute(job);
+        }
+    }
+
+    fn execute(&self, job: Job) {
+        let job_id = job.meta.job_id;
+        let label = job.meta.label;
+        let priority = job.meta.priority;
+        let submitted_at = job.meta.submitted_at;
+        let started_at = Instant::now();
+        let running_entry = RunningJob {
+            label,
+            priority,
+            started_at,
+            cancel: job.cancel.clone(),
+        };
+        if let Ok(mut r) = self.running.lock() {
+            r.insert(job_id, running_entry);
+        }
+        (job.work)(&job.cancel);
+        let finished_at = Instant::now();
+        if let Ok(mut r) = self.running.lock() {
+            r.remove(&job_id);
+        }
+        self.counters.completed.fetch_add(1, Ordering::Relaxed);
+
+        let entry = FinishedJob {
+            job_id,
+            label,
+            priority: priority.as_str(),
+            queued_ms: started_at
+                .saturating_duration_since(submitted_at)
+                .as_millis() as u64,
+            run_ms: finished_at
+                .saturating_duration_since(started_at)
+                .as_millis() as u64,
+            cancelled: job.cancel.is_cancelled(),
+        };
+        if let Ok(mut h) = self.history.lock() {
+            if h.len() == HISTORY_CAPACITY {
+                h.pop_front();
+            }
+            h.push_back(entry);
+        }
+    }
+
+    /// Snapshot of pool state for the debug overlay. Cheap enough to
+    /// poll at ~10 Hz: takes the queue lock briefly to copy metadata,
+    /// then the running-jobs lock.
+    pub fn snapshot(&self) -> PoolStats {
+        let now = Instant::now();
+        let mut jobs: Vec<JobSnapshot> = Vec::new();
+
+        let (fg_queued, bg_queued) = {
+            let (lock, _, _) = &*self.state;
+            let g = lock.lock().unwrap();
+            for j in g.fg_queue.iter().chain(g.bg_queue.iter()) {
+                jobs.push(JobSnapshot {
+                    job_id: j.meta.job_id,
+                    label: j.meta.label,
+                    priority: j.meta.priority.as_str(),
+                    age_ms: now
+                        .saturating_duration_since(j.meta.submitted_at)
+                        .as_millis() as u64,
+                    running: false,
+                    cancelled: j.cancel.is_cancelled(),
+                });
+            }
+            (g.fg_queue.len(), g.bg_queue.len())
+        };
+
+        let (fg_running, bg_running) = {
+            let r = self.running.lock().unwrap();
+            let mut fg = 0usize;
+            let mut bg = 0usize;
+            for (id, entry) in r.iter() {
+                match entry.priority {
+                    Priority::Background => bg += 1,
+                    _ => fg += 1,
+                }
+                jobs.push(JobSnapshot {
+                    job_id: *id,
+                    label: entry.label,
+                    priority: entry.priority.as_str(),
+                    age_ms: now
+                        .saturating_duration_since(entry.started_at)
+                        .as_millis() as u64,
+                    running: true,
+                    cancelled: entry.cancel.is_cancelled(),
+                });
+            }
+            (fg, bg)
+        };
+
+        // Most recent first (highest job_id at the top).
+        jobs.sort_by(|a, b| b.job_id.cmp(&a.job_id));
+
+        // Snapshot the finished-jobs ring buffer, most recent first.
+        let recent: Vec<FinishedJob> = self
+            .history
+            .lock()
+            .map(|h| h.iter().rev().cloned().collect())
+            .unwrap_or_default();
+
+        PoolStats {
+            fg_workers: self.counters.fg_workers.load(Ordering::Relaxed) as usize,
+            bg_workers: self.counters.bg_workers.load(Ordering::Relaxed) as usize,
+            fg_queued,
+            bg_queued,
+            fg_running,
+            bg_running,
+            total_submitted: self.counters.submitted.load(Ordering::Relaxed),
+            total_completed: self.counters.completed.load(Ordering::Relaxed),
+            total_cancelled: self.counters.cancelled.load(Ordering::Relaxed),
+            jobs,
+            recent,
         }
     }
 }
@@ -256,6 +521,7 @@ pub fn pool() -> &'static Arc<TaskPool> {
 pub async fn run<F, T>(
     priority: Priority,
     request_id: Option<u64>,
+    label: &'static str,
     work: F,
 ) -> Result<T, String>
 where
@@ -263,7 +529,7 @@ where
     T: Send + 'static,
 {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    pool().submit(priority, request_id, move |cancel| {
+    pool().submit(priority, request_id, label, move |cancel| {
         let result = if cancel.is_cancelled() {
             Err("cancelled".to_string())
         } else {

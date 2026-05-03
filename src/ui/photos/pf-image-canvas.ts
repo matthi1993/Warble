@@ -21,10 +21,10 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { requestThumbnail, isCancellation } from "../../app/thumbnail-service";
 import {
-  getFullImage,
-  loadFullImage,
-  setFullImageDecoder,
-} from "../../app/full-image-cache";
+  getHdImage,
+  loadHdImage,
+  setHdImageDecoder,
+} from "../../app/hd-image-cache";
 import {
   getPhotoEdit,
   isToneZero,
@@ -218,11 +218,6 @@ export class PfImageCanvas extends LitElement {
 
   private resizeObserver?: ResizeObserver;
   private loadAbort: AbortController | null = null;
-  /** Defers the expensive full-image fetch+decode so quickly skipping
-   * past photos doesn't pile up parallel decodes that starve the photo
-   * the user actually settles on. */
-  private fullLoadTimer: number | null = null;
-  private static FULL_LOAD_DELAY_MS = 250;
   private dragging = false;
   private dragStartX = 0;
   private dragStartY = 0;
@@ -337,10 +332,6 @@ export class PfImageCanvas extends LitElement {
     super.disconnectedCallback();
     this.resizeObserver?.disconnect();
     this.loadAbort?.abort();
-    if (this.fullLoadTimer !== null) {
-      window.clearTimeout(this.fullLoadTimer);
-      this.fullLoadTimer = null;
-    }
     // Full bitmap is owned by `full-image-cache`; do NOT close it here.
     this.thumbBitmap?.close?.();
     this.bitmap = null;
@@ -501,10 +492,6 @@ export class PfImageCanvas extends LitElement {
 
   private async startLoad() {
     this.loadAbort?.abort();
-    if (this.fullLoadTimer !== null) {
-      window.clearTimeout(this.fullLoadTimer);
-      this.fullLoadTimer = null;
-    }
     const ac = new AbortController();
     this.loadAbort = ac;
 
@@ -536,10 +523,10 @@ export class PfImageCanvas extends LitElement {
       this.thumbForPath = null;
     }
 
-    // Fast path: full image already in the cross-instance LRU cache.
+    // Fast path: HD image already in the cross-instance LRU cache.
     // Skip the thumbnail roundtrip and the deferred-decode entirely so
     // navigating between recently-viewed photos is instant.
-    const cached = getFullImage(path);
+    const cached = getHdImage(path);
     if (cached) {
       this.bitmap = cached;
       this.bitmapForPath = path;
@@ -579,15 +566,14 @@ export class PfImageCanvas extends LitElement {
         if (!isCancellation(err)) console.warn("thumbnail preview failed", err);
       });
 
-    // Phase 2: full encoded bytes → createImageBitmap. Defer by 250 ms so
-    // that flicking past photos doesn't queue up expensive decodes for
-    // every intermediate frame; only the photo the user actually settles
-    // on pays the full-render cost.
-    this.fullLoadTimer = window.setTimeout(() => {
-      this.fullLoadTimer = null;
-      if (ac.signal.aborted || this.path !== path) return;
-      void this.loadFullImage(path, ac);
-    }, PfImageCanvas.FULL_LOAD_DELAY_MS);
+    // Phase 2: HD encoded bytes → createImageBitmap. Issued immediately
+    // so navigation feels snappy. The HD pipeline produces a 1920px-
+    // long-side JPEG (cached on disk after the first hit), so the
+    // decode is cheap enough that we don't need to defer it the way we
+    // would for full-resolution decodes. Rapid arrow-key navigation is
+    // still safe: the priority pool drops queued jobs whose request id
+    // is cancelled by `loadAbort`.
+    void this.loadFullImage(path, ac);
   }
 
   private async loadFullImage(path: string, ac: AbortController) {
@@ -598,7 +584,7 @@ export class PfImageCanvas extends LitElement {
       // Passing the abort signal lets the cache cancel the backend
       // byte fetch when the user navigates away before the decode
       // starts running on the priority pool.
-      const bm = await loadFullImage(path, {
+      const bm = await loadHdImage(path, {
         priority: "urgent",
         signal: ac.signal,
       });
@@ -1760,11 +1746,11 @@ function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
   });
 }
 
-// Hand the worker-backed decoder to the shared full-image cache so it
+// Hand the worker-backed decoder to the shared HD-image cache so it
 // can fetch+decode entries on cache misses (and prefetches from
 // `pf-full-view`). Registering at module load means any code path that
 // imports the cache after this module is wired up.
-setFullImageDecoder(decodeInWorker);
+setHdImageDecoder(decodeInWorker);
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;

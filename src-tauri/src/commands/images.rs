@@ -22,16 +22,17 @@
 //!
 //! The frontend supplies an optional `request_id`; calling
 //! [`cancel_image_request`] with that id flips a cooperative cancel
-//! flag so a job that hasn't yet started skips its work entirely. A
-//! job already running runs to completion — the long phase (image
-//! decode) lives inside `image` / `jpeg-decoder` which we can't
-//! preempt — but its result will simply be discarded by the caller.
+//! flag. Jobs that haven't yet started skip their work entirely;
+//! running jobs poll the flag at every step they can and bail out
+//! with `Err("cancelled")` so the worker is freed for the next
+//! request — essential for the hot navigation case where the user
+//! flicks past a still-decoding photo.
 
 use std::path::PathBuf;
 
 use tauri::ipc::Response;
 
-use crate::imaging::{exif, full_image, thumbnails};
+use crate::imaging::{exif_cache, full_image, hd_image, thumbnails};
 use crate::tasks::{self, Priority};
 
 #[tauri::command]
@@ -48,8 +49,8 @@ pub async fn get_thumbnail(
         Some(s) => Priority::parse(Some(s)),
         None => Priority::Background,
     };
-    tasks::run(prio, request_id, move |_cancel| {
-        thumbnails::render(&photo_path)
+    tasks::run(prio, request_id, "thumbnail", move |cancel| {
+        thumbnails::render(&photo_path, cancel)
     })
     .await
 }
@@ -66,8 +67,27 @@ pub async fn get_full_image_bytes(
         Some(s) => Priority::parse(Some(s)),
         None => Priority::Urgent,
     };
-    let bytes = tasks::run(prio, request_id, move |_cancel| {
-        full_image::load_bytes(&photo_path)
+    let bytes = tasks::run(prio, request_id, "full_image", move |cancel| {
+        full_image::load_bytes(&photo_path, cancel)
+    })
+    .await?;
+    Ok(Response::new(bytes))
+}
+
+#[tauri::command]
+pub async fn get_hd_image_bytes(
+    photo_path: String,
+    request_id: Option<u64>,
+    priority: Option<String>,
+) -> Result<Response, String> {
+    // Default to urgent: the only consumer is the active canvas, and
+    // prefetch explicitly downgrades to `background`.
+    let prio = match priority.as_deref() {
+        Some(s) => Priority::parse(Some(s)),
+        None => Priority::Urgent,
+    };
+    let bytes = tasks::run(prio, request_id, "hd_image", move |cancel| {
+        hd_image::load_bytes(&photo_path, cancel)
     })
     .await?;
     Ok(Response::new(bytes))
@@ -84,14 +104,18 @@ pub fn cancel_image_request(request_id: u64) {
 /// Read EXIF metadata for the photo at `photo_path`. Returns an
 /// `ExifMetadata` with `null` for any tags that aren't present so the
 /// frontend can decide whether to render each row.
+///
+/// Backed by a SQLite cache (`photo_exif`): the file is only opened
+/// and parsed on first request, or after the file's mtime/size
+/// changes. Subsequent panel opens are a single indexed row read.
 #[tauri::command]
 pub async fn get_exif_metadata(
     photo_path: String,
-) -> Result<exif::ExifMetadata, String> {
+) -> Result<crate::imaging::exif::ExifMetadata, String> {
     // EXIF reads are short and only fired for the active photo, so
     // run them on the foreground pool.
-    tasks::run(Priority::Foreground, None, move |_cancel| {
-        Ok::<_, String>(exif::read_metadata(&PathBuf::from(photo_path)))
+    tasks::run(Priority::Foreground, None, "exif", move |_cancel| {
+        Ok::<_, String>(exif_cache::get_or_compute(&PathBuf::from(photo_path)))
     })
     .await
 }

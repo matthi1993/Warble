@@ -27,7 +27,7 @@ import {
   setVariantOverride,
   subscribeVariantOverrides,
 } from "./variant-store";
-import { prefetchFullImages } from "./full-image-cache";
+import { prefetchHdImages } from "./hd-image-cache";
 import {
   ASPECT_RATIO_LABELS,
   ASPECT_RATIO_VALUES,
@@ -1412,7 +1412,7 @@ export class PfFullView extends LitElement {
       const back = i - d;
       if (back >= 0) order.push(this.photos[back].path);
     }
-    prefetchFullImages(order);
+    prefetchHdImages(order);
   }
 
   private bgCss(bg: BgColor): string {

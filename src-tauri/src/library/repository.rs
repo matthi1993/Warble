@@ -95,6 +95,79 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         }
 
+        if current < 5 {
+            // Cached EXIF metadata so we don't reopen + re-parse the
+            // source file on every detail-panel display or HD/full
+            // image render. Invalidated by `(file_mtime, file_size)`
+            // changing — same coarse check the on-disk image caches
+            // use.
+            conn.execute_batch(
+                "CREATE TABLE photo_exif (
+                    path        TEXT PRIMARY KEY,
+                    file_mtime  INTEGER NOT NULL,
+                    file_size   INTEGER NOT NULL,
+                    orientation INTEGER NOT NULL DEFAULT 1,
+                    metadata    TEXT NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (5);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    /// Read a cached EXIF row (if any) along with the file fingerprint
+    /// it was captured for.
+    pub fn get_photo_exif(
+        &self,
+        path: &str,
+    ) -> Result<Option<(i64, i64, u32, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let row = conn
+            .query_row(
+                "SELECT file_mtime, file_size, orientation, metadata
+                   FROM photo_exif WHERE path = ?1",
+                params![path],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)? as u32,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })?;
+        Ok(row)
+    }
+
+    /// Upsert the EXIF cache row for `path`. `metadata_json` is the
+    /// serialized [`crate::imaging::exif::ExifMetadata`].
+    pub fn set_photo_exif(
+        &self,
+        path: &str,
+        file_mtime: i64,
+        file_size: i64,
+        orientation: u32,
+        metadata_json: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO photo_exif (path, file_mtime, file_size, orientation, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO UPDATE SET
+                 file_mtime  = excluded.file_mtime,
+                 file_size   = excluded.file_size,
+                 orientation = excluded.orientation,
+                 metadata    = excluded.metadata",
+            params![path, file_mtime, file_size, orientation as i64, metadata_json],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 

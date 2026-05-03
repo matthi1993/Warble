@@ -26,3 +26,11 @@ jpeg-decoder = "0.3"
 fast_image_resize = { version = "5", features = ["image"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["sync"] }
+
+# Even in dev builds, run the imaging crates with full optimisation —
+# debug-built JPEG decode + SIMD resize is an order of magnitude slower
+# than release, which makes a 24 MP HD preview take ~30 s instead of
+# 1–2 s. Our own code stays at the default `opt-level = 0` so it still
+# builds and steps through quickly.
+[profile.dev.package."*"]
+opt-level = 3

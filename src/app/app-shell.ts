@@ -732,6 +732,7 @@ export class WarbleApp extends LitElement {
 
       ${this.renderFooter()}
       ${this.renderContextMenu()}
+      <pf-debug-overlay></pf-debug-overlay>
     `;
   }
 
