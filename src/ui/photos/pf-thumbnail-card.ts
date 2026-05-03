@@ -5,13 +5,16 @@ import {
   requestThumbnail,
   type ThumbnailHandle,
 } from "../../app/thumbnail-service";
+import { isHdCached, onHdCached } from "../../app/hd-image-cache";
 import "../icons/pf-icon";
+import "./pf-rating-overlay";
 
 @customElement("pf-thumbnail-card")
 export class PfThumbnailCard extends LitElement {
   static styles = css`
     :host {
       display: block;
+      width: 100%;
     }
     .card {
       display: flex;
@@ -35,8 +38,15 @@ export class PfThumbnailCard extends LitElement {
       box-shadow: 0 0 0 2px var(--pf-accent-soft);
     }
     .thumb {
-      width: 160px;
-      height: 160px;
+      /* Cards stretch to fill their grid cell; the thumbnail is a
+         square of the cell width so the photo-grid's slider drives
+         thumbnail size by changing the column count. The image
+         itself preserves its native aspect (letterboxed inside the
+         square) — full-resolution stretching only happens in the
+         full image view, where the canvas applies the configured
+         scale + margin. */
+      width: 100%;
+      aspect-ratio: 1 / 1;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -49,6 +59,9 @@ export class PfThumbnailCard extends LitElement {
     .thumb img {
       max-width: 100%;
       max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
       display: block;
     }
     .placeholder {
@@ -58,7 +71,7 @@ export class PfThumbnailCard extends LitElement {
     .filename {
       font-size: var(--pf-text-xs);
       color: var(--pf-text-muted);
-      max-width: 160px;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -90,6 +103,33 @@ export class PfThumbnailCard extends LitElement {
       border-radius: 999px;
       text-transform: uppercase;
     }
+    .badge span.variants {
+      background: var(--pf-accent, #4a7);
+      text-transform: none;
+    }
+    /**
+     * Small grey checkmark badge in the bottom-left corner indicating
+     * the HD-resolution rendition for this photo is already cached on
+     * disk. Lights up when the folder-wide HD prewarm finishes for
+     * this image, or when the user opens the photo in the full view
+     * (which also caches the HD JPEG).
+     */
+    .hd-badge {
+      position: absolute;
+      bottom: var(--pf-space-1);
+      left: var(--pf-space-1);
+      width: 14px;
+      height: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.55);
+      color: rgba(255, 255, 255, 0.7);
+      border-radius: 999px;
+      font-size: 0.55rem;
+      line-height: 1;
+      pointer-events: none;
+    }
   `;
 
   @property({ type: String })
@@ -100,6 +140,12 @@ export class PfThumbnailCard extends LitElement {
 
   @property({ attribute: false })
   extensions: string[] = [];
+
+  /** Number of distinct variants for this photo (e.g. `Foo.jpg`,
+   *  `Foo (1).jpg`, `Foo (edit).jpg` → 3). When greater than 1, a
+   *  badge marks the thumbnail. */
+  @property({ type: Number })
+  variantCount = 1;
 
   @property({ type: Boolean, reflect: true })
   selected = false;
@@ -113,13 +159,44 @@ export class PfThumbnailCard extends LitElement {
   @state()
   private loading = false;
 
+  @state()
+  private hdCached = false;
+
   private observer: IntersectionObserver | null = null;
   private loadedPath: string | null = null;
   private pending: ThumbnailHandle | null = null;
+  private unsubscribeHdCached: (() => void) | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
     this.startObserving();
+    this.hdCached = isHdCached(this.path);
+    this.unsubscribeHdCached = onHdCached((cachedPath) => {
+      if (cachedPath !== this.path) return;
+      if (this.hdCached) return;
+      this.hdCached = true;
+      // Belt-and-braces: ensure Lit re-renders even if the @state
+      // setter optimisation thinks nothing changed (e.g. after a
+      // disconnect/reconnect cycle preserved an older value).
+      this.requestUpdate();
+    });
+  }
+
+  /**
+   * Forget the currently-displayed thumbnail and re-fetch it. Used after
+   * a global cache-clear so on-screen cards drop their stale base64 and
+   * re-decode from source instead of reusing the renderer-side cache.
+   */
+  reload(): void {
+    this.pending?.cancel();
+    this.pending = null;
+    this.dataUrl = null;
+    this.error = null;
+    this.loading = false;
+    this.loadedPath = null;
+    if (this.isConnected) {
+      this.startObserving();
+    }
   }
 
   disconnectedCallback(): void {
@@ -128,6 +205,8 @@ export class PfThumbnailCard extends LitElement {
     this.observer = null;
     this.pending?.cancel();
     this.pending = null;
+    this.unsubscribeHdCached?.();
+    this.unsubscribeHdCached = null;
   }
 
   willUpdate(changed: Map<string, unknown>): void {
@@ -138,6 +217,7 @@ export class PfThumbnailCard extends LitElement {
       this.error = null;
       this.loading = false;
       this.loadedPath = null;
+      this.hdCached = isHdCached(this.path);
       if (this.isConnected) {
         this.startObserving();
       }
@@ -193,7 +273,12 @@ export class PfThumbnailCard extends LitElement {
   render() {
     const showBadge = this.extensions && this.extensions.length > 1;
     return html`
-      <div class="card" @click=${this.onClick} @dblclick=${this.onDblClick}>
+      <div
+        class=\"card\"
+        @click=${this.onClick}
+        @dblclick=${this.onDblClick}
+        @contextmenu=${this.onContextMenu}
+      >
         <div class="thumb">
           ${this.dataUrl
             ? html`<img src=${this.dataUrl} alt=${this.filename} loading="lazy" />`
@@ -204,14 +289,35 @@ export class PfThumbnailCard extends LitElement {
             : html`<div class="placeholder">
                 <pf-icon name="image"></pf-icon>
               </div>`}
-          ${showBadge
+          ${showBadge || this.variantCount > 1
             ? html`<div
                 class="badge"
-                title=${`Includes: ${this.extensions.join(", ")}`}
+                title=${`Includes: ${this.extensions.join(", ")}${
+                  this.variantCount > 1
+                    ? ` (${this.variantCount} variants)`
+                    : ""
+                }`}
               >
-                ${this.extensions.map((e) => html`<span>${e}</span>`)}
+                ${showBadge
+                  ? this.extensions.map((e) => html`<span>${e}</span>`)
+                  : null}
+                ${this.variantCount > 1
+                  ? html`<span class="variants"
+                      title=${`${this.variantCount} variants`}
+                      >+${this.variantCount - 1}</span
+                    >`
+                  : null}
               </div>`
             : null}
+          ${this.hdCached
+            ? html`<span
+                class="hd-badge"
+                title="HD preview cached on disk"
+                aria-label="HD preview cached"
+                >✓</span
+              >`
+            : null}
+          <pf-rating-overlay .path=${this.path}></pf-rating-overlay>
         </div>
         <div class="filename" title=${this.filename}>${this.filename}</div>
       </div>
@@ -233,6 +339,29 @@ export class PfThumbnailCard extends LitElement {
     this.dispatchEvent(
       new CustomEvent("photo-open", {
         detail: { path: this.path, filename: this.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  };
+
+  private onContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+    this.dispatchEvent(
+      new CustomEvent("photo-selected", {
+        detail: { path: this.path, filename: this.filename },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    this.dispatchEvent(
+      new CustomEvent("photo-context-menu", {
+        detail: {
+          path: this.path,
+          filename: this.filename,
+          x: e.clientX,
+          y: e.clientY,
+        },
         bubbles: true,
         composed: true,
       })

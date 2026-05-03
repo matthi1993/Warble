@@ -1,23 +1,49 @@
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder, Photo } from "./types";
 import { buildFolderForest } from "./folder-tree";
+import { loadVariantOverrides } from "./variant-store";
+import { applyRatingShortcut, loadPhotoRatings, RATING_LABEL_KEYS } from "./rating-store";
+import {
+  clearThumbnailBatch,
+  dropAllThumbnailState,
+  getThumbnailProgress,
+  onThumbnailProgress,
+  startThumbnailBatch,
+  type ThumbnailBatchProgress,
+} from "./thumbnail-service";
+import { prewarmHdImageBytesForFolder } from "./hd-image-cache";
+import {
+  getHdPrewarmProgress,
+  onHdPrewarmProgress,
+  type HdPrewarmProgress,
+} from "./hd-image-cache";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
 
-@customElement("photoflow-app")
-export class PhotoflowApp extends LitElement {
+function findFolderByPath(roots: Folder[], path: string): Folder | null {
+  for (const r of roots) {
+    if (r.path === path) return r;
+    const child = findFolderByPath(r.children, path);
+    if (child) return child;
+  }
+  return null;
+}
+
+@customElement("warble-app")
+export class WarbleApp extends LitElement {
   static styles = css`
     :host {
       display: grid;
-      grid-template-rows: auto 1fr;
-      grid-template-columns: 260px 1fr 380px;
+      grid-template-rows: 1fr auto;
+      grid-template-columns: 32px 228px 1fr 380px;
       grid-template-areas:
-        "header header header"
-        "sidebar main detail";
+        "rail sidebar main detail"
+        "footer footer footer footer";
       height: 100vh;
       background: var(--pf-bg);
       color: var(--pf-text);
@@ -25,39 +51,26 @@ export class PhotoflowApp extends LitElement {
       font-size: var(--pf-text-base);
     }
     :host(.sidebar-collapsed) {
-      grid-template-columns: 0 1fr 380px;
+      grid-template-columns: 32px 0 1fr 380px;
     }
     :host(.sidebar-collapsed) aside.sidebar {
       display: none;
     }
 
-    header.app-header {
-      grid-area: header;
-      display: flex;
-      align-items: center;
-      gap: var(--pf-space-3);
-      padding: var(--pf-space-2) var(--pf-space-4);
-      border-bottom: 1px solid var(--pf-border);
+    /* Permanent left-rail that always reserves room for the sidebar
+       toggle. Keeping this column in the grid — even when the
+       sidebar itself is collapsed — prevents the toggle from
+       overlapping the main content (e.g. the photo filename in the
+       full view's toolbar). */
+    .sidebar-rail {
+      grid-area: rail;
+      border-right: 1px solid var(--pf-border);
       background: var(--pf-surface);
-      height: 48px;
-    }
-    .brand {
-      display: inline-flex;
+      display: flex;
+      flex-direction: column;
       align-items: center;
-      gap: var(--pf-space-2);
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      color: var(--pf-text);
-    }
-    .brand .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--pf-accent);
-      box-shadow: 0 0 0 3px var(--pf-accent-soft);
-    }
-    .header-spacer {
-      flex: 1;
+      padding-top: var(--pf-space-2);
+      box-sizing: border-box;
     }
 
     aside.sidebar {
@@ -68,9 +81,23 @@ export class PhotoflowApp extends LitElement {
       flex-direction: column;
       overflow: hidden;
     }
+
     .sidebar-header {
       padding: var(--pf-space-3);
       border-bottom: 1px solid var(--pf-border);
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+    }
+    .sidebar-header pf-button {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .sidebar-header .header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-1);
+      flex: 0 0 auto;
     }
     .tree {
       flex: 1;
@@ -85,7 +112,7 @@ export class PhotoflowApp extends LitElement {
 
     main.content {
       grid-area: main;
-      padding: var(--pf-space-4);
+      margin: var(--pf-space-4);
       overflow-y: auto;
     }
     h1 {
@@ -106,10 +133,88 @@ export class PhotoflowApp extends LitElement {
     }
 
     pf-full-view {
-      grid-row: 2;
-      grid-column: 2 / -1;
+      grid-row: 1;
+      grid-column: 3 / -1;
       min-width: 0;
       min-height: 0;
+    }
+
+    footer.app-footer {
+      grid-area: footer;
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-2) var(--pf-space-4);
+      border-top: 1px solid var(--pf-border);
+      background: var(--pf-surface);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      min-height: 32px;
+    }
+    .footer-label {
+      flex-shrink: 0;
+    }
+    .footer-bar {
+      flex: 1;
+      height: 4px;
+      background: var(--pf-surface-2);
+      border-radius: 999px;
+      overflow: hidden;
+      max-width: 320px;
+    }
+    .footer-bar-fill {
+      height: 100%;
+      background: var(--pf-accent);
+      transition: width 120ms ease-out;
+    }
+    .footer-count {
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .footer-failed {
+      color: var(--pf-danger);
+    }
+    .footer-spacer {
+      flex: 1;
+    }
+    .footer-restart {
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+
+    .ctx-menu-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+    }
+    .ctx-menu {
+      position: fixed;
+      min-width: 180px;
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      padding: var(--pf-space-1);
+      font-size: var(--pf-text-sm);
+      z-index: 1001;
+    }
+    .ctx-menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: inherit;
+      border: 0;
+      padding: var(--pf-space-2) var(--pf-space-3);
+      border-radius: var(--pf-radius-sm);
+      font: inherit;
+      cursor: pointer;
+    }
+    .ctx-menu button:hover,
+    .ctx-menu button:focus-visible {
+      background: var(--pf-surface-2);
+      outline: none;
     }
   `;
 
@@ -134,11 +239,51 @@ export class PhotoflowApp extends LitElement {
   @state()
   private sidebarCollapsed = false;
 
+  /** Whether the right-side edit panel is expanded in windowed mode.
+   * Mirrors `pf-full-view`'s `editPanelOpenWindowed` and is persisted
+   * across sessions. */
+  @state()
+  private editPanelOpen = false;
+
+
+
   /** Mirror of the OS window's fullscreen state. Toggled by the `f`
    * shortcut and the maximize buttons in the detail panel and full
    * view. Drives `pf-full-view`'s overlay styling. */
   @state()
   private windowFullscreen = false;
+
+  @state()
+  private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
+
+  @state()
+  private hdProgress: HdPrewarmProgress = getHdPrewarmProgress();
+
+  @state()
+  private contextMenu: {
+    path: string;
+    filename: string;
+    x: number;
+    y: number;
+  } | null = null;
+
+  private unsubscribeProgress: (() => void) | null = null;
+  private unsubscribeHdProgress: (() => void) | null = null;
+  private unsubscribeCacheCleared: UnlistenFn | null = null;
+
+  /** Active HD-image disk-cache prewarm for the currently selected
+   * folder. Replaced (and the previous one cancelled) every time the
+   * user picks a new folder or restarts the thumbnail batch, so we
+   * never accumulate background HD jobs across folders. */
+  private hdPrewarmHandle: { cancel(): void } | null = null;
+  /** Batch id of the most recent thumbnail batch we kicked off HD
+   * prewarm for. Prevents firing prewarm twice for the same batch as
+   * progress events stream in. */
+  private hdPrewarmedBatchId: number = 0;
+
+  /** Suppresses the persistence side-effect during the initial restore
+   * pass so we don't immediately write back what we just read. */
+  private appViewHydrated = false;
 
   private get folders(): Folder[] {
     return buildFolderForest(this.imports);
@@ -147,6 +292,23 @@ export class PhotoflowApp extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener("keydown", this.onGlobalKey);
+    this.unsubscribeProgress = onThumbnailProgress((state) => {
+      this.thumbProgress = state;
+      this.maybeStartHdPrewarm(state);
+    });
+    this.unsubscribeHdProgress = onHdPrewarmProgress((state) => {
+      this.hdProgress = state;
+    });
+    // Menu-driven "Clear Thumbnail Cache" wipes the disk cache; here we
+    // also drop the renderer-side base64 LRU and re-issue the active
+    // batch so on-screen cards re-decode from source.
+    void listen<string>("cache-cleared", (event) => {
+      if (event.payload === "thumbnail_disk") {
+        this.refreshAfterThumbnailCacheClear();
+      }
+    }).then((unlisten) => {
+      this.unsubscribeCacheCleared = unlisten;
+    });
     try {
       const persisted = await invoke<Folder[]>("list_imported_folders");
       if (persisted.length > 0) {
@@ -155,11 +317,110 @@ export class PhotoflowApp extends LitElement {
     } catch (err) {
       console.error("Failed to load imported folders", err);
     }
+
+    // Hydrate per-photo variant preferences before any thumbnail or
+    // detail panel asks for an effective selection.
+    void loadVariantOverrides();
+    void loadPhotoRatings();
+
+    // Auto-open the folder the user had selected last session.
+    try {
+      const lastPath = await invoke<string | null>("get_last_folder");
+      if (lastPath) {
+        const folder = findFolderByPath(this.folders, lastPath);
+        if (folder) {
+          await this.selectFolder(folder.id, folder.path);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore last folder", err);
+    }
+
+    // Restore the photo + surface (grid vs full view) the user had open.
+    // Runs AFTER the folder restore so `this.photos` is populated.
+    try {
+      const persisted = await invoke<{
+        path?: string | null;
+        view?: string | null;
+        sidebarCollapsed?: boolean | null;
+        editPanelOpen?: boolean | null;
+      } | null>("get_app_view");
+      if (persisted) {
+        if (typeof persisted.sidebarCollapsed === "boolean") {
+          this.sidebarCollapsed = persisted.sidebarCollapsed;
+        }
+        if (typeof persisted.editPanelOpen === "boolean") {
+          this.editPanelOpen = persisted.editPanelOpen;
+        }
+        if (persisted.path) {
+          const idx = this.photos.findIndex((p) => p.path === persisted.path);
+          if (idx >= 0) {
+            this.selectedPhoto = this.photos[idx];
+            if (persisted.view === "full") {
+              this.fullViewIndex = idx;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore last view", err);
+    } finally {
+      this.appViewHydrated = true;
+    }
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onGlobalKey);
+    this.unsubscribeProgress?.();
+    this.unsubscribeProgress = null;
+    this.unsubscribeHdProgress?.();
+    this.unsubscribeHdProgress = null;
+    this.unsubscribeCacheCleared?.();
+    this.unsubscribeCacheCleared = null;
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
+    clearThumbnailBatch();
+  }
+
+  /**
+   * Once the active thumbnail batch has finished running every job,
+   * kick off a folder-wide HD-image disk-cache prewarm at background
+   * priority. Idempotent across progress events for the same batch
+   * (we only fire it once per `batchId`) and cancels itself
+   * automatically when the user switches folders (which starts a new
+   * batch and thus advances `batchId`).
+   */
+  private maybeStartHdPrewarm(state: ThumbnailBatchProgress): void {
+    if (state.batchId === 0) return;
+    if (state.inProgress) return;
+    if (state.batchId === this.hdPrewarmedBatchId) return;
+    if (this.photos.length === 0) return;
+    this.hdPrewarmedBatchId = state.batchId;
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = prewarmHdImageBytesForFolder(
+      this.photos.map((p) => p.path)
+    );
+  }
+
+  private refreshAfterThumbnailCacheClear(): void {
+    dropAllThumbnailState();
+    // Force every thumbnail card to forget its current image and
+    // re-request via the empty cache. Re-keying photos by reassigning a
+    // fresh array makes Lit's `repeat` rerun, but identity-stable keys
+    // would short-circuit; instead we walk the live cards and reset
+    // them.
+    const grid = this.renderRoot.querySelector(
+      "pf-photo-grid"
+    ) as import("./photo-grid").PfPhotoGrid | null;
+    grid?.renderRoot
+      .querySelectorAll("pf-thumbnail-card")
+      .forEach((card) => {
+        (card as HTMLElement & { reload?: () => void }).reload?.();
+      });
+    if (this.photos.length > 0) {
+      startThumbnailBatch(this.photos.map((p) => p.path));
+    }
   }
 
   /**
@@ -195,6 +456,12 @@ export class PhotoflowApp extends LitElement {
     //   - else if the full view is open → close it back to the grid
     //   - else → no-op
     if (e.key === "Escape") {
+      if (this.contextMenu) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.contextMenu = null;
+        return;
+      }
       if (this.windowFullscreen) {
         e.preventDefault();
         e.stopPropagation();
@@ -230,6 +497,19 @@ export class PhotoflowApp extends LitElement {
 
     // While the full view is open, let it handle its own remaining keys.
     if (this.fullViewIndex !== null) return;
+
+    // Star ratings (1–5) and color labels (6–9, 0). Apply to the
+    // currently-selected grid photo, falling back to the first card
+    // if nothing is selected yet.
+    if (RATING_LABEL_KEYS.has(e.key)) {
+      const target =
+        this.selectedPhoto ?? (this.photos.length > 0 ? this.photos[0] : null);
+      if (target) {
+        e.preventDefault();
+        applyRatingShortcut(target.path, e.key);
+      }
+      return;
+    }
 
     if (
       e.key === "ArrowLeft" ||
@@ -306,6 +586,10 @@ export class PhotoflowApp extends LitElement {
     e: CustomEvent<{ id: string; path: string }>
   ) {
     const { id, path } = e.detail;
+    await this.selectFolder(id, path);
+  }
+
+  private async selectFolder(id: string, path: string) {
     this.selectedFolderId = id;
     const name = id.split("/").filter(Boolean).pop() ?? path;
     this.selectedFolderName = name;
@@ -313,6 +597,14 @@ export class PhotoflowApp extends LitElement {
       folderPath: path,
     });
     this.selectedPhoto = null;
+    // Cancel any in-flight HD prewarm for the previous folder so its
+    // background jobs don't keep running once the user has moved on.
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
+    startThumbnailBatch(this.photos.map((p) => p.path));
+    void invoke("set_last_folder", { path }).catch((err) =>
+      console.error("Failed to persist last folder", err)
+    );
   }
 
   private onPhotoSelected(
@@ -334,6 +626,33 @@ export class PhotoflowApp extends LitElement {
     }
   }
 
+  private onPhotoContextMenu(
+    e: CustomEvent<{ path: string; filename: string; x: number; y: number }>
+  ) {
+    this.contextMenu = { ...e.detail };
+  }
+
+  private dismissContextMenu = () => {
+    if (this.contextMenu) this.contextMenu = null;
+  };
+
+  private async revealInFileManager(path: string) {
+    this.contextMenu = null;
+    try {
+      await invoke("reveal_in_file_manager", { path });
+    } catch (err) {
+      console.error("reveal_in_file_manager failed", err);
+    }
+  }
+
+  private revealLabel(): string {
+    const ua =
+      typeof navigator !== "undefined" ? navigator.userAgent ?? "" : "";
+    if (/Mac|iPhone|iPad/i.test(ua)) return "Show in Finder";
+    if (/Win/i.test(ua)) return "Show in Explorer";
+    return "Show in File Manager";
+  }
+
   private onFullViewNavigate(e: CustomEvent<{ index: number }>) {
     const idx = e.detail.index;
     if (idx < 0 || idx >= this.photos.length) return;
@@ -345,6 +664,10 @@ export class PhotoflowApp extends LitElement {
     this.fullViewIndex = null;
   };
 
+  private onEditPanelOpenChanged = (e: CustomEvent<{ open: boolean }>) => {
+    this.editPanelOpen = e.detail.open;
+  };
+
   private toggleSidebar = () => {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
@@ -353,23 +676,47 @@ export class PhotoflowApp extends LitElement {
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
+    if (changed.has("windowFullscreen") || changed.has("fullViewIndex")) {
+      // In fullscreen with the full view open the folder sidebar is
+      // hidden entirely (no hover-to-reveal). Keep `full-view-open`
+      // for the windowed-mode chrome alignment.
+      this.classList.toggle("full-view-open", this.fullViewIndex !== null);
+    }
+    if (
+      this.appViewHydrated &&
+      (changed.has("selectedPhoto") ||
+        changed.has("fullViewIndex") ||
+        changed.has("sidebarCollapsed") ||
+        changed.has("editPanelOpen"))
+    ) {
+      void this.persistAppView();
+    }
+  }
+
+  private async persistAppView() {
+    try {
+      await invoke("set_app_view", {
+        view: {
+          path: this.selectedPhoto?.path ?? null,
+          view: this.fullViewIndex !== null ? "full" : "grid",
+          sidebarCollapsed: this.sidebarCollapsed,
+          editPanelOpen: this.editPanelOpen,
+        },
+      });
+    } catch (err) {
+      console.warn("Failed to persist app view", err);
+    }
   }
 
   render() {
     return html`
-      <header class="app-header">
+      <div class="sidebar-rail">
         <pf-icon-button
           icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
           label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
           @click=${this.toggleSidebar}
         ></pf-icon-button>
-        <span class="brand">
-          <span class="dot"></span>
-          Photoflow
-        </span>
-        <span class="header-spacer"></span>
-        <pf-theme-toggle></pf-theme-toggle>
-      </header>
+      </div>
 
       <aside class="sidebar">
         <div class="sidebar-header">
@@ -377,6 +724,9 @@ export class PhotoflowApp extends LitElement {
             <pf-icon name="folder-plus"></pf-icon>
             Add Folders
           </pf-button>
+          <span class="header-actions">
+            <pf-theme-toggle></pf-theme-toggle>
+          </span>
         </div>
         <div class="tree" @folder-select=${this.onFolderSelect}>
           ${this.folders.length === 0
@@ -397,19 +747,19 @@ export class PhotoflowApp extends LitElement {
         class="content"
         @photo-selected=${this.onPhotoSelected}
         @photo-open=${this.onPhotoOpen}
+        @photo-context-menu=${this.onPhotoContextMenu}
       >
-        <h1>
-          ${this.selectedFolderName
-            ? `Photos in ${this.selectedFolderName}`
-            : "Photoflow"}
-        </h1>
         ${this.selectedFolderId === null
-          ? html`<p>Select a folder from the sidebar to view its photos.</p>`
+          ? html`<h1>Warble</h1>
+              <p>Select a folder from the sidebar to view its photos.</p>`
           : this.photos.length === 0
-          ? html`<p>No photos in this folder.</p>`
+          ? html`<h1>${this.selectedFolderName ?? ""}</h1>
+              <p>No photos in this folder.</p>`
           : html`<pf-photo-grid
               .photos=${this.photos}
               .selectedPath=${this.selectedPhoto?.path ?? null}
+              .folderName=${this.selectedFolderName ?? ""}
+              ?full-view-open=${this.fullViewIndex !== null}
             ></pf-photo-grid>`}
       </main>
 
@@ -430,17 +780,146 @@ export class PhotoflowApp extends LitElement {
             .photos=${this.photos}
             .index=${this.fullViewIndex}
             ?fullscreen=${this.windowFullscreen}
+            .editPanelOpenWindowed=${this.editPanelOpen}
             @full-view-navigate=${this.onFullViewNavigate}
             @full-view-close=${this.onFullViewClose}
+            @edit-panel-open-changed=${this.onEditPanelOpenChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
         : null}
+
+      ${this.renderFooter()}
+      ${this.renderContextMenu()}
+      <pf-debug-overlay></pf-debug-overlay>
     `;
   }
+
+  private renderContextMenu() {
+    const cm = this.contextMenu;
+    if (!cm) return null;
+    return html`
+      <div
+        class="ctx-menu-backdrop"
+        @click=${this.dismissContextMenu}
+        @contextmenu=${(e: MouseEvent) => {
+          e.preventDefault();
+          this.dismissContextMenu();
+        }}
+      ></div>
+      <div
+        class="ctx-menu"
+        role="menu"
+        style="left: ${cm.x}px; top: ${cm.y}px;"
+      >
+        <button
+          role="menuitem"
+          @click=${() => this.revealInFileManager(cm.path)}
+        >
+          ${this.revealLabel()}
+        </button>
+      </div>
+    `;
+  }
+
+  private renderFooter() {
+    const t = this.thumbProgress;
+    const h = this.hdProgress;
+
+    // Thumbnail batch wins as long as it's running — it's the
+    // user-visible work that gates the grid showing pictures.
+    if (t.total > 0 && t.inProgress) {
+      const done = t.loaded + t.failed;
+      const pct = t.total === 0 ? 0 : Math.round((done / t.total) * 100);
+      return html`
+        <footer class="app-footer" role="status" aria-live="polite">
+          <span class="footer-label">Generating thumbnails…</span>
+          <div class="footer-bar">
+            <div class="footer-bar-fill" style="width: ${pct}%"></div>
+          </div>
+          <span class="footer-count">${done} / ${t.total}</span>
+          ${t.failed > 0
+            ? html`<span class="footer-failed">${t.failed} failed</span>`
+            : null}
+          ${this.renderRestartButton()}
+        </footer>
+      `;
+    }
+
+    // Once thumbnails are done, surface the HD-disk-cache prewarm
+    // progress in the same slot. Same visual treatment, different
+    // label, so the user knows there's still background work
+    // happening (and roughly how far along it is) without it being
+    // mistaken for a stalled grid.
+    if (h.total > 0 && h.inProgress) {
+      const done = h.loaded + h.failed;
+      const pct = h.total === 0 ? 0 : Math.round((done / h.total) * 100);
+      return html`
+        <footer class="app-footer" role="status" aria-live="polite">
+          <span class="footer-label">Building HD cache…</span>
+          <div class="footer-bar">
+            <div class="footer-bar-fill" style="width: ${pct}%"></div>
+          </div>
+          <span class="footer-count">${done} / ${h.total}</span>
+          ${h.failed > 0
+            ? html`<span class="footer-failed">${h.failed} failed</span>`
+            : null}
+          ${this.renderRestartButton()}
+        </footer>
+      `;
+    }
+
+    return html`
+      <footer class="app-footer" role="status" aria-live="polite">
+        <span class="footer-label">Ready</span>
+        <span class="footer-spacer"></span>
+      </footer>
+    `;
+  }
+
+  /** Inline icon button shown next to the active progress bar. Cancels
+   * every queued + running task in the backend pool, drops the
+   * frontend's batch state, and re-kicks off thumbnail generation +
+   * HD prewarm for the active folder. Useful when the queue gets
+   * stuck or the user wants a clean retry without changing folders. */
+  private renderRestartButton() {
+    if (this.photos.length === 0) return null;
+    return html`
+      <pf-icon-button
+        class="footer-restart"
+        icon="rotate-cw"
+        label="Restart caching"
+        @click=${this.restartCaching}
+      ></pf-icon-button>
+    `;
+  }
+
+  private restartCaching = async () => {
+    if (this.photos.length === 0) return;
+    // Stop everything in flight first: the backend pool flips every
+    // CancelToken so workers bail out at their next checkpoint, then
+    // the frontend forgets the current thumbnail batch + HD prewarm
+    // so the next start() doesn't see stale progress.
+    try {
+      await invoke<number>("cancel_all_tasks");
+    } catch (err) {
+      console.warn("cancel_all_tasks failed", err);
+    }
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
+    this.hdPrewarmedBatchId = 0;
+    clearThumbnailBatch();
+    // Re-issue the thumbnail batch. Already-cached entries return
+    // instantly from the disk cache and the bar will jump near 100%
+    // — that's expected: nothing remains to do for them. Anything
+    // missing or invalidated since last time is what the user
+    // actually wants to see refilled. `maybeStartHdPrewarm` re-fires
+    // HD prewarm once thumbnails settle.
+    startThumbnailBatch(this.photos.map((p) => p.path));
+  };
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    "photoflow-app": PhotoflowApp;
+    "warble-app": WarbleApp;
   }
 }

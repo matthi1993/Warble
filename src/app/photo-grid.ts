@@ -2,7 +2,40 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { Photo } from "./types";
+import {
+  COLOR_LABELS,
+  LABEL_COLORS,
+  LABEL_DISPLAY_NAMES,
+  getPhotoRating,
+  subscribePhotoRatings,
+  type ColorLabel,
+} from "./rating-store";
 import "../ui/photos/pf-thumbnail-card";
+import "../ui/controls/pf-slider";
+
+function variantCount(photo: Photo): number {
+  const files = photo.files ?? [];
+  if (files.length === 0) return 1;
+  const variants = new Set<string>();
+  for (const f of files) variants.add(f.variant);
+  return Math.max(1, variants.size);
+}
+
+const COLUMNS_STORAGE_KEY = "pf-grid-columns";
+const MIN_COLUMNS = 1;
+const MAX_COLUMNS = 8;
+const DEFAULT_COLUMNS = 6;
+
+function readStoredColumns(): number {
+  try {
+    const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
+    const n = raw == null ? NaN : Number(raw);
+    if (!Number.isFinite(n)) return DEFAULT_COLUMNS;
+    return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, Math.round(n)));
+  } catch {
+    return DEFAULT_COLUMNS;
+  }
+}
 
 @customElement("pf-photo-grid")
 export class PfPhotoGrid extends LitElement {
@@ -11,47 +44,132 @@ export class PfPhotoGrid extends LitElement {
       display: block;
       position: relative;
     }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: var(--pf-space-3);
-    }
-    .status {
+    .grid-header {
       position: sticky;
-      bottom: var(--pf-space-4);
-      margin-left: auto;
-      width: fit-content;
-      background: var(--pf-surface);
-      color: var(--pf-text);
-      border: 1px solid var(--pf-border);
-      padding: var(--pf-space-2) var(--pf-space-3);
-      border-radius: var(--pf-radius-md);
-      font-size: var(--pf-text-xs);
-      box-shadow: var(--pf-shadow-md);
+      top: 0;
+      z-index: 5;
       display: flex;
       flex-direction: column;
-      gap: var(--pf-space-1);
-      min-width: 220px;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-3) var(--pf-space-1) var(--pf-space-2);
+      margin-bottom: var(--pf-space-3);
+      background: var(--pf-bg);
+      border-bottom: 1px solid var(--pf-border);
     }
-    .status-row {
+    :host([full-view-open]) .grid-header {
+      display: none;
+    }
+    .header-row {
       display: flex;
-      justify-content: space-between;
-      gap: var(--pf-space-4);
-      color: var(--pf-text-muted);
+      align-items: center;
+      gap: var(--pf-space-3);
+      flex-wrap: wrap;
     }
-    .bar {
-      height: 4px;
-      background: var(--pf-surface-2);
-      border-radius: 999px;
+    .folder-title {
+      margin: 0;
+      font-size: var(--pf-text-xl);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--pf-text);
+      flex: 1 1 auto;
+      min-width: 0;
       overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .bar-fill {
-      height: 100%;
-      background: var(--pf-accent);
-      transition: width 120ms ease-out;
+    .grid-header .label {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      flex: 0 0 auto;
     }
-    .err {
-      color: var(--pf-danger);
+    .grid-header pf-slider {
+      flex: 0 1 220px;
+    }
+    .grid-header .count {
+      flex: 0 0 auto;
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .grid-header .spacer {
+      flex: 1 1 auto;
+    }
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-3);
+      flex-wrap: wrap;
+    }
+    .filter-group {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+    }
+    .stars-filter {
+      display: inline-flex;
+      gap: 2px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .stars-filter button {
+      background: transparent;
+      border: 0;
+      color: var(--pf-text-muted);
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 1px;
+      cursor: pointer;
+    }
+    .stars-filter button.active {
+      color: var(--pf-text);
+    }
+    .label-chips {
+      display: inline-flex;
+      gap: 4px;
+    }
+    .label-chips button {
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      border: 1px solid rgba(0, 0, 0, 0.2);
+      cursor: pointer;
+      padding: 0;
+      opacity: 0.45;
+      transition: opacity var(--pf-transition),
+        transform var(--pf-transition);
+    }
+    .label-chips button:hover {
+      opacity: 0.85;
+    }
+    .label-chips button.active {
+      opacity: 1;
+      transform: scale(1.12);
+      box-shadow: 0 0 0 2px var(--pf-accent-soft, rgba(255, 255, 255, 0.2));
+    }
+    .filter-clear {
+      background: transparent;
+      border: 0;
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      cursor: pointer;
+      text-decoration: underline;
+      padding: 2px 4px;
+    }
+    .filter-clear[disabled] {
+      visibility: hidden;
+    }
+    .empty-filter {
+      padding: var(--pf-space-4);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-sm);
+      text-align: center;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(var(--pf-grid-cols, 6), 1fr);
+      gap: var(--pf-space-3);
     }
   `;
 
@@ -61,26 +179,64 @@ export class PfPhotoGrid extends LitElement {
   @property({ type: String })
   selectedPath: string | null = null;
 
-  @state()
-  private loaded = 0;
+  @property({ type: String })
+  folderName: string | null = null;
+
+  /** When the full image view is open the grid is hidden behind the
+   * overlay; suppress the sticky size header so it doesn't peek
+   * through (e.g. while the overlay is fading in). */
+  @property({ type: Boolean, reflect: true, attribute: "full-view-open" })
+  fullViewOpen = false;
 
   @state()
-  private failed = 0;
+  private columns: number = readStoredColumns();
 
-  willUpdate(changed: Map<string, unknown>): void {
-    if (changed.has("photos")) {
-      this.loaded = 0;
-      this.failed = 0;
-    }
+  /** Minimum star rating to include in the visible grid. `0` means
+   *  "no minimum" (all photos pass). */
+  @state()
+  private minStars = 0;
+
+  /** Set of color labels currently used as a filter. Empty means
+   *  "no label filter" (all photos pass). Otherwise only photos
+   *  whose label is in this set are shown. */
+  @state()
+  private activeLabels: Set<Exclude<ColorLabel, "">> = new Set();
+
+  /** Bumped on every rating-store change so the filter recomputes. */
+  @state()
+  private ratingsTick = 0;
+
+  private unsubscribeRatings: (() => void) | null = null;
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this.unsubscribeRatings = subscribePhotoRatings(() => {
+      this.ratingsTick += 1;
+    });
   }
 
-  private onLoad = () => {
-    this.loaded += 1;
-  };
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.unsubscribeRatings?.();
+    this.unsubscribeRatings = null;
+  }
 
-  private onError = () => {
-    this.failed += 1;
-  };
+  private get filteredPhotos(): Photo[] {
+    // Keep a reactive dependency on `ratingsTick` so Lit re-renders
+    // when ratings change.
+    void this.ratingsTick;
+    if (this.minStars === 0 && this.activeLabels.size === 0) {
+      return this.photos;
+    }
+    return this.photos.filter((p) => {
+      const r = getPhotoRating(p.path);
+      if (this.minStars > 0 && r.rating < this.minStars) return false;
+      if (this.activeLabels.size > 0) {
+        if (r.label === "" || !this.activeLabels.has(r.label)) return false;
+      }
+      return true;
+    });
+  }
 
   /**
    * Move grid selection by (dx, dy) cells. Determines the column count
@@ -89,7 +245,8 @@ export class PfPhotoGrid extends LitElement {
    * `photo-selected` for the new card and scrolls it into view.
    */
   moveSelection(dx: number, dy: number): boolean {
-    if (this.photos.length === 0) return false;
+    const visible = this.filteredPhotos;
+    if (visible.length === 0) return false;
     const cards = Array.from(
       this.renderRoot.querySelectorAll("pf-thumbnail-card")
     ) as HTMLElement[];
@@ -104,13 +261,13 @@ export class PfPhotoGrid extends LitElement {
     }
     if (cols < 1) cols = 1;
 
-    let idx = this.photos.findIndex((p) => p.path === this.selectedPath);
+    let idx = visible.findIndex((p) => p.path === this.selectedPath);
     if (idx < 0) idx = 0;
     else idx = idx + dx + dy * cols;
 
     if (idx < 0) idx = 0;
-    if (idx >= this.photos.length) idx = this.photos.length - 1;
-    const next = this.photos[idx];
+    if (idx >= visible.length) idx = visible.length - 1;
+    const next = visible[idx];
     if (!next) return false;
 
     this.dispatchEvent(
@@ -127,8 +284,9 @@ export class PfPhotoGrid extends LitElement {
 
   /** Open the currently selected photo (or the first if none) in full view. */
   openSelected(): void {
+    const visible = this.filteredPhotos;
     const photo =
-      this.photos.find((p) => p.path === this.selectedPath) ?? this.photos[0];
+      visible.find((p) => p.path === this.selectedPath) ?? visible[0];
     if (!photo) return;
     this.dispatchEvent(
       new CustomEvent("photo-open", {
@@ -139,48 +297,139 @@ export class PfPhotoGrid extends LitElement {
     );
   }
 
+  private setColumns(n: number) {
+    const clamped = Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, Math.round(n)));
+    if (clamped === this.columns) return;
+    this.columns = clamped;
+    try {
+      localStorage.setItem(COLUMNS_STORAGE_KEY, String(clamped));
+    } catch {
+      /* ignore quota / privacy errors */
+    }
+  }
+
+  private setMinStars(n: number) {
+    this.minStars = this.minStars === n ? 0 : n;
+  }
+
+  private toggleLabelFilter(label: Exclude<ColorLabel, "">) {
+    const next = new Set(this.activeLabels);
+    if (next.has(label)) next.delete(label);
+    else next.add(label);
+    this.activeLabels = next;
+  }
+
+  private clearFilters = () => {
+    this.minStars = 0;
+    this.activeLabels = new Set();
+  };
+
   render() {
-    const total = this.photos.length;
-    const done = this.loaded + this.failed;
-    const pct = total === 0 ? 0 : Math.round((done / total) * 100);
-    const inProgress = total > 0 && done < total;
+    // Slider is visually inverted: dragging right reduces column
+    // count (bigger thumbnails). We pass `MIN + MAX - columns` to the
+    // slider so the right edge corresponds to 1 thumbnail per row,
+    // and undo the mapping in the change handler.
+    const sliderValue = MIN_COLUMNS + MAX_COLUMNS - this.columns;
+    const visible = this.filteredPhotos;
+    const filtersActive =
+      this.minStars > 0 || this.activeLabels.size > 0;
     return html`
-      <div
-        class="grid"
-        @thumbnail-load=${this.onLoad}
-        @thumbnail-error=${this.onError}
-      >
-        ${repeat(
-          this.photos,
-          (p) => p.path,
-          (p) => html`
-            <pf-thumbnail-card
-              .path=${p.path}
-              .filename=${p.filename}
-              .extensions=${p.extensions ?? []}
-              ?selected=${this.selectedPath === p.path}
-            ></pf-thumbnail-card>
-          `
-        )}
+      <div class="grid-header">
+        <div class="header-row">
+          <h2 class="folder-title" title=${this.folderName ?? ""}>
+            ${this.folderName ?? ""}
+          </h2>
+          <span class="label">Size</span>
+          <pf-slider
+            min=${MIN_COLUMNS}
+            max=${MAX_COLUMNS}
+            step="1"
+            fill-from=${MIN_COLUMNS}
+            .value=${sliderValue}
+            .label=${"Thumbnails per row"}
+            @change=${(e: CustomEvent<number>) =>
+              this.setColumns(MIN_COLUMNS + MAX_COLUMNS - e.detail)}
+          ></pf-slider>
+          <span class="count">${this.columns} / row</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-group">
+            <span class="label">Stars</span>
+            <span class="stars-filter" role="radiogroup" aria-label="Filter by minimum rating">
+              ${[1, 2, 3, 4, 5].map(
+                (n) => html`
+                  <button
+                    type="button"
+                    class=${n <= this.minStars ? "active" : ""}
+                    role="radio"
+                    aria-checked=${n === this.minStars}
+                    title=${`At least ${n} star${n === 1 ? "" : "s"}`}
+                    @click=${() => this.setMinStars(n)}
+                  >
+                    ★
+                  </button>
+                `
+              )}
+            </span>
+          </span>
+          <span class="filter-group">
+            <span class="label">Label</span>
+            <span class="label-chips" role="group" aria-label="Filter by color label">
+              ${COLOR_LABELS.map(
+                (lab) => html`
+                  <button
+                    type="button"
+                    class=${this.activeLabels.has(lab) ? "active" : ""}
+                    style=${`background: ${LABEL_COLORS[lab]};`}
+                    title=${LABEL_DISPLAY_NAMES[lab]}
+                    aria-label=${LABEL_DISPLAY_NAMES[lab]}
+                    aria-pressed=${this.activeLabels.has(lab)}
+                    @click=${() => this.toggleLabelFilter(lab)}
+                  ></button>
+                `
+              )}
+            </span>
+          </span>
+          <span class="spacer"></span>
+          <span class="count">
+            ${filtersActive
+              ? `${visible.length} / ${this.photos.length}`
+              : `${this.photos.length} photo${
+                  this.photos.length === 1 ? "" : "s"
+                }`}
+          </span>
+          <button
+            type="button"
+            class="filter-clear"
+            ?disabled=${!filtersActive}
+            @click=${this.clearFilters}
+          >
+            Clear filters
+          </button>
+        </div>
       </div>
-      ${total > 0
-        ? html`
-            <div class="status" role="status" aria-live="polite">
-              <div class="status-row">
-                <span>
-                  ${inProgress ? "Generating thumbnails…" : "Thumbnails ready"}
-                </span>
-                <span>${done} / ${total}</span>
-              </div>
-              <div class="bar">
-                <div class="bar-fill" style="width: ${pct}%"></div>
-              </div>
-              ${this.failed > 0
-                ? html`<div class="err">${this.failed} failed</div>`
-                : null}
-            </div>
-          `
-        : null}
+      ${visible.length === 0 && filtersActive
+        ? html`<div class="empty-filter">
+            No photos match the current filters.
+          </div>`
+        : html`<div
+            class="grid"
+            style=${`--pf-grid-cols: ${this.columns}`}
+          >
+            ${repeat(
+              visible,
+              (p) => p.path,
+              (p) => html`
+                <pf-thumbnail-card
+                  .path=${p.path}
+                  .filename=${p.filename}
+                  .extensions=${p.extensions ?? []}
+                  .variantCount=${variantCount(p)}
+                  ?selected=${this.selectedPath === p.path}
+                ></pf-thumbnail-card>
+              `
+            )}
+          </div>`}
     `;
   }
 }

@@ -1,7 +1,32 @@
-# Tauri + Vanilla TS
+# photo-viewer
 
-This template should help get you started developing with Tauri in vanilla HTML, CSS and Typescript.
+![App Icon](app-icon.png)
 
-## Recommended IDE Setup
+## Photo Viewer
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Photo Viewer is a fast, modern desktop app for browsing and rating your photo collection. Built with Vite, TypeScript, and Tauri for a native experience.
+
+## Getting Started
+
+To start the app in development mode:
+
+```sh
+pnpm install
+pnpm dev
+```
+
+## Production Build
+
+To create a production build:
+
+```sh
+pnpm build
+```
+
+To build the Tauri desktop app:
+
+```sh
+pnpm tauri build
+```
+
+A fast, native photo viewer built with Tauri + Lit.

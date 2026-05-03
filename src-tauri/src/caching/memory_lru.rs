@@ -43,4 +43,17 @@ impl<V: Clone> MemoryLru<V> {
             self.items.pop_back();
         }
     }
+
+    /// Adjust the maximum number of entries. Shrinks the live set
+    /// immediately when the new cap is lower.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity;
+        while self.items.len() > self.capacity {
+            self.items.pop_back();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
 }

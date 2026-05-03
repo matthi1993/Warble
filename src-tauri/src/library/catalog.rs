@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use super::folder::Folder;
-use super::photo::{is_photo_extension, viewable_rank, Photo};
+use super::photo::{is_photo_extension, parse_variant, viewable_rank, Photo, PhotoFile};
 
 #[derive(Default)]
 pub struct LibraryCatalog {
@@ -43,11 +43,16 @@ impl LibraryCatalog {
             if entry_path.parent() != Some(folder) {
                 continue;
             }
-            let key = entry_path
+            let stem = entry_path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_else(|| photo.filename.to_ascii_lowercase());
+                .unwrap_or("");
+            let (base_stem, _variant) = parse_variant(stem);
+            let key = if base_stem.is_empty() {
+                photo.filename.to_ascii_lowercase()
+            } else {
+                base_stem.to_ascii_lowercase()
+            };
             groups.entry(key).or_default().push(photo);
         }
 
@@ -57,29 +62,59 @@ impl LibraryCatalog {
     }
 }
 
-/// Pick the primary file from a sidecar group (preferring viewable formats)
-/// and collect every extension into a single `Photo`.
-fn merge_sidecar_group(mut members: Vec<&Photo>) -> Photo {
-    members.sort_by(|a, b| {
-        let ea = lowercase_extension(&a.path);
-        let eb = lowercase_extension(&b.path);
-        viewable_rank(&ea)
-            .cmp(&viewable_rank(&eb))
-            .then_with(|| ea.cmp(&eb))
+/// Pick the primary file from a sidecar/variant group (preferring base
+/// variant + viewable formats) and collect every member into the
+/// returned `Photo`.
+fn merge_sidecar_group(members: Vec<&Photo>) -> Photo {
+    let mut files: Vec<PhotoFile> = members
+        .iter()
+        .map(|p| {
+            let path = p.path.clone();
+            let ext = lowercase_extension(&path);
+            let stem = Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let (_base, variant) = parse_variant(stem);
+            PhotoFile {
+                path,
+                extension: ext,
+                variant,
+            }
+        })
+        .collect();
+
+    // Sort: base variant first; within a variant viewable formats first.
+    files.sort_by(|a, b| {
+        let av = if a.variant == "base" { 0 } else { 1 };
+        let bv = if b.variant == "base" { 0 } else { 1 };
+        av.cmp(&bv)
+            .then_with(|| viewable_rank(&a.extension).cmp(&viewable_rank(&b.extension)))
+            .then_with(|| a.variant.cmp(&b.variant))
+            .then_with(|| a.extension.cmp(&b.extension))
     });
 
-    let mut extensions: Vec<String> = members
+    let primary_path = files[0].path.clone();
+    let primary_filename = Path::new(&primary_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+
+    let mut extensions: Vec<String> = files
         .iter()
-        .map(|p| lowercase_extension(&p.path))
+        .map(|f| f.extension.clone())
         .filter(|e| !e.is_empty())
         .collect();
-    extensions.dedup();
+    // Keep first-seen order (already viewable-first), drop duplicates.
+    let mut seen = std::collections::HashSet::new();
+    extensions.retain(|e| seen.insert(e.clone()));
 
-    let primary = members[0];
     Photo {
-        path: primary.path.clone(),
-        filename: primary.filename.clone(),
+        path: primary_path,
+        filename: primary_filename,
         extensions,
+        files,
     }
 }
 
@@ -97,6 +132,15 @@ fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder,
 
     for entry in entries.flatten() {
         let entry_path = entry.path();
+        // Skip dotfiles / hidden directories (e.g. `.DS_Store`, `.thumbs`).
+        let is_hidden = entry
+            .file_name()
+            .to_str()
+            .map(|n| n.starts_with('.'))
+            .unwrap_or(false);
+        if is_hidden {
+            continue;
+        }
         if entry_path.is_dir() {
             if let Ok(child) = scan_tree(&entry_path, photos) {
                 children.push(child);
@@ -143,5 +187,6 @@ fn photo_from_path(entry_path: &Path) -> Option<Photo> {
         path,
         filename,
         extensions: vec![ext],
+        files: Vec::new(),
     })
 }

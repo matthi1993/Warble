@@ -10,6 +10,21 @@ pub struct DecodedRgb {
     pub height: u32,
 }
 
+/// Read the SOF dimensions without doing a full decode. Used by
+/// callers that need to plan a target size against the pre-rotation
+/// source size (e.g. picking a `min_width` that ensures the long
+/// side meets some target after EXIF rotation).
+pub fn peek_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
+    decoder
+        .read_info()
+        .map_err(|e| format!("JPEG header read failed: {e}"))?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| "Missing JPEG info".to_string())?;
+    Ok((info.width as u32, info.height as u32))
+}
+
 /// Decode `bytes` to RGB8, scaled down so the result is at least
 /// `min_width` wide (when the source is larger). Returns an error if the
 /// decoder reports an unsupported pixel format — callers should fall back

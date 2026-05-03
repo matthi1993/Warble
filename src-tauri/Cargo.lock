@@ -2583,25 +2583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "photoflow"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "fast_image_resize",
- "image",
- "jpeg-decoder",
- "kamadak-exif",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-shell",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4504,6 +4485,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "warble"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "fast_image_resize",
+ "image",
+ "jpeg-decoder",
+ "kamadak-exif",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-shell",
+ "tokio",
 ]
 
 [[package]]

@@ -16,8 +16,9 @@ use std::sync::{Mutex, OnceLock};
 
 use super::raw_preview;
 use crate::caching::MemoryLru;
+use crate::tasks::CancelToken;
 
-pub fn load_bytes(path: &str) -> Result<Vec<u8>, String> {
+pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let p = Path::new(path);
     let mtime = fs::metadata(p)
         .and_then(|m| m.modified())
@@ -25,16 +26,19 @@ pub fn load_bytes(path: &str) -> Result<Vec<u8>, String> {
     if let Some(hit) = cache().lock().ok().and_then(|mut c| c.get(path, mtime)) {
         return Ok(hit);
     }
+    cancel.check()?;
 
     let ext = lowercase_extension(p);
     let bytes = if raw_preview::is_raw_extension(&ext) {
         raw_preview::extract_preview(p)?.jpeg_bytes
     } else if matches!(ext.as_str(), "tif" | "tiff") {
         let raw = fs::read(p).map_err(|e| e.to_string())?;
+        cancel.check()?;
         transcode::to_jpeg(&raw)?
     } else {
         fs::read(p).map_err(|e| e.to_string())?
     };
+    cancel.check()?;
 
     if let Ok(mut c) = cache().lock() {
         c.insert(path.to_string(), mtime, bytes.clone());
@@ -45,6 +49,21 @@ pub fn load_bytes(path: &str) -> Result<Vec<u8>, String> {
 fn cache() -> &'static Mutex<MemoryLru<Vec<u8>>> {
     static CACHE: OnceLock<Mutex<MemoryLru<Vec<u8>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(MemoryLru::new(8)))
+}
+
+/// Resize the in-memory cache to `max` entries. Shrinks the current set
+/// immediately if it is over the new cap.
+pub fn set_memory_cache_capacity(max: usize) {
+    if let Ok(mut c) = cache().lock() {
+        c.set_capacity(max);
+    }
+}
+
+/// Drop every cached full-image byte buffer.
+pub fn clear_memory_cache() {
+    if let Ok(mut c) = cache().lock() {
+        c.clear();
+    }
 }
 
 fn lowercase_extension(p: &Path) -> String {
