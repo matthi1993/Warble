@@ -309,6 +309,12 @@ export class PfImageCanvas extends LitElement {
           this.tonePipeline.invalidate();
         }
         this.recomputeFit();
+        // If the saved crop just got cleared (e.g. user hit revert)
+        // while the crop tool is open, drop the live frame so the
+        // visible crop no longer reflects the now-deleted edit.
+        if (this.cropMode && prevCrop && !this.savedCrop) {
+          this.cropFrame = this.computeInitialCropFrame();
+        }
       }
       this.scheduleDraw();
     });
@@ -445,6 +451,12 @@ export class PfImageCanvas extends LitElement {
       // same update cycle.
       this.cropFrame = this.computeInitialCropFrame();
       this.draw();
+      // The frame just changed shape — let the host persist it so the
+      // saved crop tracks the aspect change. Without this, switching
+      // aspect ratios in the side panel would write the new aspect key
+      // alongside the OLD frame coords and the on-screen crop would
+      // never actually update on disk.
+      this.dispatchCropChange();
     }
     if (changed.has("background")) {
       this.style.setProperty("--pf-canvas-bg", this.background);
@@ -1216,8 +1228,25 @@ export class PfImageCanvas extends LitElement {
     let maxWpx: number;
     let maxHpx: number;
     if (!rotated) {
-      maxWpx = src.width;
-      maxHpx = src.height;
+      if (aspect && Number.isFinite(aspect) && aspect > 0) {
+        // Largest centred rectangle of the requested aspect that
+        // fits inside the source. Without this, the new frame would
+        // just be the whole image and visually keep the source's
+        // native aspect until the user drags a handle.
+        const srcAspect = src.width / src.height;
+        if (aspect >= srcAspect) {
+          // Width-bound: span the full width, derive height.
+          maxWpx = src.width;
+          maxHpx = src.width / aspect;
+        } else {
+          // Height-bound: span the full height, derive width.
+          maxHpx = src.height;
+          maxWpx = src.height * aspect;
+        }
+      } else {
+        maxWpx = src.width;
+        maxHpx = src.height;
+      }
     } else {
       const acθ = Math.abs(Math.cos(θ));
       const asθ = Math.abs(Math.sin(θ));

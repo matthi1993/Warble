@@ -57,6 +57,22 @@ import type {
 
 type BgColor = "black" | "grey" | "white";
 
+/** Compare two crop edits for equality, with a small epsilon on the
+ *  floating-point frame coordinates and rotation. Used to dedupe
+ *  no-op writes that the canvas dispatches on benign prop refreshes. */
+function cropEditsEqual(a: CropEdit, b: CropEdit): boolean {
+  const eps = 1e-4;
+  return (
+    a.aspectRatio === b.aspectRatio &&
+    a.orientation === b.orientation &&
+    Math.abs(a.x - b.x) < eps &&
+    Math.abs(a.y - b.y) < eps &&
+    Math.abs(a.width - b.width) < eps &&
+    Math.abs(a.height - b.height) < eps &&
+    Math.abs((a.rotation ?? 0) - (b.rotation ?? 0)) < eps
+  );
+}
+
 interface ExifMetadata {
   cameraMake?: string | null;
   cameraModel?: string | null;
@@ -1820,6 +1836,13 @@ export class PfFullView extends LitElement {
     this.persistCropFromCanvas();
   };
 
+  /** When `true`, programmatic resets are in flight and any
+   *  `crop-change` dispatched by the canvas (e.g. as a side-effect
+   *  of changing rotation/aspect props back to defaults) must be
+   *  ignored — otherwise the canvas would re-persist the stale frame
+   *  on top of the just-cleared edit. */
+  private suppressCropPersist = false;
+
   /** Pull the current frame from the canvas and persist as the saved
    * crop, debounced via the edit store. Used as the common write
    * path for slider/button/drag events while the crop card is open. */
@@ -1840,11 +1863,17 @@ export class PfFullView extends LitElement {
       orientation: this.editOrientation,
       rotation: this.editRotation,
     };
+    // Skip writes that don't actually change anything. Prevents the
+    // revert button from lighting up just because the canvas
+    // re-dispatched the same frame on a benign prop refresh.
+    const prev = getPhotoEdit(target)?.crop ?? null;
+    if (prev && cropEditsEqual(prev, crop)) return;
     setPhotoCrop(target, crop);
   };
 
   /** Handler for `crop-change` from the canvas: a frame edge moved. */
   private onCanvasCropChange = () => {
+    if (this.suppressCropPersist) return;
     this.persistCropFromCanvas();
   };
 
@@ -1910,9 +1939,27 @@ export class PfFullView extends LitElement {
     if (!target) return;
     const saved = getPhotoEdit(target)?.crop ?? null;
     if (!saved) return;
-    setPhotoCrop(target, null);
+    // Reset the host's UI state to defaults BEFORE clearing the DB.
+    // The canvas will re-render with rotation=0 / aspect=default and
+    // its willUpdate handlers will dispatch `crop-change` as a side
+    // effect; suppress that so we don't re-persist the stale frame on
+    // top of the cleared edit.
+    this.suppressCropPersist = true;
+    this.editAspect = "3:2";
+    this.editOrientation = "landscape";
     this.editRotation = 0;
     this.horizonModeActive = false;
+    await this.updateComplete;
+    const cv = this.renderRoot.querySelector(
+      "pf-image-canvas",
+    ) as PfImageCanvas | null;
+    if (cv) await cv.updateComplete;
+    this.suppressCropPersist = false;
+    // Now clear the persisted edit. The canvas's edit-store subscriber
+    // notices `savedCrop` going from non-null to null and resets its
+    // live `cropFrame` so the on-screen crop snaps back to the full
+    // image.
+    setPhotoCrop(target, null);
   };
 
   private hasCropEdit(): boolean {
