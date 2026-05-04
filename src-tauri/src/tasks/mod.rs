@@ -305,11 +305,6 @@ impl TaskPool {
         self.bg_thread_capacity.load(Ordering::Relaxed)
     }
 
-    /// Currently configured concurrency cap.
-    pub fn bg_concurrency(&self) -> usize {
-        self.bg_concurrency.load(Ordering::Relaxed)
-    }
-
     /// Submit a job for execution at the given priority.
     ///
     /// `request_id`, when present, lets the frontend cancel the job via

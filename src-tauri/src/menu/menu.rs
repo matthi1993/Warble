@@ -33,6 +33,9 @@ const ID_REVEAL_HD: &str = "cache.reveal.hd";
 const ID_REFRESH_USAGE: &str = "cache.usage.refresh";
 const ID_DEBUG_STATS_TOGGLE: &str = "window.debug_stats";
 
+const ID_FILE_SAVE: &str = "file.save";
+const ID_FILE_LOAD: &str = "file.load";
+
 /// Preset choices surfaced as check items in the menu. Values are entry
 /// counts; conservative on the low end, generous on the high end so users
 /// with large libraries can opt in.
@@ -60,11 +63,13 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
     let edit_submenu = build_edit_submenu(app)?;
     let view_submenu = build_view_submenu(app)?;
     let cache_submenu = build_cache_submenu(app, &settings)?;
+    let file_submenu = build_file_submenu(app)?;
     let window_submenu = build_window_submenu(app)?;
 
     MenuBuilder::new(app)
         .items(&[
             &app_submenu,
+            &file_submenu,
             &edit_submenu,
             &view_submenu,
             &cache_submenu,
@@ -136,6 +141,19 @@ fn build_window_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
         .item(&PredefinedMenuItem::close_window(app, None)?)
         .separator()
         .item(&debug_stats)
+        .build()
+}
+
+fn build_file_submenu(
+    app: &AppHandle<Wry>
+) -> tauri::Result<Submenu<Wry>> {
+    let load_file =
+        MenuItemBuilder::with_id(ID_FILE_LOAD, "Load Library ...").build(app)?;
+    let save_file =
+        MenuItemBuilder::with_id(ID_FILE_SAVE, "Save Library ...").build(app)?;
+    SubmenuBuilder::new(app, "File")
+        .item(&load_file)
+        .item(&save_file)
         .build()
 }
 
@@ -406,6 +424,18 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
     if let Some(rest) = id.strip_prefix(ID_BG_PREFIX) {
         if let Ok(n) = rest.parse::<usize>() {
             apply_bg_concurrency(app, n);
+        }
+    }
+    if let Some(rest) = id.strip_prefix(ID_FILE_LOAD) {
+        if let Ok(n) = rest.parse::<usize>() {
+            // TODO load library
+            println!("Load library - not implemented: {}", n);
+        }
+    }
+    if let Some(rest) = id.strip_prefix(ID_FILE_SAVE) {
+        if let Ok(n) = rest.parse::<usize>() {
+            // TODO save library
+            println!("Save library - not implemented: {}", n);
         }
     }
 }

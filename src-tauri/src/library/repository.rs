@@ -272,22 +272,6 @@ impl LibraryRepository {
         Ok(out)
     }
 
-    pub fn get_photo_edit(&self, path: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let value: Option<String> = conn
-            .query_row(
-                "SELECT edits FROM photo_edits WHERE path = ?1",
-                params![path],
-                |row| row.get(0),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other.to_string()),
-            })?;
-        Ok(value)
-    }
-
     pub fn set_photo_edit(&self, path: &str, edits_json: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
