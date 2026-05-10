@@ -42,20 +42,14 @@ export type ImageFit = "contain" | "proof" | "tight";
 export type ImageSizing = "fit" | "fill" | "hybrid";
 
 /** Time the user must linger on a photo before we kick off a full-
- * resolution decode in addition to the HD preview. Tuned so casual
- * arrow-key scrubbing through a folder never pays for full-res
- * decodes the user won't see. */
-const FULL_IMAGE_DELAY_MS = 250;
+ * resolution decode in addition to the HD preview.  */
+const FULL_IMAGE_DELAY_MS = 1000;
 
-/** How long after the last edit-store push for the active photo we
- * keep showing the HD bitmap. Long enough to absorb a slider drag
- * (60 Hz events back-to-back) without flickering between sources;
- * short enough that a one-off click reverts to full-res quickly. */
-const EDIT_SETTLE_MS = 400;
+// Time to wait until editing changes are applied to full res image after slider change
+const EDIT_SETTLE_MS = 1000;
 
 /** Pending crop frame state, exposed via `getCrop()`. */
 export interface CropFrame {
-  /** Normalised (0..1) crop in original-image coordinates. */
   x: number;
   y: number;
   width: number;
@@ -132,14 +126,6 @@ export class PfImageCanvas extends LitElement {
     .status.error {
       color: #ff8080;
     }
-    /**
-     * Loading indicator for the full image view. Lives in the bottom-
-     * left corner so the photo it's loading isn't obscured. Uses a
-     * minimal CSS spinner instead of centred text — by the time the
-     * user sees this they almost always already have the HD bitmap
-     * painted, and we just want to flag that a full-resolution decode
-     * is still in flight.
-     */
     .loading-spinner {
       position: absolute;
       left: 12px;
@@ -171,37 +157,17 @@ export class PfImageCanvas extends LitElement {
   @property({ type: String })
   background = "transparent";
 
-  /**
-   * When `true`, the canvas enters interactive crop mode: zoom/pan are
-   * disabled, the image is forced to fit, and an aspect-locked crop
-   * frame is overlaid. The frame can be dragged (move) or resized via
-   * its 8 handles. The persisted edit, if any, is ignored while in
-   * crop mode so the user can re-frame against the full image.
-   */
   @property({ type: Boolean, reflect: true })
   cropMode = false;
 
-  /**
-   * When `true`, the tone pipeline is pre-warmed (WebGL2 context
-   * created, shader compiled, current bitmap uploaded as a texture)
-   * so the first slider movement is responsive. Without this warm-
-   * up the first drag pays the full GL init + 40 MP texture upload
-   * cost on the same frame and the UI feels stuck for ~200 ms.
-   */
   @property({ type: Boolean, reflect: true })
   editing = false;
 
   /**
-   * When `true`, the canvas opportunistically upgrades from the HD
-   * (1920px) bitmap to the full-resolution decode after the user has
-   * lingered on the photo for {@link FULL_IMAGE_DELAY_MS}. While the
-   * user is actively editing (slider drag, crop nudge) the canvas
-   * reverts to HD so the WebGL tone pipeline stays interactive — the
-   * full-res texture upload alone takes hundreds of ms on a 40 MP
-   * source. Defaults `false`; only the full-screen viewer opts in.
+   * When `true`, the canvas opportunistically upgrades from the HD bitmap to the full-resolution.
    */
   @property({ type: Boolean })
-  enableFullRes = false;
+  enableFullRes = true;
 
   /**
    * Locked aspect ratio (width / height) of the crop frame. `null`
@@ -220,12 +186,6 @@ export class PfImageCanvas extends LitElement {
   @property({ type: Number })
   rotation = 0;
 
-  /**
-   * When `true`, the canvas enters "horizon pick" mode: the user
-   * draws a line across the image and the host receives a
-   * `horizon-line` event with the implied straighten angle. The
-   * crop card uses this to drive the rotation slider.
-   */
   @property({ type: Boolean, reflect: true })
   horizonMode = false;
 
