@@ -54,6 +54,11 @@ import type {
 import "./views/full-view/pf-info-card";
 import "./views/full-view/pf-edit-side-panel";
 import "./views/full-view/pf-post-process-card";
+import {
+  getPostProcess,
+  setPostProcessEnabled,
+  subscribePostProcess,
+} from "@services/post-process/post-process-store";
 import { fullViewStyles } from "./views/full-view/styles";
 import {
   renderBottombar,
@@ -63,6 +68,8 @@ import {
 import type { EditTool, ToolHost } from "./views/full-view/tools/edit-tool";
 import { CropTool } from "./views/full-view/tools/crop-tool";
 import { ToneTool } from "./views/full-view/tools/tone-tool";
+import { CurveTool } from "./views/full-view/tools/curve-tool";
+import { BloomTool } from "./views/full-view/tools/bloom-tool";
 import {
   currentSelection,
   isJpegSelection,
@@ -70,8 +77,21 @@ import {
 } from "./views/full-view/variant-selector";
 import { IdleController } from "./views/full-view/idle-controller";
 import { ExifLoader } from "./views/full-view/exif-loader";
+import {
+  buildHintLine,
+  buildShortcuts,
+  dispatchShortcut,
+  type ShortcutDef,
+} from "./views/full-view/shortcuts";
 
-type SidePanelTab = "info" | "edit" | "post";
+type SidePanelTab = "info" | "edit" | "effects" | "post";
+
+/** Module-level clipboard for cmd+c / cmd+v across photos. Each
+ *  entry is keyed by tool id; the blob is whatever the tool's
+ *  `serializeEdit` returned. Lives in module scope so it persists
+ *  across photo navigation (which destroys/rebuilds the view) but
+ *  intentionally does *not* persist across app launches. */
+let editClipboard: Record<string, unknown> | null = null;
 
 @customElement("pf-full-view")
 export class PfFullView extends LitElement {
@@ -112,6 +132,7 @@ export class PfFullView extends LitElement {
 
   private unsubscribeStore: (() => void) | null = null;
   private unsubscribeEdits: (() => void) | null = null;
+  private unsubscribePostProcess: (() => void) | null = null;
 
   @property({ type: Boolean, reflect: true })
   idle = false;
@@ -139,7 +160,22 @@ export class PfFullView extends LitElement {
   // --- Edit tools ----------------------------------------------------
   private cropTool = new CropTool();
   private toneTool = new ToneTool();
-  private tools: EditTool[] = [this.cropTool, this.toneTool];
+  private curveTool = new CurveTool();
+  private bloomTool = new BloomTool();
+  private tools: EditTool[] = [
+    this.cropTool,
+    this.toneTool,
+    this.curveTool,
+    this.bloomTool,
+  ];
+  /** Tools rendered under the "Edit" tab in the side panel. */
+  private editTabTools: EditTool[] = [
+    this.cropTool,
+    this.toneTool,
+    this.curveTool,
+  ];
+  /** Tools rendered under the "Effects" tab. */
+  private effectsTabTools: EditTool[] = [this.bloomTool];
   /** The tool currently in foreground/interactive mode. Crop is the
    *  only one that takes over the canvas; tone runs passively. */
   @state()
@@ -181,6 +217,9 @@ export class PfFullView extends LitElement {
         const t = host.editTargetPath();
         if (t) await flushPhotoEdit(t);
       },
+      setActiveTool: (toolId: string | null) => {
+        host.activeToolId = toolId;
+      },
     };
   }
 
@@ -188,7 +227,7 @@ export class PfFullView extends LitElement {
 
   private onMouseMoveGlobal = (e: MouseEvent) => {
     if (this.editMode && this.fullscreen) {
-      const nearRight = e.clientX > window.innerWidth - 80;
+      const nearRight = e.clientX > window.innerWidth - 16;
       const overRailOrPanel = this.cursorOverEditRailOrPanelXY(
         e.clientX,
         e.clientY
@@ -196,6 +235,13 @@ export class PfFullView extends LitElement {
       this.editPanelVisible = nearRight || overRailOrPanel;
     }
     this.idleController.onMouseMove(e.clientX, e.clientY);
+  };
+
+  private onMouseLeaveWindow = () => {
+    // When the cursor leaves the viewport entirely, hide the
+    // floating edit rail/panel so it doesn't linger on top of the
+    // photo while the user is off-screen.
+    if (this.fullscreen) this.editPanelVisible = false;
   };
 
   private onDocClick = (e: MouseEvent) => {
@@ -212,6 +258,8 @@ export class PfFullView extends LitElement {
     super.connectedCallback();
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("mousemove", this.onMouseMoveGlobal);
+    document.addEventListener("mouseleave", this.onMouseLeaveWindow);
+    window.addEventListener("blur", this.onMouseLeaveWindow);
     window.addEventListener("click", this.onDocClick, { capture: true });
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
@@ -219,7 +267,14 @@ export class PfFullView extends LitElement {
     this.unsubscribeEdits = subscribePhotoEdits((path) => {
       this.editsTick++;
       // Empty path = store-wide "everything cleared" wildcard.
-      if (path === "") this.toneTool.invalidateMirror();
+      if (path === "") {
+        this.toneTool.invalidateMirror();
+        this.curveTool.invalidateMirror();
+      }
+    });
+    // Reflect global post-process toggle in the footer label.
+    this.unsubscribePostProcess = subscribePostProcess(() => {
+      this.requestUpdate();
     });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
@@ -234,6 +289,8 @@ export class PfFullView extends LitElement {
       capture: true,
     } as unknown as EventListenerOptions);
     window.removeEventListener("mousemove", this.onMouseMoveGlobal);
+    document.removeEventListener("mouseleave", this.onMouseLeaveWindow);
+    window.removeEventListener("blur", this.onMouseLeaveWindow);
     window.removeEventListener("click", this.onDocClick, {
       capture: true,
     } as unknown as EventListenerOptions);
@@ -241,6 +298,8 @@ export class PfFullView extends LitElement {
     this.unsubscribeStore = null;
     this.unsubscribeEdits?.();
     this.unsubscribeEdits = null;
+    this.unsubscribePostProcess?.();
+    this.unsubscribePostProcess = null;
     this.idleController.dispose();
   }
 
@@ -371,42 +430,38 @@ export class PfFullView extends LitElement {
       }
       return;
     }
-    if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      this.go(-1);
-      return;
-    }
-    if (e.key === "ArrowRight") {
-      e.preventDefault();
-      this.go(1);
-      return;
-    }
-    if (e.key === "p" || e.key === "P") {
-      e.preventDefault();
-      this.cycleFit();
-      return;
-    }
-    if (e.key === "i" || e.key === "I") {
-      if (this.editMode) {
-        e.preventDefault();
-        this.toggleTab("info");
+    // Cmd/Ctrl + C / V: copy/paste edits across photos. Every tool
+    // contributes its own serialized blob (returns null if it has
+    // nothing to copy) so new tools opt in automatically.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      const k = e.key.toLowerCase();
+      if (k === "c") {
+        const target = this.toolHost.editTarget;
+        if (target) {
+          const snap: Record<string, unknown> = {};
+          for (const t of this.tools) {
+            const data = t.serializeEdit(target);
+            if (data !== null) snap[t.id] = data;
+          }
+          editClipboard = snap;
+          e.preventDefault();
+        }
+        return;
       }
-      return;
-    }
-    if (e.key === "c" || e.key === "C") {
-      if (this.editMode) {
-        e.preventDefault();
-        this.toggleTool(this.cropTool);
+      if (k === "v") {
+        if (editClipboard && this.toolHost.editTarget) {
+          for (const t of this.tools) {
+            if (t.id in editClipboard) {
+              void t.applyEdit(this.toolHost, editClipboard[t.id]);
+            }
+          }
+          this.requestUpdate();
+          e.preventDefault();
+        }
+        return;
       }
-      return;
     }
-    if (e.key === "b" || e.key === "B") {
-      if (this.editMode) {
-        e.preventDefault();
-        this.toggleToneCard();
-      }
-      return;
-    }
+    if (dispatchShortcut(e, this.shortcuts, this, this.editMode)) return;
     if (RATING_LABEL_KEYS.has(e.key)) {
       const photo = this.currentPhoto;
       if (photo) {
@@ -416,7 +471,10 @@ export class PfFullView extends LitElement {
     }
   }
 
-  private cycleFit() {
+  private readonly shortcuts: readonly ShortcutDef[] = buildShortcuts();
+
+  /** Called via the shortcuts registry (P). */
+  cycleFit() {
     const order: ImageFit[] = ["contain", "tight", "proof"];
     const idx = order.indexOf(this.fit);
     this.fit = order[(idx + 1) % order.length];
@@ -523,8 +581,8 @@ export class PfFullView extends LitElement {
     this.activeTab = this.activeTab === tab ? null : tab;
   }
 
-  /** Crop tool: takes over the canvas. */
-  private toggleTool(tool: EditTool) {
+  /** Crop tool: takes over the canvas. Also reached via shortcut C. */
+  toggleTool(tool: EditTool) {
     this.openTab("edit");
     if (this.activeToolId === tool.id) {
       tool.deactivate(this.toolHost);
@@ -536,10 +594,40 @@ export class PfFullView extends LitElement {
     }
   }
 
-  /** Tone card: passive, no canvas takeover. */
-  private toggleToneCard() {
+  /** Tone card: passive, no canvas takeover. Shortcut B. */
+  toggleToneCard() {
     this.openTab("edit");
     this.toneTool.cardOpen = !this.toneTool.cardOpen;
+    this.requestUpdate();
+  }
+
+  /**
+   * Per-photo tone curve (shortcut `U`). Passive: the canvas reads
+   * the curve from the edits store via its own subscription.
+   */
+  toggleCurveCard() {
+    this.openTab("edit");
+    this.curveTool.cardOpen = !this.curveTool.cardOpen;
+    this.requestUpdate();
+  }
+
+  /**
+   * Shortcut handler for the post-process Grain tool (`N`). The grain
+   * and post-curve cards in the post panel are always-expanded, so
+   * this just routes the user to the right tab — the actual controls
+   * are wired straight to `post-process-store`.
+   */
+  toggleGrainCard() {
+    this.openTab("post");
+    this.requestUpdate();
+  }
+
+  /**
+   * Shortcut handler for the post-process tone-curve tool (`M`).
+   * Same routing-only behaviour as {@link toggleGrainCard}.
+   */
+  togglePostCurveCard() {
+    this.openTab("post");
     this.requestUpdate();
   }
 
@@ -647,6 +735,7 @@ export class PfFullView extends LitElement {
     }> = [
       { id: "info", icon: "info", label: "Info" },
       { id: "edit", icon: "pencil", label: "Edit" },
+      { id: "effects", icon: "sparkle", label: "Effects" },
       { id: "post", icon: "wand", label: "Post Process" },
     ];
     return html`
@@ -674,7 +763,9 @@ export class PfFullView extends LitElement {
           ?open=${true}
         ></pf-info-card>`;
       case "edit":
-        return this.tools.map((t) => t.renderCard(this.toolHost));
+        return this.editTabTools.map((t) => t.renderCard(this.toolHost));
+      case "effects":
+        return this.effectsTabTools.map((t) => t.renderCard(this.toolHost));
       case "post":
         return html`<pf-post-process-card></pf-post-process-card>`;
       default:
@@ -683,8 +774,6 @@ export class PfFullView extends LitElement {
   }
 
   private renderEditPanel() {
-    const canCompare = this.canPreviewOriginal();
-    const canRevertAll = this.hasAnyEdit();
     return html`
       <pf-edit-side-panel
         aria-label="Edit panel"
@@ -692,35 +781,45 @@ export class PfFullView extends LitElement {
         @mouseenter=${() => (this.editPanelVisible = true)}
       >
         ${this.renderTabContent()}
-        <button
-          slot="footer"
-          type="button"
-          class="footer-btn"
-          aria-pressed=${this.previewOriginal}
-          aria-label="Compare before and after edits"
-          title="Hold to compare before / after edits"
-          ?disabled=${!canCompare}
-          @pointerdown=${this.startPreviewOriginal}
-          @pointerup=${this.endPreviewOriginal}
-          @pointercancel=${this.endPreviewOriginal}
-          @pointerleave=${this.endPreviewOriginal}
-        >
-          <pf-icon name="compare"></pf-icon>
-          <span>Before / After</span>
-        </button>
-        <button
-          slot="footer"
-          type="button"
-          class="footer-btn"
-          title="Revert all edits"
-          aria-label="Revert all edits"
-          ?disabled=${!canRevertAll}
-          @click=${this.resetAllEdits}
-        >
-          <pf-icon name="rotate-ccw"></pf-icon>
-          <span>Revert all</span>
-        </button>
+        ${this.activeTab === "edit" ? this.renderEditTabFooter() : null}
       </pf-edit-side-panel>
+    `;
+  }
+
+  /** Footer for the editing tab only: Before/After + Revert all.
+   *  Hidden on Info and Post-Process tabs. */
+  private renderEditTabFooter() {
+    const canCompare = this.canPreviewOriginal();
+    const canRevertAll = this.hasAnyEdit();
+    return html`
+      <button
+        slot="footer"
+        type="button"
+        class="footer-btn"
+        aria-pressed=${this.previewOriginal}
+        aria-label="Compare before and after edits"
+        title="Hold to compare before / after edits"
+        ?disabled=${!canCompare}
+        @pointerdown=${this.startPreviewOriginal}
+        @pointerup=${this.endPreviewOriginal}
+        @pointercancel=${this.endPreviewOriginal}
+        @pointerleave=${this.endPreviewOriginal}
+      >
+        <pf-icon name="compare"></pf-icon>
+        <span>Before / After</span>
+      </button>
+      <button
+        slot="footer"
+        type="button"
+        class="footer-btn"
+        title="Revert all edits"
+        aria-label="Revert all edits"
+        ?disabled=${!canRevertAll}
+        @click=${this.resetAllEdits}
+      >
+        <pf-icon name="rotate-ccw"></pf-icon>
+        <span>Revert all</span>
+      </button>
     `;
   }
 
@@ -776,6 +875,8 @@ export class PfFullView extends LitElement {
             ? html`<pf-rating-overlay
                 class="fv-rating-overlay"
                 .path=${path}
+                ?fullscreen=${this.fullscreen}
+                ?forceVisible=${this.fullscreen && !this.idle}
                 style="--pf-rating-inset: 16px; --pf-rating-star-size: 14px; --pf-rating-label-size: 8px;"
               ></pf-rating-overlay>`
             : null}
@@ -796,8 +897,14 @@ export class PfFullView extends LitElement {
             <pf-icon name="chevron-right"></pf-icon>
           </button>
           <div class="hint">
-            Scroll to zoom · drag to pan · double-click to toggle 100% ·
-            P proof · I info · C crop · B basic · F fullscreen · G grid · Esc to close
+            ${buildHintLine(this.shortcuts, [
+              "Scroll to zoom",
+              "drag to pan",
+              "double-click to toggle 100%",
+              "F fullscreen",
+              "G grid",
+              "Esc to close",
+            ])}
           </div>
         </div>
         ${this.editMode
@@ -825,6 +932,9 @@ export class PfFullView extends LitElement {
         onSetBg: this.setBg,
         onSetFit: this.setFit,
         onSetSizing: this.setSizing,
+        postProcessEnabled: getPostProcess().enabled,
+        onTogglePostProcess: () =>
+          setPostProcessEnabled(!getPostProcess().enabled),
       })}
     `;
   }

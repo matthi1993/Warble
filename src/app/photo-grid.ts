@@ -223,6 +223,44 @@ export class PfPhotoGrid extends LitElement {
     this.unsubscribeRatings = null;
   }
 
+  /** Bring the currently selected card into view. Called from the
+   *  app-shell when the user leaves the full image view (e.g. by
+   *  pressing "g") so the grid lands on the photo they were just
+   *  looking at, plus internally on first render and whenever the
+   *  selection changes from outside the grid. */
+  scrollSelectionIntoView(): void {
+    if (!this.selectedPath) return;
+    const card = this.renderRoot.querySelector(
+      `pf-thumbnail-card[data-path="${CSS.escape(this.selectedPath)}"]`
+    ) as HTMLElement | null;
+    card?.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+
+  protected updated(changed: Map<string, unknown>): void {
+    // When the full-view overlay closes the grid becomes visible
+    // again; scroll the selected photo into view so the user
+    // doesn't lose their place in a long folder.
+    if (
+      changed.has("fullViewOpen") &&
+      changed.get("fullViewOpen") === true &&
+      !this.fullViewOpen
+    ) {
+      // Wait for layout to settle (the overlay was hiding us, so
+      // cards may not have had a layout box yet).
+      requestAnimationFrame(() => this.scrollSelectionIntoView());
+    } else if (changed.has("selectedPath") && this.selectedPath) {
+      // The selection moved (e.g. arrow keys propagated from the
+      // shell) — keep the focused card on screen.
+      requestAnimationFrame(() => this.scrollSelectionIntoView());
+    }
+  }
+
+  protected firstUpdated(): void {
+    if (this.selectedPath) {
+      requestAnimationFrame(() => this.scrollSelectionIntoView());
+    }
+  }
+
   private get filteredPhotos(): Photo[] {
     // Keep a reactive dependency on `ratingsTick` so Lit re-renders
     // when ratings change.
@@ -423,6 +461,7 @@ export class PfPhotoGrid extends LitElement {
               (p) => p.path,
               (p) => html`
                 <pf-thumbnail-card
+                  data-path=${p.path}
                   .path=${p.path}
                   .filename=${p.filename}
                   .extensions=${p.extensions ?? []}

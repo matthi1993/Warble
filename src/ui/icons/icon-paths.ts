@@ -51,6 +51,14 @@ export const ICON_PATHS = {
     '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   wand:
     '<path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M11 7l6 6"/><path d="M17.8 6.2 19 5"/><path d="m3 21 8.5-8.5"/><path d="M12.2 6.2 11 5"/>',
+  refresh:
+    '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>',
+  curve:
+    '<path d="M3 21C 7 21, 7 3, 21 3"/>',
+  sparkle:
+    '<path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="m5.6 5.6 2.1 2.1"/><path d="m16.3 16.3 2.1 2.1"/><path d="m5.6 18.4 2.1-2.1"/><path d="m16.3 7.7 2.1-2.1"/>',
+  circle:
+    '<circle cx="12" cy="12" r="9"/>',
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

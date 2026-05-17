@@ -76,10 +76,17 @@ pub struct PhotoEdits {
     pub crop: Option<CropEdit>,
     #[serde(default)]
     pub tone: Option<ToneEdit>,
+    /// Per-photo tone curve. The frontend owns the shape (control
+    /// points per channel); Rust stores it as an opaque JSON blob so
+    /// we don't have to mirror the schema in two places.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<serde_json::Value>,
 }
 
 impl PhotoEdits {
     pub fn is_empty(&self) -> bool {
-        self.crop.is_none() && self.tone.map_or(true, |t| t.is_zero())
+        self.crop.is_none()
+            && self.tone.map_or(true, |t| t.is_zero())
+            && self.curve.is_none()
     }
 }

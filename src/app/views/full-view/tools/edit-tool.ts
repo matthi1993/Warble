@@ -43,6 +43,11 @@ export interface ToolHost {
    *  call this on deactivate so the next navigation sees committed
    *  state. */
   flushActiveEdit(): Promise<void> | void;
+  /** Mark a tool as the shell's active (canvas-owning) tool, or
+   *  clear with `null`. Tools that hand off canvas control on card
+   *  open/close (notably the crop tool) call this so the shell's
+   *  bookkeeping stays in sync with their lifecycle. */
+  setActiveTool(toolId: string | null): void;
 }
 
 /** Canvas property overrides a tool can contribute while active. The
@@ -100,6 +105,26 @@ export abstract class EditTool {
 
   /** Drop this tool's persisted edits on the active target. */
   abstract reset(host: ToolHost): void | Promise<void>;
+
+  // ---- Copy / paste -------------------------------------------------
+
+  /** Snapshot this tool's persisted edit on `target` into a
+   *  serialisable blob, or return `null` when there is nothing to
+   *  copy. The shape is opaque to the shell — only this tool's
+   *  `applyEdit` needs to understand it. Defaults to "nothing to
+   *  copy" so tools opt in. */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  serializeEdit(_target: string): unknown | null {
+    return null;
+  }
+
+  /** Apply a previously serialised edit blob to the host's current
+   *  target. `data` will be one of this tool's own `serializeEdit`
+   *  outputs (or `null`, in which case implementations should clear
+   *  the corresponding edit). Defaults to a no-op. */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  applyEdit(_host: ToolHost, _data: unknown): void | Promise<void> {}
+
 
   // ---- Rendering ----------------------------------------------------
 

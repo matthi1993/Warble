@@ -142,6 +142,11 @@ export interface BottombarOptions {
   onSetBg: (bg: BgColor) => void;
   onSetFit: (m: ImageFit) => void;
   onSetSizing: (s: ImageSizing) => void;
+  /** Master post-process switch, shown as a quick toggle next to
+   *  "Scale" so the user can flip the global look on/off without
+   *  opening the side panel. */
+  postProcessEnabled: boolean;
+  onTogglePostProcess: () => void;
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
@@ -264,6 +269,17 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
               </button>
             </div>`
           : null}
+      </span>
+      <span class="menu-wrap">
+        <button
+          class="menu-trigger"
+          type="button"
+          aria-pressed=${opts.postProcessEnabled}
+          title="Toggle post-processing (grain, dust, post curve)"
+          @click=${opts.onTogglePostProcess}
+        >
+          Post: ${opts.postProcessEnabled ? "On" : "Off"}
+        </button>
       </span>
     </div>
   `;

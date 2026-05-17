@@ -77,6 +77,28 @@ export class CropTool extends EditTool {
     return getPhotoEdit(target)?.crop != null;
   }
 
+  serializeEdit(target: string): unknown | null {
+    const crop = getPhotoEdit(target)?.crop ?? null;
+    return crop ? { ...crop } : null;
+  }
+
+  applyEdit(host: ToolHost, data: unknown): void {
+    const target = host.editTarget;
+    if (!target) return;
+    if (data == null) {
+      setPhotoCrop(target, null);
+      this.syncFromStore(target);
+      host.requestUpdate();
+      return;
+    }
+    const crop = data as CropEdit;
+    setPhotoCrop(target, { ...crop });
+    this.aspect = crop.aspectRatio;
+    this.orientation = crop.orientation;
+    this.rotation = crop.rotation ?? 0;
+    host.requestUpdate();
+  }
+
   applyToCanvas(): ToolCanvasOverrides {
     return {
       cropMode: true,
@@ -234,8 +256,13 @@ export class CropTool extends EditTool {
   private onCardToggle(host: ToolHost, open: boolean): void {
     if (open) {
       this.activate(host);
+      // Mouse-driven card open also makes us the active (canvas-
+      // owning) tool, so the overlay engages just like when the
+      // user hit the `C` shortcut.
+      host.setActiveTool(this.id);
     } else {
       this.deactivate(host);
+      host.setActiveTool(null);
     }
     // Signal the shell that active-tool status changed.
     host.requestUpdate();

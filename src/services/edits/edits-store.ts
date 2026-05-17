@@ -10,8 +10,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   type CropEdit,
+  type CurveEdit,
   type PhotoEdit,
   type ToneEdit,
+  isCurveZero,
   isToneZero,
 } from "@domain/edits";
 
@@ -19,6 +21,7 @@ interface PersistedRow {
   path: string;
   crop: CropEdit | null;
   tone: ToneEdit | null;
+  curve: CurveEdit | null;
 }
 
 const edits = new Map<string, PhotoEdit>();
@@ -35,6 +38,7 @@ export function loadPhotoEdits(): Promise<void> {
         edits.set(r.path, {
           crop: r.crop ?? null,
           tone: r.tone ?? null,
+          curve: r.curve ?? null,
         });
       }
       loaded = true;
@@ -54,7 +58,7 @@ export function getPhotoEdit(path: string): PhotoEdit | null {
 export function hasEdits(path: string): boolean {
   const e = edits.get(path);
   if (!e) return false;
-  return !!e.crop || !isToneZero(e.tone);
+  return !!e.crop || !isToneZero(e.tone) || !isCurveZero(e.curve);
 }
 
 function persistedTone(t: ToneEdit | null): ToneEdit | null {
@@ -62,15 +66,21 @@ function persistedTone(t: ToneEdit | null): ToneEdit | null {
   return t;
 }
 
+function persistedCurve(c: CurveEdit | null): CurveEdit | null {
+  if (!c || isCurveZero(c)) return null;
+  return c;
+}
+
 async function persist(path: string): Promise<void> {
   const e = edits.get(path);
   const crop = e?.crop ?? null;
   const tone = persistedTone(e?.tone ?? null);
+  const curve = persistedCurve(e?.curve ?? null);
   try {
-    if (!crop && !tone) {
+    if (!crop && !tone && !curve) {
       await invoke("clear_photo_edit", { path });
     } else {
-      await invoke("set_photo_edit", { path, crop, tone });
+      await invoke("set_photo_edit", { path, crop, tone, curve });
     }
   } catch (err) {
     console.error("Failed to persist photo edit", err);
@@ -119,10 +129,11 @@ export function setPhotoCrop(
 ): void {
   const prev = edits.get(path);
   const tone = prev?.tone ?? null;
-  if (!crop && isToneZero(tone)) {
+  const curve = prev?.curve ?? null;
+  if (!crop && isToneZero(tone) && isCurveZero(curve)) {
     edits.delete(path);
   } else {
-    edits.set(path, { crop, tone });
+    edits.set(path, { crop, tone, curve });
   }
   notify(path);
   schedulePersist(path);
@@ -138,11 +149,33 @@ export function setPhotoCrop(
 export function setPhotoTone(path: string, tone: ToneEdit | null): void {
   const prev = edits.get(path);
   const crop = prev?.crop ?? null;
+  const curve = prev?.curve ?? null;
   const cleaned = persistedTone(tone);
-  if (!crop && !cleaned) {
+  if (!crop && !cleaned && isCurveZero(curve)) {
     edits.delete(path);
   } else {
-    edits.set(path, { crop, tone: cleaned });
+    edits.set(path, { crop, tone: cleaned, curve });
+  }
+  notify(path);
+  schedulePersist(path);
+}
+
+/**
+ * Persist a tone curve. Same in-memory-sync / IPC-debounce pattern as
+ * `setPhotoTone`. Pass `null` (or an all-identity curve) to clear.
+ */
+export function setPhotoCurve(
+  path: string,
+  curve: CurveEdit | null,
+): void {
+  const prev = edits.get(path);
+  const crop = prev?.crop ?? null;
+  const tone = prev?.tone ?? null;
+  const cleaned = persistedCurve(curve);
+  if (!crop && isToneZero(tone) && !cleaned) {
+    edits.delete(path);
+  } else {
+    edits.set(path, { crop, tone, curve: cleaned });
   }
   notify(path);
   schedulePersist(path);

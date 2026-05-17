@@ -1,10 +1,11 @@
 /**
- * `pf-basic-card` — tonal adjustments disclosure card. Receives the
- * current `ToneEdit` value and emits granular events when sliders
- * change or are reset. The host owns persistence and store
- * subscription.
+ * `pf-dynamic-range-card` — disclosure card for the per-region tone
+ * sliders that shape an image's dynamic range (Whites / Highlights /
+ * Shadows / Blacks). Sibling of `pf-basic-card`; uses the same event
+ * contract so `ToneTool` can wire both cards through one set of
+ * handlers.
  *
- * Events:
+ * Events (identical to `pf-basic-card`):
  *  - `tone-change` with `{ key, value }` when a slider moves
  *  - `tone-reset-key` with `{ key }` when a value chip is double-clicked
  *  - `tone-reset` when the card-level revert button is clicked
@@ -13,9 +14,9 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import {
-  BASE_TONE_KEYS,
+  DYNAMIC_RANGE_KEYS,
   defaultTone,
-  isBaseToneZero,
+  isDynamicRangeZero,
   type ToneEdit,
 } from "@domain/edits";
 import "@ui/cards/pf-card";
@@ -34,8 +35,8 @@ const TONE_LABELS: Record<keyof ToneEdit, string> = {
   blacks: "Blacks",
 };
 
-@customElement("pf-basic-card")
-export class PfBasicCard extends LitElement {
+@customElement("pf-dynamic-range-card")
+export class PfDynamicRangeCard extends LitElement {
   static styles = css`
     :host {
       display: block;
@@ -110,21 +111,25 @@ export class PfBasicCard extends LitElement {
   };
 
   render() {
-    const canRevert = !isBaseToneZero(this.tone);
+    const canRevert = !isDynamicRangeZero(this.tone);
     return html`
-      <pf-card .title=${"Base Edit"} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card
+        .title=${"Dynamic Range"}
+        ?open=${this.open}
+        @toggle=${this.onToggle}
+      >
         <button
           slot="revert"
           type="button"
           class="card-revert"
-          title="Revert base edits"
-          aria-label="Revert base edits"
+          title="Revert dynamic range"
+          aria-label="Revert dynamic range"
           ?disabled=${!canRevert}
           @click=${this.onResetAll}
         >
           <pf-icon name="rotate-ccw"></pf-icon>
         </button>
-        ${BASE_TONE_KEYS.map(
+        ${DYNAMIC_RANGE_KEYS.map(
           (key) => html`
             <pf-tone-slider-row
               .label=${TONE_LABELS[key]}
@@ -141,6 +146,6 @@ export class PfBasicCard extends LitElement {
 
 declare global {
   interface HTMLElementTagNameMap {
-    "pf-basic-card": PfBasicCard;
+    "pf-dynamic-range-card": PfDynamicRangeCard;
   }
 }

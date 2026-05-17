@@ -11,8 +11,8 @@ export type AspectRatioKey =
   | "4:3"
   | "16:9"
   | "16:10"
-  | "panavision"
-  | "super-panavision";
+  | "xpan"
+  | "panavision";
 
 export type Orientation = "landscape" | "portrait";
 
@@ -58,6 +58,7 @@ export interface ToneEdit {
 export interface PhotoEdit {
   crop: CropEdit | null;
   tone: ToneEdit | null;
+  curve: import("./curve").CurveEdit | null;
 }
 
 export const TONE_KEYS: readonly (keyof ToneEdit)[] = [
@@ -72,14 +73,36 @@ export const TONE_KEYS: readonly (keyof ToneEdit)[] = [
   "blacks",
 ] as const;
 
+/** Subset of `TONE_KEYS` rendered inside the "Base Edit" card — the
+ *  global look knobs (white balance + overall exposure/contrast/
+ *  saturation) that don't target a specific tonal region. */
+export const BASE_TONE_KEYS: readonly (keyof ToneEdit)[] = [
+  "temperature",
+  "tint",
+  "exposure",
+  "contrast",
+  "saturation",
+] as const;
+
+/** Subset of `TONE_KEYS` rendered inside the "Dynamic Range" card —
+ *  the per-region offsets (whites / highlights / shadows / blacks)
+ *  that shape the tonal curve at specific luminance bands. */
+export const DYNAMIC_RANGE_KEYS: readonly (keyof ToneEdit)[] = [
+  "whites",
+  "highlights",
+  "shadows",
+  "blacks",
+] as const;
+
 export const ASPECT_RATIO_VALUES: Record<AspectRatioKey, number> = {
   "3:2": 3 / 2,
   "1:1": 1,
   "4:3": 4 / 3,
   "16:9": 16 / 9,
   "16:10": 16 / 10,
+  // Hasselblad XPan: 65×24mm panoramic frame = 65/24 ≈ 2.7083:1.
+  xpan: 65 / 24,
   panavision: 2.35,
-  "super-panavision": 2.76,
 };
 
 export const ASPECT_RATIO_LABELS: Record<AspectRatioKey, string> = {
@@ -88,6 +111,6 @@ export const ASPECT_RATIO_LABELS: Record<AspectRatioKey, string> = {
   "4:3": "4:3",
   "16:9": "16:9",
   "16:10": "16:10",
-  panavision: "2.35:1",
-  "super-panavision": "2.76:1",
+  xpan: "XPan",
+  panavision: "Panavision",
 };

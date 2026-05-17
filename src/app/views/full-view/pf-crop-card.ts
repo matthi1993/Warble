@@ -31,8 +31,8 @@ const ASPECT_OPTIONS: AspectRatioKey[] = [
   "4:3",
   "16:9",
   "16:10",
+  "xpan",
   "panavision",
-  "super-panavision",
 ];
 
 @customElement("pf-crop-card")

@@ -38,6 +38,20 @@ pub fn list_imported_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, 
     Ok(catalog.roots())
 }
 
+/// Re-scan every previously imported root from disk. Used by the
+/// "Refresh" button next to "Add Folders" so the sidebar picks up
+/// new files added outside the app.
+#[tauri::command]
+pub fn refresh_imported_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, String> {
+    let paths = state.repository()?.imported_root_paths()?;
+    let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
+    catalog.reset();
+    for path in &paths {
+        let _ = catalog.rehydrate_root(&PathBuf::from(path));
+    }
+    Ok(catalog.roots())
+}
+
 #[tauri::command]
 pub fn get_photos_in_folder(
     folder_path: String,

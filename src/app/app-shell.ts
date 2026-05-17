@@ -587,6 +587,31 @@ export class WarbleApp extends LitElement {
     this.imports = [...this.imports, ...trees];
   }
 
+  /** Re-walk every imported root from disk. The Rust side clears its
+   *  in-memory catalog and rescans each previously imported root. We
+   *  then re-fetch the photo list for whatever folder is currently
+   *  open so files added on disk show up immediately. */
+  private async refreshFolders() {
+    try {
+      const trees = await invoke<Folder[]>("refresh_imported_folders");
+      this.imports = trees;
+    } catch (err) {
+      console.error("Failed to refresh imported folders", err);
+      return;
+    }
+    if (this.selectedFolderId && this.selectedFolderId !== null) {
+      try {
+        const path = this.selectedFolderId;
+        this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+          folderPath: path,
+        });
+        startThumbnailBatch(this.photos.map((p) => p.path));
+      } catch (err) {
+        console.error("Failed to refresh active folder", err);
+      }
+    }
+  }
+
   private async onFolderSelect(
     e: CustomEvent<{ id: string; path: string }>
   ) {
@@ -730,6 +755,11 @@ export class WarbleApp extends LitElement {
             Add Folders
           </pf-button>
           <span class="header-actions">
+            <pf-icon-button
+              icon="refresh"
+              label="Refresh folders"
+              @click=${() => this.refreshFolders()}
+            ></pf-icon-button>
             <pf-theme-toggle></pf-theme-toggle>
           </span>
         </div>

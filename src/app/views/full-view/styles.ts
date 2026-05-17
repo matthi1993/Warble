@@ -383,18 +383,22 @@ export const fullViewStyles = css`
     pointer-events: none;
     transition: opacity 200ms ease, transform 200ms ease;
   }
-  /* Rail anchors to the right edge when the panel is collapsed, and
-     slides over to make room for the panel when one is open. */
+  /* Rail anchors to the RIGHT edge in fullscreen, with the panel
+     opening to its left when expanded. (Windowed mode keeps the
+     panel on the right via the flex layout above.) */
   :host([fullscreen]) .edit-side-rail {
     right: 0;
+    left: auto;
     width: 32px;
     height: auto;
   }
   :host([fullscreen][edit-panel-open]) .edit-side-rail {
     right: 280px;
+    left: auto;
   }
   :host([fullscreen]) pf-edit-side-panel {
     right: 0;
+    left: auto;
     width: 280px;
   }
   :host([fullscreen][edit-panel-visible]) .edit-side-rail {
@@ -408,15 +412,17 @@ export const fullViewStyles = css`
     transform: translateX(0);
     pointer-events: auto;
   }
-  /* Hover hot-zone on the right edge in fullscreen mode so the
-     floating panel can be summoned without grazing the right edge
-     precisely. */
+  /* Hover hot-zone on the RIGHT edge in fullscreen mode so the
+     floating panel can be summoned without grazing the edge
+     precisely. Kept narrow on purpose — the mouse has to be
+     essentially against the edge to summon the panel, so it
+     doesn't pop up while the user is just inspecting the photo. */
   .edit-panel-hotzone {
     position: absolute;
     top: 0;
     bottom: 0;
     right: 0;
-    width: 80px;
+    width: 16px;
     z-index: 4;
     pointer-events: auto;
   }

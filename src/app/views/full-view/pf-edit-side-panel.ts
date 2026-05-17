@@ -52,6 +52,11 @@ export class PfEditSidePanel extends LitElement {
       border-top: 1px solid var(--pf-border);
       background: var(--pf-surface-2);
     }
+    /* Hide the footer chrome entirely when nothing is slotted into
+       it. Used by non-edit tabs (info, post-process). */
+    .footer:not(:has(*)) {
+      display: none;
+    }
   `;
 
   render() {

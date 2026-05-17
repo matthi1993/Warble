@@ -32,6 +32,7 @@ pub fn run() {
             commands::select_folders_dialog,
             commands::import_folder,
             commands::list_imported_folders,
+            commands::refresh_imported_folders,
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,

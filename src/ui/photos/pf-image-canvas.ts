@@ -29,14 +29,27 @@ import {
   loadFullImage,
 } from "../../app/full-image-cache";
 import {
+  isCurveZero,
   isToneZero,
+  defaultTone,
   type CropEdit,
+  type CurveEdit,
   type ToneEdit,
 } from "@domain/edits";
 import {
   getPhotoEdit,
   subscribePhotoEdits,
 } from "@services/edits/edits-store";
+import {
+  getPostProcess,
+  subscribePostProcess,
+  type PostProcessSettings,
+} from "@services/post-process/post-process-store";
+import {
+  getPhotoBloom,
+  subscribePhotoEffects,
+  type BloomSettings,
+} from "@services/effects/effects-store";
 // Side-effect import: wires the worker-backed decoder into both
 // image caches and exports `decodeBase64Jpeg` for thumbnail decoding.
 import { decodeBase64Jpeg } from "./canvas/decoder-bootstrap";
@@ -289,11 +302,51 @@ export class PfImageCanvas extends LitElement {
    * at draw time as a `ctx.filter` chain on the bitmap. */
   @state()
   private savedTone: ToneEdit | null = null;
+  /** Saved (persisted) tone curve for the current photo. Applied
+   * after the basic tone math by the WebGL pipeline. */
+  @state()
+  private savedCurve: CurveEdit | null = null;
+  /** Snapshot of the global post-process settings (curve + grain).
+   * Updated via {@link subscribePostProcess}; redraws on change. */
+  @state()
+  private postProcess: PostProcessSettings = getPostProcess();
+  /** Saved (persisted) per-photo bloom effect. */
+  @state()
+  private savedBloom: BloomSettings | null = null;
   private editsUnsubscribe: (() => void) | null = null;
+  private postProcessUnsubscribe: (() => void) | null = null;
+  private effectsUnsubscribe: (() => void) | null = null;
   /** GPU pipeline for tone (brightness/contrast/saturation) adjustments.
    * Lazy-initialised on first use so photos with no edits never pay for
    * WebGL context creation. */
   private tonePipeline = new TonePipeline();
+
+  /** Stable hash of the current photo path. Mixed into the global
+   *  grain seed before sending to the shader so every photo gets a
+   *  unique grain pattern (without persisting per-photo seeds in
+   *  the post-process store). Recomputed in `willUpdate` whenever
+   *  `path` changes. */
+  private photoSeedHash = 0;
+
+  /** Returns a per-photo grain seed offset. Combined with the
+   *  user-controlled seed (bumped by the regenerate button) so
+   *  navigating between photos always reshuffles the grain field
+   *  even when the regenerate button hasn't been clicked. */
+  private photoSeedOffset(): number {
+    return this.photoSeedHash;
+  }
+
+  /** FNV-1a 32-bit hash of the photo path, reduced into a small
+   *  positive integer so adding it to the user seed doesn't risk
+   *  float-precision artifacts on the shader's `u_grainSeed`
+   *  uniform. */
+  private hashPath(p: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < p.length; i++) {
+      h = Math.imul(h ^ p.charCodeAt(i), 16777619);
+    }
+    return (h >>> 0) % 100003;
+  }
   /** rAF guard: coalesces multiple `scheduleDraw()` calls within a
    * single frame into one paint. Critical for slider drags, which
    * fire ~60 events/s — without this, draws pile up faster than they
@@ -364,6 +417,22 @@ export class PfImageCanvas extends LitElement {
       }
       this.scheduleDraw();
     });
+    // Post-process settings are global (not per-photo), so every
+    // change forces a redraw on every visible canvas — but they're
+    // CPU-cheap (the LUT/grain uniforms just flow through the existing
+    // WebGL program).
+    this.postProcessUnsubscribe = subscribePostProcess((next) => {
+      this.postProcess = next;
+      this.scheduleDraw();
+    });
+    // Per-photo effects (bloom, …) live in their own localStorage
+    // store. Slider drags push at the same rate as edit slider drags,
+    // and the WebGL pipeline can absorb them without a re-upload.
+    this.effectsUnsubscribe = subscribePhotoEffects((path) => {
+      if (path && path !== this.path) return;
+      this.refreshSavedEffects();
+      this.scheduleDraw();
+    });
   }
 
   /** Pull the latest persisted crop + tone for the current photo into
@@ -372,11 +441,22 @@ export class PfImageCanvas extends LitElement {
     if (!this.path) {
       this.savedCrop = null;
       this.savedTone = null;
+      this.savedCurve = null;
       return;
     }
     const edit = getPhotoEdit(this.path);
     this.savedCrop = edit?.crop ?? null;
     this.savedTone = edit?.tone ?? null;
+    this.savedCurve = edit?.curve ?? null;
+    this.refreshSavedEffects();
+  }
+
+  private refreshSavedEffects() {
+    if (!this.path) {
+      this.savedBloom = null;
+      return;
+    }
+    this.savedBloom = getPhotoBloom(this.path);
   }
 
   /**
@@ -449,6 +529,10 @@ export class PfImageCanvas extends LitElement {
     this.fullBitmap = null;
     this.editsUnsubscribe?.();
     this.editsUnsubscribe = null;
+    this.postProcessUnsubscribe?.();
+    this.postProcessUnsubscribe = null;
+    this.effectsUnsubscribe?.();
+    this.effectsUnsubscribe = null;
     this.tonePipeline.dispose();
   }
 
@@ -462,6 +546,10 @@ export class PfImageCanvas extends LitElement {
       // Switching photos drops any pending crop state.
       this.cropFrame = null;
       this.refreshSavedCrop();
+      // Mix a per-photo offset into the global grain seed so the
+      // film artifact pattern looks fresh on every navigation
+      // (FNV-1a — small, stable, no allocations).
+      this.photoSeedHash = this.hashPath(this.path ?? "");
       if (this.canvas) this.startLoad();
     } else if (changed.has("fit") || changed.has("sizing")) {
       this.userInteracted = false;
@@ -1082,9 +1170,28 @@ export class PfImageCanvas extends LitElement {
       // Tone is applied in crop mode too so the user sees what their
       // adjustments do while re-framing. `previewOriginal` (the
       // before/after toggle) still bypasses tone + crop on purpose.
-      const applyTone =
-        !this.previewOriginal && !isToneZero(this.savedTone);
-      if (applyTone) {
+      // The WebGL path also handles per-photo curve and global
+      // post-process (curve + grain), so we route through it whenever
+      // ANY of those is non-identity.
+      const pp = this.postProcess;
+      // Master post-process switch. When disabled the user still sees
+      // their per-photo tone + curve edits (those are the photo's
+      // "real" state), but the global look layer (post curve, grain)
+      // is skipped entirely. Toggling lets you compare the look
+      // against the underlying edit instantly.
+      const ppEnabled = pp.enabled;
+      const postCurveActive = ppEnabled && !isCurveZero(pp.curve);
+      const grainActive = ppEnabled && pp.grain.amount > 0;
+      const bloomActive =
+        !!this.savedBloom && this.savedBloom.strength > 0;
+      const applyPipeline =
+        !this.previewOriginal &&
+        (!isToneZero(this.savedTone) ||
+          !isCurveZero(this.savedCurve) ||
+          postCurveActive ||
+          grainActive ||
+          bloomActive);
+      if (applyPipeline) {
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
         const visX1 = Math.min(cv.width, x + drawW);
@@ -1110,10 +1217,18 @@ export class PfImageCanvas extends LitElement {
           );
           const toned = this.tonePipeline.render(
             src.source,
-            this.savedTone!,
+            this.savedTone ?? defaultTone(),
             { sx: subSx, sy: subSy, sw: subSw, sh: subSh },
             outW,
             outH,
+            {
+              curve: this.savedCurve,
+              postCurve: postCurveActive ? pp.curve : null,
+              grain: grainActive
+                ? { ...pp.grain, seed: pp.grain.seed + this.photoSeedOffset() }
+                : null,
+              bloom: bloomActive ? this.savedBloom : null,
+            }
           );
           if (toned) {
             ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
