@@ -25,7 +25,8 @@
     "paths": {
       "@ui/*": ["src/ui/*"],
       "@app/*": ["src/app/*"],
-      "@domain/*": ["src/domain/*"]
+      "@domain/*": ["src/domain/*"],
+      "@services/*": ["src/services/*"]
     }
   },
   "include": ["src"]

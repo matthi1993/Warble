@@ -47,6 +47,10 @@ export const ICON_PATHS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   compare:
     '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M16 8l3 3-3 3"/><path d="M8 8l-3 3 3 3"/>',
+  info:
+    '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  wand:
+    '<path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M11 7l6 6"/><path d="M17.8 6.2 19 5"/><path d="m3 21 8.5-8.5"/><path d="M12.2 6.2 11 5"/>',
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

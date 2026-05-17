@@ -6,7 +6,7 @@
  * `photo_variants` table.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { PhotoFormat } from "./photo-variant";
+import type { PhotoFormat } from "@domain/photo";
 
 export interface VariantPref {
   format: PhotoFormat;

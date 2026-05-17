@@ -1,13 +1,13 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { Photo } from "./types";
+import type { Photo } from "@domain/photo";
 import {
   availableFormats,
   availableVariants,
   fileForSelection,
   primarySelection,
   type PhotoFormat,
-} from "./photo-variant";
+} from "@domain/photo";
 import {
   getVariantOverride,
   subscribeVariantOverrides,

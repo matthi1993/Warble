@@ -1,5 +1,5 @@
 /**
- * Per-photo non-destructive edit preferences. Mirrors `variant-store` but
+ * Per-photo non-destructive edit store. Mirrors `variant-store` but
  * for the `photo_edits` SQLite table.
  *
  * Edits are applied at render time on the canvas (sub-region drawing of
@@ -8,104 +8,12 @@
  * never touch the bitmap cache.
  */
 import { invoke } from "@tauri-apps/api/core";
-
-export type AspectRatioKey =
-  | "3:2"
-  | "1:1"
-  | "4:3"
-  | "16:9"
-  | "16:10"
-  | "panavision"
-  | "super-panavision";
-
-export type Orientation = "landscape" | "portrait";
-
-export interface CropEdit {
-  /** Left edge as fraction of original width (0..1). */
-  x: number;
-  /** Top edge as fraction of original height (0..1). */
-  y: number;
-  /** Width as fraction of original width (0..1). */
-  width: number;
-  /** Height as fraction of original height (0..1). */
-  height: number;
-  /** Aspect-ratio preset that produced this crop (for UI restore). */
-  aspectRatio: AspectRatioKey;
-  /** Orientation that produced this crop (for UI restore). */
-  orientation: Orientation;
-  /** Rotation in degrees applied to the source bitmap before the
-   * normalised x/y/width/height are interpreted. Combines a 90°
-   * snap component (0/90/180/270) with a fine straighten in roughly
-   * (-45..+45). */
-  rotation: number;
-}
-
-/** Tonal adjustments under the "Basic" group in the editor side panel.
- *  All values are in [-100, 100] with `0` meaning "no change". */
-export interface ToneEdit {
-  exposure: number;
-  contrast: number;
-  saturation: number;
-  whites: number;
-  highlights: number;
-  shadows: number;
-  blacks: number;
-}
-
-export const TONE_KEYS: readonly (keyof ToneEdit)[] = [
-  "exposure",
-  "contrast",
-  "saturation",
-  "whites",
-  "highlights",
-  "shadows",
-  "blacks",
-] as const;
-
-export function defaultTone(): ToneEdit {
-  return {
-    exposure: 0,
-    contrast: 0,
-    saturation: 0,
-    whites: 0,
-    highlights: 0,
-    shadows: 0,
-    blacks: 0,
-  };
-}
-
-export function isToneZero(t: ToneEdit | null | undefined): boolean {
-  if (!t) return true;
-  for (const k of TONE_KEYS) {
-    if (t[k] !== 0) return false;
-  }
-  return true;
-}
-
-export interface PhotoEdit {
-  crop: CropEdit | null;
-  tone: ToneEdit | null;
-}
-
-export const ASPECT_RATIO_VALUES: Record<AspectRatioKey, number> = {
-  "3:2": 3 / 2,
-  "1:1": 1,
-  "4:3": 4 / 3,
-  "16:9": 16 / 9,
-  "16:10": 16 / 10,
-  panavision: 2.35,
-  "super-panavision": 2.76,
-};
-
-export const ASPECT_RATIO_LABELS: Record<AspectRatioKey, string> = {
-  "3:2": "3:2",
-  "1:1": "1:1",
-  "4:3": "4:3",
-  "16:9": "16:9",
-  "16:10": "16:10",
-  panavision: "2.35:1",
-  "super-panavision": "2.76:1",
-};
+import {
+  type CropEdit,
+  type PhotoEdit,
+  type ToneEdit,
+  isToneZero,
+} from "@domain/edits";
 
 interface PersistedRow {
   path: string;

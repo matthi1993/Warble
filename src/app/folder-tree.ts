@@ -1,4 +1,4 @@
-import type { Folder } from "./types";
+import type { Folder } from "@domain/folder";
 
 interface TrieNode {
   segments: string[];

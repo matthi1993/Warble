@@ -3,10 +3,15 @@ import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { Folder, Photo } from "./types";
+import type { Folder } from "@domain/folder";
+import type { Photo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides } from "./variant-store";
-import { applyRatingShortcut, loadPhotoRatings, RATING_LABEL_KEYS } from "./rating-store";
+import { RATING_LABEL_KEYS } from "@domain/rating";
+import {
+  applyRatingShortcut,
+  loadPhotoRatings,
+} from "@services/rating/rating-store";
 import {
   clearThumbnailBatch,
   dropAllThumbnailState,

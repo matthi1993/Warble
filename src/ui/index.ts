@@ -1,14 +1,11 @@
+/**
+ * UI side-effect entry. Registers globally-used Lit components and
+ * loads the design-token CSS. Imported once from `src/app/main.ts`.
+ *
+ * Components only used inside a single view (e.g. cards) register
+ * themselves via direct side-effect imports at their consumer.
+ */
 import "./styles/global.css";
-
-export * from "./icons/pf-icon";
-export * from "./controls/pf-button";
-export * from "./controls/pf-icon-button";
-export * from "./controls/pf-slider";
-export * from "./controls/pf-theme-toggle";
-export * from "./folders/pf-folder-tree-item";
-export * from "./photos/pf-thumbnail-card";
-export * from "./pf-debug-overlay";
-
 import "./icons/pf-icon";
 import "./controls/pf-button";
 import "./controls/pf-icon-button";

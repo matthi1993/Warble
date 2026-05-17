@@ -44,6 +44,10 @@ pub struct CropEdit {
 #[serde(rename_all = "camelCase")]
 pub struct ToneEdit {
     #[serde(default)]
+    pub temperature: f32,
+    #[serde(default)]
+    pub tint: f32,
+    #[serde(default)]
     pub exposure: f32,
     #[serde(default)]
     pub contrast: f32,

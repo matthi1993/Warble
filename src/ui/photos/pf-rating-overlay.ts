@@ -13,13 +13,15 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
-  getPhotoRating,
   LABEL_COLORS,
   LABEL_DISPLAY_NAMES,
+  type PhotoRating,
+} from "@domain/rating";
+import {
+  getPhotoRating,
   setPhotoStars,
   subscribePhotoRatings,
-  type PhotoRating,
-} from "../../app/rating-store";
+} from "@services/rating/rating-store";
 
 @customElement("pf-rating-overlay")
 export class PfRatingOverlay extends LitElement {

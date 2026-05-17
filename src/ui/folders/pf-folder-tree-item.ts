@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { Folder } from "../../app/types";
+import type { Folder } from "@domain/folder";
 import "../icons/pf-icon";
 
 @customElement("pf-folder-tree-item")

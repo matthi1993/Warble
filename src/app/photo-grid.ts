@@ -1,15 +1,17 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { Photo } from "./types";
+import type { Photo } from "@domain/photo";
 import {
   COLOR_LABELS,
   LABEL_COLORS,
   LABEL_DISPLAY_NAMES,
+  type ColorLabel,
+} from "@domain/rating";
+import {
   getPhotoRating,
   subscribePhotoRatings,
-  type ColorLabel,
-} from "./rating-store";
+} from "@services/rating/rating-store";
 import "../ui/photos/pf-thumbnail-card";
 import "../ui/controls/pf-slider";
 
