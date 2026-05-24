@@ -13,12 +13,15 @@ import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import "@ui/cards/pf-color-card";
 import "@ui/cards/pf-curve-card";
+import "@ui/cards/pf-sharpen-card";
 import {
   getPostProcess,
   setPostColor,
   resetPostColor,
   setPostCurve,
   resetPostCurve,
+  setPostSharpen,
+  resetPostSharpen,
   setPostProcessEnabled,
   subscribePostProcess,
   type PostProcessSettings,
@@ -29,6 +32,10 @@ import {
   type ColorEdit,
   type CurveEdit,
 } from "@domain/edits";
+import {
+  defaultSharpen,
+  type SharpenSettings,
+} from "@services/effects/effects-store";
 
 @customElement("pf-post-process-card")
 export class PfPostProcessCard extends LitElement {
@@ -103,6 +110,9 @@ export class PfPostProcessCard extends LitElement {
   @state()
   private colorOpen = true;
 
+  @state()
+  private sharpenOpen = true;
+
   private unsub: (() => void) | null = null;
 
   connectedCallback(): void {
@@ -132,6 +142,14 @@ export class PfPostProcessCard extends LitElement {
 
   private onColorReset = () => {
     resetPostColor();
+  };
+
+  private onSharpenChange = (e: CustomEvent<SharpenSettings>) => {
+    setPostSharpen(e.detail);
+  };
+
+  private onSharpenReset = () => {
+    resetPostSharpen();
   };
 
   private onToggleEnabled = () => {
@@ -174,6 +192,15 @@ export class PfPostProcessCard extends LitElement {
           @toggle=${(e: CustomEvent<{ open: boolean }>) =>
             (this.curveOpen = e.detail.open)}
         ></pf-curve-card>
+        <pf-sharpen-card
+          .title=${"Output Sharpening"}
+          ?open=${this.sharpenOpen}
+          .value=${this.settings.sharpen ?? defaultSharpen()}
+          @sharpen-change=${this.onSharpenChange}
+          @sharpen-reset=${this.onSharpenReset}
+          @toggle=${(e: CustomEvent<{ open: boolean }>) =>
+            (this.sharpenOpen = e.detail.open)}
+        ></pf-sharpen-card>
       </div>
     `;
   }

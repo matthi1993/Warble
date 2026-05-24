@@ -29,7 +29,7 @@ import {
   isColorZero,
   isCurveZero,
 } from "@domain/edits";
-import type { BloomSettings } from "@services/effects/effects-store";
+import type { BloomSettings, SharpenSettings } from "@services/effects/effects-store";
 
 export type ToneSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
@@ -191,6 +191,13 @@ export class TonePipeline {
     bloomSize: WebGLUniformLocation | null;
     bloomThreshold: WebGLUniformLocation | null;
     bloomStep: WebGLUniformLocation | null;
+    editSharpenStrength: WebGLUniformLocation | null;
+    editSharpenRadius: WebGLUniformLocation | null;
+    editSharpenThreshold: WebGLUniformLocation | null;
+    postSharpenStrength: WebGLUniformLocation | null;
+    postSharpenRadius: WebGLUniformLocation | null;
+    postSharpenThreshold: WebGLUniformLocation | null;
+    sharpenStep: WebGLUniformLocation | null;
   } = {
     temperature: null,
     tint: null,
@@ -217,6 +224,13 @@ export class TonePipeline {
     bloomSize: null,
     bloomThreshold: null,
     bloomStep: null,
+    editSharpenStrength: null,
+    editSharpenRadius: null,
+    editSharpenThreshold: null,
+    postSharpenStrength: null,
+    postSharpenRadius: null,
+    postSharpenThreshold: null,
+    sharpenStep: null,
   };
   private failed = false;
 
@@ -248,6 +262,14 @@ export class TonePipeline {
       editColor?: ColorEdit | null;
       postColor?: ColorEdit | null;
       bloom?: BloomSettings | null;
+      /** Per-photo sharpening applied AFTER the per-photo color +
+       *  curve passes but BEFORE the post-process layer, so it
+       *  acts on the photo's "as edited" state. */
+      sharpen?: SharpenSettings | null;
+      /** Global sharpening applied as the very last pass, after
+       *  post color + post curve. Conceptually the "output
+       *  sharpening" stage. */
+      postSharpen?: SharpenSettings | null;
     } = {}
   ): HTMLCanvasElement | null {
     if (this.failed) return null;
@@ -324,6 +346,43 @@ export class TonePipeline {
       this.uniforms.bloomStep,
       bloomStrength > 0 ? sw / outW : 0,
       bloomStrength > 0 ? sh / outH : 0
+    );
+    const editSharpen = opts.sharpen;
+    const postSharpen = opts.postSharpen;
+    const editSharpenActive = !!editSharpen && editSharpen.strength > 0;
+    const postSharpenActive = !!postSharpen && postSharpen.strength > 0;
+    gl.uniform1f(
+      this.uniforms.editSharpenStrength,
+      editSharpenActive ? editSharpen!.strength : 0
+    );
+    gl.uniform1f(
+      this.uniforms.editSharpenRadius,
+      editSharpenActive ? Math.max(editSharpen!.radius, 0.3) : 1
+    );
+    gl.uniform1f(
+      this.uniforms.editSharpenThreshold,
+      editSharpenActive ? editSharpen!.threshold : 0
+    );
+    gl.uniform1f(
+      this.uniforms.postSharpenStrength,
+      postSharpenActive ? postSharpen!.strength : 0
+    );
+    gl.uniform1f(
+      this.uniforms.postSharpenRadius,
+      postSharpenActive ? Math.max(postSharpen!.radius, 0.3) : 1
+    );
+    gl.uniform1f(
+      this.uniforms.postSharpenThreshold,
+      postSharpenActive ? postSharpen!.threshold : 0
+    );
+    // Step in source-UV per *screen* pixel — same units as bloom.
+    // The shader multiplies by `radius` to convert into the blur
+    // kernel's offsets so a radius=1 setting always spans roughly
+    // one source pixel on screen regardless of zoom.
+    gl.uniform2f(
+      this.uniforms.sharpenStep,
+      editSharpenActive || postSharpenActive ? sw / outW : 0,
+      editSharpenActive || postSharpenActive ? sh / outH : 0
     );
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -484,10 +543,54 @@ export class TonePipeline {
       uniform float u_bloomSize;
       uniform float u_bloomThreshold;
       uniform vec2  u_bloomStep;
+      uniform float u_editSharpenStrength;
+      uniform float u_editSharpenRadius;
+      uniform float u_editSharpenThreshold;
+      uniform float u_postSharpenStrength;
+      uniform float u_postSharpenRadius;
+      uniform float u_postSharpenThreshold;
+      uniform vec2  u_sharpenStep;
       in vec2 v_uv;
       out vec4 outColor;
 
       const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+      // Unsharp-mask high-pass: compares the source pixel against
+      // a blurred neighbourhood of itself, gates the difference by
+      // a luma-threshold (so flat areas / noise don't get
+      // amplified), and returns the signed detail vector to ADD
+      // back to the colour-graded output.
+      //
+      // We sample the source via textureLod() at lod = log2(radius)
+      // so the "blur" is the GPU's pre-averaged mip — way cheaper
+      // than a multi-tap Gaussian and visually equivalent at the
+      // small radii sharpening uses. Combined with a 4-tap diagonal
+      // ring sampled at the same lod, we get a smooth halo without
+      // visible kernel grid artefacts.
+      vec3 unsharpDetail(float radius, float threshold) {
+        vec3 src = texture(u_tex, v_uv).rgb;
+        float lod = max(log2(max(radius, 0.5)) + 0.5, 0.0);
+        vec2 r = u_sharpenStep * radius;
+        vec3 blurred =
+            textureLod(u_tex, v_uv, lod).rgb * 0.5
+          + textureLod(u_tex, v_uv + vec2( r.x,  r.y), lod).rgb * 0.125
+          + textureLod(u_tex, v_uv + vec2(-r.x,  r.y), lod).rgb * 0.125
+          + textureLod(u_tex, v_uv + vec2( r.x, -r.y), lod).rgb * 0.125
+          + textureLod(u_tex, v_uv + vec2(-r.x, -r.y), lod).rgb * 0.125;
+        vec3 detail = src - blurred;
+        // Threshold gate on luma magnitude. 'threshold' is the
+        // 0..50 slider value (interpreted as 0..50 in an 0–255
+        // luminance scale, so divide by 255 to bring into the
+        // shader's 0..1 space). Below the threshold we attenuate
+        // to zero with a soft knee; above it we pass through 1:1.
+        float lumDelta = abs(dot(detail, LUMA));
+        float thr = threshold / 255.0;
+        float gate = smoothstep(thr * 0.5, thr + 1e-4, lumDelta);
+        // When threshold is 0 the smoothstep collapses to 1 for
+        // any non-zero delta, which is what we want.
+        if (threshold <= 0.0) gate = 1.0;
+        return detail * gate;
+      }
 
       // Apply a packed 256x2 RGBA LUT (per-channel R/G/B in row 0
       // RGB, combined RGB curve in row 0 A, luma curve in row 1 R).
@@ -747,6 +850,20 @@ export class TonePipeline {
           col = applyCurveLut(col, u_editLut);
         }
 
+        // Per-photo sharpening — capture detail from the source
+        // texture and add it back to the colour-graded result.
+        // Computed in source space (independent of tone math) so
+        // sliders behave consistently regardless of exposure /
+        // contrast. The 0.01 factor maps slider=100 to a 1:1
+        // unsharp-mask add, slider=200 to a 2:1 over-sharpen.
+        if (u_editSharpenStrength > 0.0) {
+          vec3 detail = unsharpDetail(
+            u_editSharpenRadius,
+            u_editSharpenThreshold
+          );
+          col += detail * (u_editSharpenStrength * 0.01);
+        }
+
         // ===== POST-PROCESS PASS =====================================
         // Same as the edit pass: colour first, then curve.
         if (u_postColorEnabled == 1) {
@@ -754,6 +871,16 @@ export class TonePipeline {
         }
         if (u_postLutEnabled == 1) {
           col = applyCurveLut(col, u_postLut);
+        }
+
+        // Global "output" sharpening — applied as the very last
+        // pass so it works on top of any look the user dialled in.
+        if (u_postSharpenStrength > 0.0) {
+          vec3 detail = unsharpDetail(
+            u_postSharpenRadius,
+            u_postSharpenThreshold
+          );
+          col += detail * (u_postSharpenStrength * 0.01);
         }
 
         outColor = vec4(clamp(col, 0.0, 1.0), src.a);
@@ -830,6 +957,31 @@ export class TonePipeline {
       "u_bloomThreshold"
     );
     this.uniforms.bloomStep = gl.getUniformLocation(program, "u_bloomStep");
+    this.uniforms.editSharpenStrength = gl.getUniformLocation(
+      program,
+      "u_editSharpenStrength"
+    );
+    this.uniforms.editSharpenRadius = gl.getUniformLocation(
+      program,
+      "u_editSharpenRadius"
+    );
+    this.uniforms.editSharpenThreshold = gl.getUniformLocation(
+      program,
+      "u_editSharpenThreshold"
+    );
+    this.uniforms.postSharpenStrength = gl.getUniformLocation(
+      program,
+      "u_postSharpenStrength"
+    );
+    this.uniforms.postSharpenRadius = gl.getUniformLocation(
+      program,
+      "u_postSharpenRadius"
+    );
+    this.uniforms.postSharpenThreshold = gl.getUniformLocation(
+      program,
+      "u_postSharpenThreshold"
+    );
+    this.uniforms.sharpenStep = gl.getUniformLocation(program, "u_sharpenStep");
 
     // Wire the source sampler to texture unit 0 once and for all.
     const uTex = gl.getUniformLocation(program, "u_tex");

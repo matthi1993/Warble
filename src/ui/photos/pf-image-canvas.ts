@@ -49,9 +49,13 @@ import {
 } from "@services/post-process/post-process-store";
 import {
   getPhotoBloom,
+  getPhotoSharpen,
+  defaultSharpenForFormat,
   subscribePhotoEffects,
   type BloomSettings,
+  type SharpenSettings,
 } from "@services/effects/effects-store";
+import { classifyFormat } from "@domain/photo";
 // Side-effect import: wires the worker-backed decoder into both
 // image caches and exports `decodeBase64Jpeg` for thumbnail decoding.
 import { decodeBase64Jpeg } from "./canvas/decoder-bootstrap";
@@ -318,6 +322,12 @@ export class PfImageCanvas extends LitElement {
   /** Saved (persisted) per-photo bloom effect. */
   @state()
   private savedBloom: BloomSettings | null = null;
+  /** Effective per-photo sharpening — either the explicitly stored
+   *  value (which may have strength=0 if the user disabled the
+   *  format default) or the format default (some for RAW, none for
+   *  JPG). Never null while {@link path} is set. */
+  @state()
+  private savedSharpen: SharpenSettings | null = null;
   private editsUnsubscribe: (() => void) | null = null;
   private postProcessUnsubscribe: (() => void) | null = null;
   private effectsUnsubscribe: (() => void) | null = null;
@@ -435,9 +445,14 @@ export class PfImageCanvas extends LitElement {
   private refreshSavedEffects() {
     if (!this.path) {
       this.savedBloom = null;
+      this.savedSharpen = null;
       return;
     }
     this.savedBloom = getPhotoBloom(this.path);
+    const ext = this.path.split(".").pop() ?? "";
+    const fmt = classifyFormat(ext);
+    this.savedSharpen =
+      getPhotoSharpen(this.path) ?? defaultSharpenForFormat(fmt);
   }
 
   /**
@@ -1163,6 +1178,9 @@ export class PfImageCanvas extends LitElement {
         !!this.savedColor && !isColorZero(this.savedColor);
       const bloomActive =
         !!this.savedBloom && this.savedBloom.strength > 0;
+      const sharpenActive =
+        !!this.savedSharpen && this.savedSharpen.strength > 0;
+      const postSharpenActive = ppEnabled && pp.sharpen.strength > 0;
       const applyPipeline =
         !this.previewOriginal &&
         (!isToneZero(this.savedTone) ||
@@ -1170,7 +1188,9 @@ export class PfImageCanvas extends LitElement {
           editColorActive ||
           postCurveActive ||
           postColorActive ||
-          bloomActive);
+          bloomActive ||
+          sharpenActive ||
+          postSharpenActive);
       if (applyPipeline) {
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
@@ -1207,6 +1227,8 @@ export class PfImageCanvas extends LitElement {
               editColor: editColorActive ? this.savedColor : null,
               postColor: postColorActive ? pp.color : null,
               bloom: bloomActive ? this.savedBloom : null,
+              sharpen: sharpenActive ? this.savedSharpen : null,
+              postSharpen: postSharpenActive ? pp.sharpen : null,
             }
           );
           if (toned) {

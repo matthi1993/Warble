@@ -71,6 +71,7 @@ import { ToneTool } from "./views/full-view/tools/tone-tool";
 import { CurveTool } from "./views/full-view/tools/curve-tool";
 import { ColorTool } from "./views/full-view/tools/color-tool";
 import { BloomTool } from "./views/full-view/tools/bloom-tool";
+import { SharpenTool } from "./views/full-view/tools/sharpen-tool";
 import {
   currentSelection,
   isEditableSelection,
@@ -164,12 +165,14 @@ export class PfFullView extends LitElement {
   private colorTool = new ColorTool();
   private curveTool = new CurveTool();
   private bloomTool = new BloomTool();
+  private sharpenTool = new SharpenTool();
   private tools: EditTool[] = [
     this.cropTool,
     this.toneTool,
     this.colorTool,
     this.curveTool,
     this.bloomTool,
+    this.sharpenTool,
   ];
   /** Tools rendered under the "Edit" tab in the side panel. */
   private editTabTools: EditTool[] = [
@@ -177,9 +180,10 @@ export class PfFullView extends LitElement {
     this.toneTool,
     this.colorTool,
     this.curveTool,
+    this.sharpenTool,
   ];
   /** Tools rendered under the "Effects" tab. */
-  private effectsTabTools: EditTool[] = [this.bloomTool];
+  private effectsTabTools: EditTool[] = [this.bloomTool, this.sharpenTool];
   /** The tool currently in foreground/interactive mode. Crop is the
    *  only one that takes over the canvas; tone runs passively. */
   @state()

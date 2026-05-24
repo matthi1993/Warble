@@ -19,6 +19,10 @@ import {
   type ColorEdit,
   type CurveEdit,
 } from "@domain/edits";
+import {
+  defaultSharpen,
+  type SharpenSettings,
+} from "@services/effects/effects-store";
 
 export interface PostProcessSettings {
   /** Master switch. When false, the canvas skips the post pipeline
@@ -28,6 +32,10 @@ export interface PostProcessSettings {
   enabled: boolean;
   color: ColorEdit;
   curve: CurveEdit;
+  /** Global sharpening pass applied AFTER per-photo edits and the
+   *  post color + curve. Defaults to zero strength so existing
+   *  installs upgrade silently. */
+  sharpen: SharpenSettings;
 }
 
 const STORAGE_KEY = "warble.postProcess.v3";
@@ -37,6 +45,7 @@ function defaultSettings(): PostProcessSettings {
     enabled: true,
     color: defaultColor(),
     curve: defaultCurve(),
+    sharpen: defaultSharpen(),
   };
 }
 
@@ -50,6 +59,9 @@ function load(): PostProcessSettings {
       enabled: parsed.enabled ?? true,
       color: parsed.color ?? defaultColor(),
       curve: parsed.curve ?? defaultCurve(),
+      sharpen: parsed.sharpen
+        ? { ...defaultSharpen(), ...parsed.sharpen }
+        : defaultSharpen(),
     };
   } catch (err) {
     console.warn("post-process: invalid persisted settings, resetting", err);
@@ -90,6 +102,18 @@ export function setPostColor(color: ColorEdit): void {
 
 export function setPostCurve(curve: CurveEdit): void {
   current = { ...current, curve };
+  save(current);
+  notify();
+}
+
+export function setPostSharpen(sharpen: SharpenSettings): void {
+  current = { ...current, sharpen };
+  save(current);
+  notify();
+}
+
+export function resetPostSharpen(): void {
+  current = { ...current, sharpen: defaultSharpen() };
   save(current);
   notify();
 }
