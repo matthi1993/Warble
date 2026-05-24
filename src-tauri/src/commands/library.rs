@@ -55,8 +55,9 @@ pub fn refresh_imported_folders(state: State<'_, AppState>) -> Result<Vec<Folder
 #[tauri::command]
 pub fn get_photos_in_folder(
     folder_path: String,
+    recursive: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<Photo>, String> {
     let catalog = state.catalog.lock().map_err(|e| e.to_string())?;
-    Ok(catalog.photos_in_folder(Path::new(&folder_path)))
+    Ok(catalog.photos_in_folder_filtered(Path::new(&folder_path), recursive.unwrap_or(false)))
 }

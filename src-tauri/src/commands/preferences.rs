@@ -113,6 +113,10 @@ pub struct AppView {
     /// Whether the right-side edit panel is expanded in windowed mode.
     #[serde(default)]
     pub edit_panel_open: Option<bool>,
+    /// Whether photo listings should include all subfolders of the
+    /// selected folder.
+    #[serde(default)]
+    pub include_subfolders: Option<bool>,
 }
 
 #[tauri::command]

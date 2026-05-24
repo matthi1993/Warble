@@ -45,10 +45,25 @@ impl LibraryCatalog {
     /// Return all photos directly inside `folder`, with sidecar files
     /// (same stem, different extension) merged into a single entry.
     pub fn photos_in_folder(&self, folder: &Path) -> Vec<Photo> {
+        self.photos_in_folder_filtered(folder, false)
+    }
+
+    /// Like `photos_in_folder` but also includes photos in any nested
+    /// subfolder when `recursive` is true.
+    pub fn photos_in_folder_filtered(&self, folder: &Path, recursive: bool) -> Vec<Photo> {
         let mut groups: HashMap<String, Vec<&Photo>> = HashMap::new();
         for photo in self.photos.values() {
             let entry_path = Path::new(&photo.path);
-            if entry_path.parent() != Some(folder) {
+            let parent = match entry_path.parent() {
+                Some(p) => p,
+                None => continue,
+            };
+            let in_scope = if recursive {
+                parent == folder || parent.starts_with(folder)
+            } else {
+                parent == folder
+            };
+            if !in_scope {
                 continue;
             }
             let stem = entry_path
@@ -56,11 +71,14 @@ impl LibraryCatalog {
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
             let (base_stem, _variant) = parse_variant(stem);
-            let key = if base_stem.is_empty() {
+            let stem_key = if base_stem.is_empty() {
                 photo.filename.to_ascii_lowercase()
             } else {
                 base_stem.to_ascii_lowercase()
             };
+            // Scope the sidecar group key by parent path so identically-named
+            // files in different subfolders don't collapse into one entry.
+            let key = format!("{}|{}", parent.to_string_lossy(), stem_key);
             groups.entry(key).or_default().push(photo);
         }
 

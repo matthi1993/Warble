@@ -91,6 +91,11 @@ export class WarbleApp extends LitElement {
       padding: var(--pf-space-3);
       border-bottom: 1px solid var(--pf-border);
       display: flex;
+      flex-direction: column;
+      gap: var(--pf-space-2);
+    }
+    .sidebar-header-row {
+      display: flex;
       align-items: center;
       gap: var(--pf-space-2);
     }
@@ -103,6 +108,21 @@ export class WarbleApp extends LitElement {
       align-items: center;
       gap: var(--pf-space-1);
       flex: 0 0 auto;
+    }
+    .subfolder-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 0;
+    }
+    .subfolder-toggle input {
+      margin: 0;
+      accent-color: var(--pf-accent);
+      cursor: pointer;
     }
     .tree {
       flex: 1;
@@ -192,6 +212,51 @@ export class WarbleApp extends LitElement {
       inset: 0;
       z-index: 1000;
     }
+    /* Hover hotzone + overlay used to reveal the folder sidebar on top
+       of the OS-fullscreen full view (which otherwise covers the
+       grid layout entirely). */
+    .sidebar-hover-hotzone {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 8px;
+      height: 100vh;
+      z-index: 1002;
+    }
+    .sidebar-hover-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 100vh;
+      display: flex;
+      z-index: 1003;
+      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.4);
+    }
+    .sidebar-hover-overlay .sidebar-rail {
+      width: 32px;
+      flex: 0 0 32px;
+      border-right: 1px solid var(--pf-border);
+      background: var(--pf-surface);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: var(--pf-space-2);
+      box-sizing: border-box;
+    }
+    .sidebar-hover-overlay aside.sidebar {
+      width: 228px;
+      flex: 0 0 228px;
+      border-right: 1px solid var(--pf-border);
+      background: var(--pf-surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-hover-overlay .tree {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--pf-space-2);
+    }
     .ctx-menu {
       position: fixed;
       min-width: 180px;
@@ -243,6 +308,17 @@ export class WarbleApp extends LitElement {
 
   @state()
   private sidebarCollapsed = false;
+
+  /** When the full view is open and the sidebar is hidden (either via
+   * collapse or because OS fullscreen is active), hovering the left
+   * edge reveals the sidebar as an overlay. */
+  @state()
+  private sidebarHoverReveal = false;
+
+  /** Whether photo listings should recurse into all subfolders of the
+   * currently selected folder. Persisted via `set_app_view`. */
+  @state()
+  private includeSubfolders = false;
 
   /** Whether the right-side edit panel is expanded in windowed mode.
    * Mirrors `pf-full-view`'s `editPanelOpenWindowed` and is persisted
@@ -349,6 +425,7 @@ export class WarbleApp extends LitElement {
         view?: string | null;
         sidebarCollapsed?: boolean | null;
         editPanelOpen?: boolean | null;
+        includeSubfolders?: boolean | null;
       } | null>("get_app_view");
       if (persisted) {
         if (typeof persisted.sidebarCollapsed === "boolean") {
@@ -356,6 +433,22 @@ export class WarbleApp extends LitElement {
         }
         if (typeof persisted.editPanelOpen === "boolean") {
           this.editPanelOpen = persisted.editPanelOpen;
+        }
+        if (typeof persisted.includeSubfolders === "boolean") {
+          this.includeSubfolders = persisted.includeSubfolders;
+          if (this.includeSubfolders && this.selectedFolderId) {
+            // Re-fetch with the restored recursive flag so the grid
+            // matches the persisted toggle state.
+            try {
+              this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+                folderPath: this.selectedFolderId,
+                recursive: true,
+              });
+              startThumbnailBatch(this.photos.map((p) => p.path));
+            } catch (err) {
+              console.error("Failed to refresh photos with subfolders", err);
+            }
+          }
         }
         if (persisted.path) {
           const idx = this.photos.findIndex((p) => p.path === persisted.path);
@@ -604,6 +697,7 @@ export class WarbleApp extends LitElement {
         const path = this.selectedFolderId;
         this.photos = await invoke<Photo[]>("get_photos_in_folder", {
           folderPath: path,
+          recursive: this.includeSubfolders,
         });
         startThumbnailBatch(this.photos.map((p) => p.path));
       } catch (err) {
@@ -625,6 +719,7 @@ export class WarbleApp extends LitElement {
     this.selectedFolderName = name;
     this.photos = await invoke<Photo[]>("get_photos_in_folder", {
       folderPath: path,
+      recursive: this.includeSubfolders,
     });
     this.selectedPhoto = null;
     // Cancel any in-flight HD prewarm for the previous folder so its
@@ -702,6 +797,36 @@ export class WarbleApp extends LitElement {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
 
+  private toggleIncludeSubfolders = async () => {
+    this.includeSubfolders = !this.includeSubfolders;
+    if (this.selectedFolderId) {
+      try {
+        this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+          folderPath: this.selectedFolderId,
+          recursive: this.includeSubfolders,
+        });
+        // Reset selection + restart background work so progress
+        // matches the new photo set.
+        this.selectedPhoto = null;
+        this.fullViewIndex = null;
+        this.hdPrewarmHandle?.cancel();
+        this.hdPrewarmHandle = null;
+        this.hdPrewarmedBatchId = 0;
+        startThumbnailBatch(this.photos.map((p) => p.path));
+      } catch (err) {
+        console.error("Failed to toggle subfolder inclusion", err);
+      }
+    }
+  };
+
+  private onLeftHotzoneEnter = () => {
+    this.sidebarHoverReveal = true;
+  };
+
+  private onSidebarOverlayLeave = () => {
+    this.sidebarHoverReveal = false;
+  };
+
   updated(changed: Map<string, unknown>): void {
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
@@ -717,9 +842,13 @@ export class WarbleApp extends LitElement {
       (changed.has("selectedPhoto") ||
         changed.has("fullViewIndex") ||
         changed.has("sidebarCollapsed") ||
-        changed.has("editPanelOpen"))
+        changed.has("editPanelOpen") ||
+        changed.has("includeSubfolders"))
     ) {
       void this.persistAppView();
+    }
+    if (changed.has("fullViewIndex") && this.fullViewIndex === null) {
+      this.sidebarHoverReveal = false;
     }
   }
 
@@ -731,6 +860,7 @@ export class WarbleApp extends LitElement {
           view: this.fullViewIndex !== null ? "full" : "grid",
           sidebarCollapsed: this.sidebarCollapsed,
           editPanelOpen: this.editPanelOpen,
+          includeSubfolders: this.includeSubfolders,
         },
       });
     } catch (err) {
@@ -750,18 +880,28 @@ export class WarbleApp extends LitElement {
 
       <aside class="sidebar">
         <div class="sidebar-header">
-          <pf-button variant="primary" @click=${() => this.importFolder()}>
-            <pf-icon name="folder-plus"></pf-icon>
-            Add Folders
-          </pf-button>
-          <span class="header-actions">
-            <pf-icon-button
-              icon="refresh"
-              label="Refresh folders"
-              @click=${() => this.refreshFolders()}
-            ></pf-icon-button>
-            <pf-theme-toggle></pf-theme-toggle>
-          </span>
+          <div class="sidebar-header-row">
+            <pf-button variant="primary" @click=${() => this.importFolder()}>
+              <pf-icon name="folder-plus"></pf-icon>
+              Add Folders
+            </pf-button>
+            <span class="header-actions">
+              <pf-icon-button
+                icon="refresh"
+                label="Refresh folders"
+                @click=${() => this.refreshFolders()}
+              ></pf-icon-button>
+              <pf-theme-toggle></pf-theme-toggle>
+            </span>
+          </div>
+          <label class="subfolder-toggle" title="Show photos from all nested subfolders of the selected folder">
+            <input
+              type="checkbox"
+              .checked=${this.includeSubfolders}
+              @change=${this.toggleIncludeSubfolders}
+            />
+            Include subfolders
+          </label>
         </div>
         <div class="tree" @folder-select=${this.onFolderSelect}>
           ${this.folders.length === 0
@@ -821,6 +961,50 @@ export class WarbleApp extends LitElement {
             @edit-panel-open-changed=${this.onEditPanelOpenChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
+        : null}
+
+      ${this.fullViewIndex !== null && this.windowFullscreen
+        ? html`<div
+              class="sidebar-hover-hotzone"
+              @mouseenter=${this.onLeftHotzoneEnter}
+            ></div>
+            ${this.sidebarHoverReveal
+              ? html`<div
+                  class="sidebar-hover-overlay"
+                  @mouseleave=${this.onSidebarOverlayLeave}
+                >
+                  <div class="sidebar-rail">
+                    <pf-icon-button
+                      icon=${this.sidebarCollapsed
+                        ? "panel-left-open"
+                        : "panel-left-close"}
+                      label=${this.sidebarCollapsed
+                        ? "Show sidebar"
+                        : "Hide sidebar"}
+                      @click=${this.toggleSidebar}
+                    ></pf-icon-button>
+                  </div>
+                  ${this.sidebarCollapsed
+                    ? null
+                    : html`<aside class="sidebar">
+                        <div class="tree" @folder-select=${this.onFolderSelect}>
+                          ${this.folders.length === 0
+                            ? html`<div class="empty">
+                                No folders imported yet.
+                              </div>`
+                            : this.folders.map(
+                                (f) => html`
+                                  <pf-folder-tree-item
+                                    .folder=${f}
+                                    is-root
+                                    selected-id=${this.selectedFolderId ?? ""}
+                                  ></pf-folder-tree-item>
+                                `
+                              )}
+                        </div>
+                      </aside>`}
+                </div>`
+              : null}`
         : null}
 
       ${this.renderFooter()}
