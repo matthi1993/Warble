@@ -20,9 +20,15 @@
  * upload is the expensive part). Re-rendering with new tone uniforms
  * is essentially free.
  */
-import type { CurveEdit, ToneEdit } from "@domain/edits";
-import { buildCurveLutTextureData, isCurveZero } from "@domain/edits";
-import type { GrainSettings } from "@services/post-process/post-process-store";
+import type { ColorEdit, CurveEdit, ToneEdit } from "@domain/edits";
+import {
+  buildCurveLutTextureData,
+  COLOR_CHANNELS,
+  COLOR_CHANNEL_HUES,
+  defaultColor,
+  isColorZero,
+  isCurveZero,
+} from "@domain/edits";
 import type { BloomSettings } from "@services/effects/effects-store";
 
 export type ToneSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
@@ -108,6 +114,42 @@ function toneCoefficients(t: ToneEdit): {
   };
 }
 
+/** Pack a {@link ColorEdit} into the shader uniform layout:
+ *    channels[8] = (hue/100, sat/100, val/100) per channel
+ *    global       = (hue/100, sat/100, val/100)
+ *  The shader does the rest (per-hue weight blending + wrap).
+ *
+ *  Channel order MUST match `COLOR_CHANNELS` in `@domain/edits` and
+ *  the centre table in the fragment shader (`applyColor`).
+ */
+function uploadColorUniforms(
+  gl: WebGL2RenderingContext,
+  channelsLoc: WebGLUniformLocation | null,
+  globalLoc: WebGLUniformLocation | null,
+  color: ColorEdit
+): void {
+  if (channelsLoc) {
+    const buf = new Float32Array(8 * 3);
+    for (let i = 0; i < COLOR_CHANNELS.length; i++) {
+      const key = COLOR_CHANNELS[i];
+      const ch = color.channels[key];
+      buf[i * 3 + 0] = ch.hue / 100;
+      buf[i * 3 + 1] = ch.saturation / 100;
+      buf[i * 3 + 2] = ch.luminance / 100;
+    }
+    gl.uniform3fv(channelsLoc, buf);
+    void COLOR_CHANNEL_HUES; // referenced only for table parity
+  }
+  if (globalLoc) {
+    gl.uniform3f(
+      globalLoc,
+      color.hue / 100,
+      color.saturation / 100,
+      color.luminance / 100
+    );
+  }
+}
+
 export class TonePipeline {
   readonly canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext | null = null;
@@ -139,9 +181,12 @@ export class TonePipeline {
     editLutEnabled: WebGLUniformLocation | null;
     postLut: WebGLUniformLocation | null;
     postLutEnabled: WebGLUniformLocation | null;
-    grainSize: WebGLUniformLocation | null;
-    grainSeed: WebGLUniformLocation | null;
-    grainAmount: WebGLUniformLocation | null;
+    editColorEnabled: WebGLUniformLocation | null;
+    editColorChannels: WebGLUniformLocation | null;
+    editColorGlobal: WebGLUniformLocation | null;
+    postColorEnabled: WebGLUniformLocation | null;
+    postColorChannels: WebGLUniformLocation | null;
+    postColorGlobal: WebGLUniformLocation | null;
     bloomStrength: WebGLUniformLocation | null;
     bloomSize: WebGLUniformLocation | null;
     bloomThreshold: WebGLUniformLocation | null;
@@ -162,9 +207,12 @@ export class TonePipeline {
     editLutEnabled: null,
     postLut: null,
     postLutEnabled: null,
-    grainSize: null,
-    grainSeed: null,
-    grainAmount: null,
+    editColorEnabled: null,
+    editColorChannels: null,
+    editColorGlobal: null,
+    postColorEnabled: null,
+    postColorChannels: null,
+    postColorGlobal: null,
     bloomStrength: null,
     bloomSize: null,
     bloomThreshold: null,
@@ -182,9 +230,11 @@ export class TonePipeline {
    * Returns `null` if WebGL initialisation failed.
    *
    * `opts.curve` is the per-photo tone curve (applied right after
-   * the tone math); `opts.postCurve` and `opts.grain` are the global
-   * post-process effects (applied at the very end of the chain).
-   * Pass `null` (or omit) for any effect that should be bypassed.
+   * the tone math); `opts.postCurve` is the global post-process
+   * curve (applied at the end of the chain). `opts.editColor` and
+   * `opts.postColor` apply per-hue HSL adjustments before each
+   * curve. Pass `null` (or omit) for any effect that should be
+   * bypassed.
    */
   render(
     bm: ToneSource,
@@ -195,7 +245,8 @@ export class TonePipeline {
     opts: {
       curve?: CurveEdit | null;
       postCurve?: CurveEdit | null;
-      grain?: GrainSettings | null;
+      editColor?: ColorEdit | null;
+      postColor?: ColorEdit | null;
       bloom?: BloomSettings | null;
     } = {}
   ): HTMLCanvasElement | null {
@@ -241,16 +292,24 @@ export class TonePipeline {
     gl.uniform2f(this.uniforms.srcScale, sw, sh);
     gl.uniform1i(this.uniforms.editLutEnabled, editCurveActive ? 1 : 0);
     gl.uniform1i(this.uniforms.postLutEnabled, postCurveActive ? 1 : 0);
-    const grain = opts.grain;
-    // `amount` is the master grain knob (0 disables grain entirely).
-    // `size` clamps to a small floor so the shader never divides by
-    // zero.
-    gl.uniform1f(
-      this.uniforms.grainSize,
-      grain ? Math.max(0.1, grain.size) : 1
+    const editColor = opts.editColor ?? null;
+    const postColor = opts.postColor ?? null;
+    const editColorActive = !!editColor && !isColorZero(editColor);
+    const postColorActive = !!postColor && !isColorZero(postColor);
+    gl.uniform1i(this.uniforms.editColorEnabled, editColorActive ? 1 : 0);
+    gl.uniform1i(this.uniforms.postColorEnabled, postColorActive ? 1 : 0);
+    uploadColorUniforms(
+      gl,
+      this.uniforms.editColorChannels,
+      this.uniforms.editColorGlobal,
+      editColor ?? defaultColor()
     );
-    gl.uniform1f(this.uniforms.grainSeed, grain ? grain.seed : 0);
-    gl.uniform1f(this.uniforms.grainAmount, grain ? grain.amount : 0);
+    uploadColorUniforms(
+      gl,
+      this.uniforms.postColorChannels,
+      this.uniforms.postColorGlobal,
+      postColor ?? defaultColor()
+    );
     const bloom = opts.bloom;
     const bloomStrength = bloom ? bloom.strength : 0;
     gl.uniform1f(this.uniforms.bloomStrength, bloomStrength);
@@ -415,9 +474,12 @@ export class TonePipeline {
       uniform float u_shadows;
       uniform float u_highlights;
       uniform float u_whites;
-      uniform float u_grainSize;
-      uniform float u_grainSeed;
-      uniform float u_grainAmount;
+      uniform int   u_editColorEnabled;
+      uniform vec3  u_editColorChannels[8];
+      uniform vec3  u_editColorGlobal;
+      uniform int   u_postColorEnabled;
+      uniform vec3  u_postColorChannels[8];
+      uniform vec3  u_postColorGlobal;
       uniform float u_bloomStrength;
       uniform float u_bloomSize;
       uniform float u_bloomThreshold;
@@ -463,110 +525,74 @@ export class TonePipeline {
         return rgbBefore + vec3(lNew - L);
       }
 
-      // ===== Film-scan noise primitives =================================
-      // Three-arg IQ-style hash. Stable across drivers, returns [0,1).
-      float hash13(vec3 p) {
-        p = fract(p * vec3(123.34, 345.45, 567.56));
-        p += dot(p, p.yzx + 34.345);
-        return fract(p.x * p.y * p.z);
+      // ===== HSV helpers for the per-hue color pass =====================
+      // Branch-free rgb<->hsv conversion (Sam Hocevar).
+      vec3 rgb2hsv(vec3 c) {
+        vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+        float d = q.x - min(q.w, q.y);
+        float e = 1.0e-10;
+        return vec3(
+          abs(q.z + (q.w - q.y) / (6.0 * d + e)),
+          d / (q.x + e),
+          q.x
+        );
+      }
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
       }
 
-      // 2D smooth value noise: bilinear hash interpolation with the
-      // classic cubic falloff. The z arg decorrelates octaves and
-      // channels. Used for dust / scratch fields (where axis-aligned
-      // grid artefacts don't matter — the cells ARE the features).
-      float vnoise(vec2 p, float z) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        float a = hash13(vec3(i, z));
-        float b = hash13(vec3(i + vec2(1.0, 0.0), z));
-        float c = hash13(vec3(i + vec2(0.0, 1.0), z));
-        float d = hash13(vec3(i + vec2(1.0, 1.0), z));
-        vec2 u = f * f * (3.0 - 2.0 * f);
-        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-      }
+      // Per-hue HSV adjustments with smooth gaussian-style weights
+      // across the 8 channels. Each channel.xyz packs (hue, sat, val)
+      // shifts in normalized units (slider/100 ∈ [-1, 1]).
+      //  - hue shift:        ±30° per unit, hue-axis wraps
+      //  - saturation shift: multiplicative, clamped to [0, 2]
+      //  - value shift:      multiplicative, clamped to [0, 2]
+      // Weights are normalized so they sum to 1 at every hue, which
+      // means a flat global shift (no per-channel changes) behaves
+      // identically across the spectrum.
+      const float COLOR_SIGMA = 0.083; // ~30° in normalized hue
+      vec3 applyColor(vec3 rgb, vec3 channels[8], vec3 globalShift) {
+        // Centres in normalized hue [0, 1).
+        // red, orange, yellow, green, aqua, blue, purple, magenta
+        float centres[8];
+        centres[0] = 0.0;
+        centres[1] = 30.0/360.0;
+        centres[2] = 60.0/360.0;
+        centres[3] = 120.0/360.0;
+        centres[4] = 180.0/360.0;
+        centres[5] = 240.0/360.0;
+        centres[6] = 270.0/360.0;
+        centres[7] = 330.0/360.0;
 
-      // Random unit-ish gradient vector at integer lattice point p.
-      // Decorrelated per-z so octaves don't lock together.
-      vec2 hash22(vec2 p, float z) {
-        float a = hash13(vec3(p,           z));
-        float b = hash13(vec3(p + 19.19,   z + 7.0));
-        return vec2(a, b) * 2.0 - 1.0;
-      }
+        vec3 hsv = rgb2hsv(max(rgb, vec3(0.0)));
+        float h = hsv.x;
+        float s = hsv.y;
+        float v = hsv.z;
 
-      // Gradient (Perlin-style) noise. Unlike value noise this has
-      // its zeros at the grid points (not its extrema), so the
-      // axis-aligned grid is invisible — exactly the property we
-      // need to avoid the "fine repeating grid" artefact that value
-      // noise produces when sampled near pixel density. Output is
-      // roughly in [-0.7, 0.7].
-      float gnoise(vec2 p, float z) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        vec2 u = f * f * (3.0 - 2.0 * f);
-        float a = dot(hash22(i,                 z), f);
-        float b = dot(hash22(i + vec2(1.0, 0.0), z), f - vec2(1.0, 0.0));
-        float c = dot(hash22(i + vec2(0.0, 1.0), z), f - vec2(0.0, 1.0));
-        float d = dot(hash22(i + vec2(1.0, 1.0), z), f - vec2(1.0, 1.0));
-        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-      }
-
-      // Multi-octave grain. Each octave samples through a different
-      // rotation matrix so the lattice grids of successive octaves
-      // don't line up — eliminates any residual axis-aligned moiré
-      // even at coarse sampling rates. Approximately gaussian by
-      // central-limit (sum of decorrelated noises), which is the
-      // distribution real photographic grain follows.
-      //
-      // We also fold in a layer of cellular (Worley) noise so the
-      // grain has irregular clumps of varying sizes — much closer
-      // to the look of real silver-halide crystals than pure
-      // gradient noise, which always reads as a fine evenly-spaced
-      // grid no matter how many octaves you stack.
-      //
-      // Cellular noise: for each pixel, find the distance to the
-      // nearest jittered feature point inside a 3×3 cell
-      // neighbourhood. Two distances (F1, F2) are kept so the
-      // difference F2-F1 traces the crystal boundaries — sharp
-      // edges instead of soft blobs.
-      vec2 cellularF1F2(vec2 p, float z) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        float f1 = 8.0;
-        float f2 = 8.0;
-        for (int y = -1; y <= 1; y++) {
-          for (int x = -1; x <= 1; x++) {
-            vec2 g = vec2(float(x), float(y));
-            // Per-cell feature offset in [0, 1].
-            vec2 o = hash22(i + g, z) * 0.5 + 0.5;
-            vec2 r = g + o - f;
-            float d = dot(r, r);
-            if (d < f1) { f2 = f1; f1 = d; }
-            else if (d < f2) { f2 = d; }
-          }
+        float invTwoSigmaSq = 1.0 / (2.0 * COLOR_SIGMA * COLOR_SIGMA);
+        vec3 acc = vec3(0.0);
+        float wsum = 0.0;
+        for (int i = 0; i < 8; i++) {
+          float d = abs(h - centres[i]);
+          d = min(d, 1.0 - d);
+          float w = exp(-(d * d) * invTwoSigmaSq);
+          acc += channels[i] * w;
+          wsum += w;
         }
-        return vec2(sqrt(f1), sqrt(f2));
-      }
+        vec3 shift = acc / max(wsum, 1e-4) + globalShift;
 
-      float filmGrain(vec2 p, float z) {
-        // 31°, 67°, 112° — three irrational-feeling angles.
-        mat2 r1 = mat2( 0.857, -0.515,  0.515,  0.857);
-        mat2 r2 = mat2( 0.391, -0.920,  0.920,  0.391);
-        mat2 r3 = mat2(-0.375, -0.927,  0.927, -0.375);
-        // Two gradient-noise octaves to provide the broad gaussian
-        // body of the grain distribution.
-        float g  = gnoise(r1 * p,         z)        * 0.50;
-              g += gnoise(r2 * p * 2.13,  z + 5.0)  * 0.25;
-        // Cellular noise octave: F2-F1 traces irregular crystal
-        // boundaries. Scaled and zero-centred so it sums into the
-        // gaussian-ish body without biasing it.
-        vec2 fF = cellularF1F2(r3 * p * 1.7, z + 9.0);
-        float cells = (fF.y - fF.x) * 1.4 - 0.4;
-        g += cells * 0.35;
-        // gnoise() output is ~[-0.4, 0.4]; rescale so the effective
-        // standard deviation lines up with what the slider
-        // amplitudes (ampLuma/ampChroma below) were tuned against.
-        return g * 2.5;
+        float newH = fract(h + shift.x * (30.0 / 360.0) + 1.0);
+        // Only modulate sat/val for pixels that actually have any
+        // chroma; pure greys stay grey (otherwise a saturation
+        // boost on a grey image would amplify quantization noise).
+        float satGate = smoothstep(0.0, 0.05, s);
+        float newS = clamp(s * (1.0 + shift.y * satGate), 0.0, 1.0);
+        float newV = clamp(v * (1.0 + shift.z), 0.0, 1.0);
+        return hsv2rgb(vec3(newH, newS, newV));
       }
 
       void main() {
@@ -682,76 +708,26 @@ export class TonePipeline {
         float postLuma = dot(col, LUMA);
         col = mix(vec3(postLuma), col, u_saturation);
 
+        // Per-photo color (HSL) pass — runs BEFORE the per-photo
+        // edit curve so the user sees curve operating on the
+        // already-colour-graded image.
+        if (u_editColorEnabled == 1) {
+          col = applyColor(col, u_editColorChannels, u_editColorGlobal);
+        }
+
         // Per-photo edit curve (after the basic tone math so the
         // user sees the curve operating on the already-graded image).
         if (u_editLutEnabled == 1) {
           col = applyCurveLut(col, u_editLut);
         }
 
-        // ===== POST-PROCESS / FILM-SCAN PASS =========================
-        // Everything below operates in an "image-anchored" coordinate
-        // p that is independent of zoom/pan/resolution: it's the
-        // photo's normalised UV mapped onto a 700-unit virtual film
-        // plane. The base was chosen so that at size=1.5 each grain
-        // cell covers ~3-4 screen pixels at a typical 2000px display
-        // width — large enough to dodge pixel-density Moiré (the
-        // "fine repeating grid" you get when noise cells are
-        // sub-pixel), but still fine enough to read as grain rather
-        // than blobs.
+        // ===== POST-PROCESS PASS =====================================
+        // Same as the edit pass: colour first, then curve.
+        if (u_postColorEnabled == 1) {
+          col = applyColor(col, u_postColorChannels, u_postColorGlobal);
+        }
         if (u_postLutEnabled == 1) {
           col = applyCurveLut(col, u_postLut);
-        }
-
-        // Virtual film plane. Size knob is inverted into the coord
-        // scale: larger size -> fewer cells across -> chunkier
-        // grain (high-ISO push look); smaller size -> finer grain
-        // (slow-speed film). The seed is folded in as both a coord
-        // offset (translates the pattern) and a third hash
-        // dimension (reshuffles every artifact in lockstep).
-        float gz = u_grainSeed * 0.013;
-        vec2 p = v_uv * vec2(700.0) / max(u_grainSize, 0.1)
-               + vec2(u_grainSeed * 0.37, u_grainSeed * 0.71);
-
-        if (u_grainAmount > 0.0) {
-          // Luma-aware grain response. Real film grain visibility
-          // depends on local density:
-          //   - In deep shadows almost no crystals were exposed, so
-          //     the grain pattern has little signal to carry. Drop
-          //     to ~30%.
-          //   - In bright highlights nearly every crystal saturated,
-          //     so the layer is uniform — visible grain ~25%.
-          //   - The peak is in the lower-midtones (around L≈0.35),
-          //     where density variation is highest. This is the
-          //     classic "shadow grain" look of scanned film.
-          float Lpx = clamp(dot(col, LUMA), 0.0, 1.0);
-          float bell = 4.0 * Lpx * (1.0 - Lpx);     // 0..1 mid-peak
-          float shadowBias = 1.0 - 0.55 * Lpx;       // weight shadows
-          float response = clamp(0.25 + 0.9 * bell * shadowBias,
-                                 0.0, 1.0);
-
-          // Luminance grain — monochrome high-amplitude layer that
-          // drives the perceived "graininess".
-          float gLuma = filmGrain(p, gz);
-          // Chroma grain — three decorrelated noise fields offset
-          // in coordinate / hash space. Tiny amplitude so colours
-          // shift slightly cell-to-cell, the hallmark of real
-          // colour-negative scans (mono grain is too "digital").
-          vec3 gChroma = vec3(
-            filmGrain(p + vec2( 3.1, 7.2), gz + 11.0),
-            filmGrain(p + vec2(11.7, 1.3), gz + 23.0),
-            filmGrain(p + vec2( 5.4, 9.8), gz + 41.0)
-          );
-
-          // Amplitude: gentle power curve so small slider values
-          // are still useful and 100 reaches a strong push-process
-          // look without going completely destructive.
-          float a = u_grainAmount * 0.01;
-          float ampLuma   = pow(a, 0.75) * 0.22;
-          float ampChroma = pow(a, 0.85) * 0.06;
-
-          vec3 grainColor = vec3(gLuma) * ampLuma
-                          + gChroma     * ampChroma;
-          col += grainColor * response;
         }
 
         outColor = vec4(clamp(col, 0.0, 1.0), src.a);
@@ -794,9 +770,30 @@ export class TonePipeline {
       program,
       "u_postLutEnabled"
     );
-    this.uniforms.grainSize = gl.getUniformLocation(program, "u_grainSize");
-    this.uniforms.grainSeed = gl.getUniformLocation(program, "u_grainSeed");
-    this.uniforms.grainAmount = gl.getUniformLocation(program, "u_grainAmount");
+    this.uniforms.editColorEnabled = gl.getUniformLocation(
+      program,
+      "u_editColorEnabled"
+    );
+    this.uniforms.editColorChannels = gl.getUniformLocation(
+      program,
+      "u_editColorChannels[0]"
+    );
+    this.uniforms.editColorGlobal = gl.getUniformLocation(
+      program,
+      "u_editColorGlobal"
+    );
+    this.uniforms.postColorEnabled = gl.getUniformLocation(
+      program,
+      "u_postColorEnabled"
+    );
+    this.uniforms.postColorChannels = gl.getUniformLocation(
+      program,
+      "u_postColorChannels[0]"
+    );
+    this.uniforms.postColorGlobal = gl.getUniformLocation(
+      program,
+      "u_postColorGlobal"
+    );
     this.uniforms.bloomStrength = gl.getUniformLocation(
       program,
       "u_bloomStrength"

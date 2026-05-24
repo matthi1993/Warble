@@ -59,6 +59,7 @@ export interface PhotoEdit {
   crop: CropEdit | null;
   tone: ToneEdit | null;
   curve: import("./curve").CurveEdit | null;
+  color: import("./color").ColorEdit | null;
 }
 
 export const TONE_KEYS: readonly (keyof ToneEdit)[] = [

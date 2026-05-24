@@ -1,6 +1,6 @@
 /**
  * `pf-post-process-card` — container that stacks the post-process
- * tools (Grain + Post Curve) shown in the right-side panel's
+ * tools (Color + Post Curve) shown in the right-side panel's
  * "Post" tab. Each individual tool is its own self-contained card
  * with its own revert button; this element is just a flex column.
  *
@@ -11,17 +11,24 @@
  */
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import "./pf-grain-card";
+import "@ui/cards/pf-color-card";
 import "@ui/cards/pf-curve-card";
 import {
   getPostProcess,
+  setPostColor,
+  resetPostColor,
   setPostCurve,
   resetPostCurve,
   setPostProcessEnabled,
   subscribePostProcess,
   type PostProcessSettings,
 } from "@services/post-process/post-process-store";
-import { defaultCurve, type CurveEdit } from "@domain/edits";
+import {
+  defaultColor,
+  defaultCurve,
+  type ColorEdit,
+  type CurveEdit,
+} from "@domain/edits";
 
 @customElement("pf-post-process-card")
 export class PfPostProcessCard extends LitElement {
@@ -93,6 +100,9 @@ export class PfPostProcessCard extends LitElement {
   @state()
   private curveOpen = true;
 
+  @state()
+  private colorOpen = true;
+
   private unsub: (() => void) | null = null;
 
   connectedCallback(): void {
@@ -114,6 +124,14 @@ export class PfPostProcessCard extends LitElement {
 
   private onCurveReset = () => {
     resetPostCurve();
+  };
+
+  private onColorChange = (e: CustomEvent<ColorEdit>) => {
+    setPostColor(e.detail);
+  };
+
+  private onColorReset = () => {
+    resetPostColor();
   };
 
   private onToggleEnabled = () => {
@@ -138,7 +156,15 @@ export class PfPostProcessCard extends LitElement {
         ></button>
       </div>
       <div class=${enabled ? "stack" : "stack dim"}>
-        <pf-grain-card></pf-grain-card>
+        <pf-color-card
+          .title=${"Color"}
+          ?open=${this.colorOpen}
+          .value=${this.settings.color ?? defaultColor()}
+          @color-change=${this.onColorChange}
+          @color-reset=${this.onColorReset}
+          @toggle=${(e: CustomEvent<{ open: boolean }>) =>
+            (this.colorOpen = e.detail.open)}
+        ></pf-color-card>
         <pf-curve-card
           .title=${"Post Curve"}
           ?open=${this.curveOpen}

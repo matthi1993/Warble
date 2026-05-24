@@ -29,9 +29,11 @@ import {
   loadFullImage,
 } from "../../app/full-image-cache";
 import {
+  isColorZero,
   isCurveZero,
   isToneZero,
   defaultTone,
+  type ColorEdit,
   type CropEdit,
   type CurveEdit,
   type ToneEdit,
@@ -306,7 +308,10 @@ export class PfImageCanvas extends LitElement {
    * after the basic tone math by the WebGL pipeline. */
   @state()
   private savedCurve: CurveEdit | null = null;
-  /** Snapshot of the global post-process settings (curve + grain).
+  /** Saved (persisted) per-photo color (HSL) adjustments. */
+  @state()
+  private savedColor: ColorEdit | null = null;
+  /** Snapshot of the global post-process settings (color + curve).
    * Updated via {@link subscribePostProcess}; redraws on change. */
   @state()
   private postProcess: PostProcessSettings = getPostProcess();
@@ -321,32 +326,6 @@ export class PfImageCanvas extends LitElement {
    * WebGL context creation. */
   private tonePipeline = new TonePipeline();
 
-  /** Stable hash of the current photo path. Mixed into the global
-   *  grain seed before sending to the shader so every photo gets a
-   *  unique grain pattern (without persisting per-photo seeds in
-   *  the post-process store). Recomputed in `willUpdate` whenever
-   *  `path` changes. */
-  private photoSeedHash = 0;
-
-  /** Returns a per-photo grain seed offset. Combined with the
-   *  user-controlled seed (bumped by the regenerate button) so
-   *  navigating between photos always reshuffles the grain field
-   *  even when the regenerate button hasn't been clicked. */
-  private photoSeedOffset(): number {
-    return this.photoSeedHash;
-  }
-
-  /** FNV-1a 32-bit hash of the photo path, reduced into a small
-   *  positive integer so adding it to the user seed doesn't risk
-   *  float-precision artifacts on the shader's `u_grainSeed`
-   *  uniform. */
-  private hashPath(p: string): number {
-    let h = 2166136261;
-    for (let i = 0; i < p.length; i++) {
-      h = Math.imul(h ^ p.charCodeAt(i), 16777619);
-    }
-    return (h >>> 0) % 100003;
-  }
   /** rAF guard: coalesces multiple `scheduleDraw()` calls within a
    * single frame into one paint. Critical for slider drags, which
    * fire ~60 events/s — without this, draws pile up faster than they
@@ -419,7 +398,7 @@ export class PfImageCanvas extends LitElement {
     });
     // Post-process settings are global (not per-photo), so every
     // change forces a redraw on every visible canvas — but they're
-    // CPU-cheap (the LUT/grain uniforms just flow through the existing
+    // CPU-cheap (the LUT/colour uniforms just flow through the existing
     // WebGL program).
     this.postProcessUnsubscribe = subscribePostProcess((next) => {
       this.postProcess = next;
@@ -442,12 +421,14 @@ export class PfImageCanvas extends LitElement {
       this.savedCrop = null;
       this.savedTone = null;
       this.savedCurve = null;
+      this.savedColor = null;
       return;
     }
     const edit = getPhotoEdit(this.path);
     this.savedCrop = edit?.crop ?? null;
     this.savedTone = edit?.tone ?? null;
     this.savedCurve = edit?.curve ?? null;
+    this.savedColor = edit?.color ?? null;
     this.refreshSavedEffects();
   }
 
@@ -546,10 +527,6 @@ export class PfImageCanvas extends LitElement {
       // Switching photos drops any pending crop state.
       this.cropFrame = null;
       this.refreshSavedCrop();
-      // Mix a per-photo offset into the global grain seed so the
-      // film artifact pattern looks fresh on every navigation
-      // (FNV-1a — small, stable, no allocations).
-      this.photoSeedHash = this.hashPath(this.path ?? "");
       if (this.canvas) this.startLoad();
     } else if (changed.has("fit") || changed.has("sizing")) {
       this.userInteracted = false;
@@ -1170,26 +1147,29 @@ export class PfImageCanvas extends LitElement {
       // Tone is applied in crop mode too so the user sees what their
       // adjustments do while re-framing. `previewOriginal` (the
       // before/after toggle) still bypasses tone + crop on purpose.
-      // The WebGL path also handles per-photo curve and global
-      // post-process (curve + grain), so we route through it whenever
-      // ANY of those is non-identity.
+      // The WebGL path also handles per-photo curve + color and
+      // global post-process (color + curve), so we route through it
+      // whenever ANY of those is non-identity.
       const pp = this.postProcess;
       // Master post-process switch. When disabled the user still sees
-      // their per-photo tone + curve edits (those are the photo's
-      // "real" state), but the global look layer (post curve, grain)
-      // is skipped entirely. Toggling lets you compare the look
-      // against the underlying edit instantly.
+      // their per-photo tone + colour + curve edits (those are the
+      // photo's "real" state), but the global look layer (post color,
+      // post curve) is skipped entirely. Toggling lets you compare the
+      // look against the underlying edit instantly.
       const ppEnabled = pp.enabled;
       const postCurveActive = ppEnabled && !isCurveZero(pp.curve);
-      const grainActive = ppEnabled && pp.grain.amount > 0;
+      const postColorActive = ppEnabled && !isColorZero(pp.color);
+      const editColorActive =
+        !!this.savedColor && !isColorZero(this.savedColor);
       const bloomActive =
         !!this.savedBloom && this.savedBloom.strength > 0;
       const applyPipeline =
         !this.previewOriginal &&
         (!isToneZero(this.savedTone) ||
           !isCurveZero(this.savedCurve) ||
+          editColorActive ||
           postCurveActive ||
-          grainActive ||
+          postColorActive ||
           bloomActive);
       if (applyPipeline) {
         const visX0 = Math.max(0, x);
@@ -1224,9 +1204,8 @@ export class PfImageCanvas extends LitElement {
             {
               curve: this.savedCurve,
               postCurve: postCurveActive ? pp.curve : null,
-              grain: grainActive
-                ? { ...pp.grain, seed: pp.grain.seed + this.photoSeedOffset() }
-                : null,
+              editColor: editColorActive ? this.savedColor : null,
+              postColor: postColorActive ? pp.color : null,
               bloom: bloomActive ? this.savedBloom : null,
             }
           );

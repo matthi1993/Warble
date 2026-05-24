@@ -24,3 +24,12 @@ export {
   isCurveChannelIdentity,
   isCurveZero,
 } from "./curve";
+export type { ColorChannel, ColorChannelEdit, ColorEdit } from "./color";
+export {
+  COLOR_CHANNELS,
+  COLOR_CHANNEL_HUES,
+  defaultColor,
+  defaultColorChannel,
+  isColorZero,
+  normalizeColor,
+} from "./color";

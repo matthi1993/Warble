@@ -69,6 +69,7 @@ import type { EditTool, ToolHost } from "./views/full-view/tools/edit-tool";
 import { CropTool } from "./views/full-view/tools/crop-tool";
 import { ToneTool } from "./views/full-view/tools/tone-tool";
 import { CurveTool } from "./views/full-view/tools/curve-tool";
+import { ColorTool } from "./views/full-view/tools/color-tool";
 import { BloomTool } from "./views/full-view/tools/bloom-tool";
 import {
   currentSelection,
@@ -160,11 +161,13 @@ export class PfFullView extends LitElement {
   // --- Edit tools ----------------------------------------------------
   private cropTool = new CropTool();
   private toneTool = new ToneTool();
+  private colorTool = new ColorTool();
   private curveTool = new CurveTool();
   private bloomTool = new BloomTool();
   private tools: EditTool[] = [
     this.cropTool,
     this.toneTool,
+    this.colorTool,
     this.curveTool,
     this.bloomTool,
   ];
@@ -172,6 +175,7 @@ export class PfFullView extends LitElement {
   private editTabTools: EditTool[] = [
     this.cropTool,
     this.toneTool,
+    this.colorTool,
     this.curveTool,
   ];
   /** Tools rendered under the "Effects" tab. */
@@ -272,6 +276,7 @@ export class PfFullView extends LitElement {
       if (path === "") {
         this.toneTool.invalidateMirror();
         this.curveTool.invalidateMirror();
+        this.colorTool.invalidateMirror();
       }
     });
     // Reflect global post-process toggle in the footer label.
@@ -614,19 +619,18 @@ export class PfFullView extends LitElement {
   }
 
   /**
-   * Shortcut handler for the post-process Grain tool (`N`). The grain
-   * and post-curve cards in the post panel are always-expanded, so
-   * this just routes the user to the right tab — the actual controls
-   * are wired straight to `post-process-store`.
+   * Per-photo color (HSL) shortcut (`H`).
    */
-  toggleGrainCard() {
-    this.openTab("post");
+  toggleColorCard() {
+    this.openTab("edit");
+    this.colorTool.cardOpen = !this.colorTool.cardOpen;
     this.requestUpdate();
   }
 
   /**
    * Shortcut handler for the post-process tone-curve tool (`M`).
-   * Same routing-only behaviour as {@link toggleGrainCard}.
+   * Routing-only: the cards in the post panel are always expanded
+   * and wired straight to `post-process-store`.
    */
   togglePostCurveCard() {
     this.openTab("post");

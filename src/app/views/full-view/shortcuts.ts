@@ -100,11 +100,11 @@ export function buildShortcuts(): readonly ShortcutDef[] {
       run: (h) => call(h, "toggleTab", "post"),
     },
     {
-      label: "N",
-      keys: ["n", "N"],
-      description: "Grain (post)",
+      label: "H",
+      keys: ["h", "H"],
+      description: "Color (HSL)",
       editModeOnly: true,
-      run: (h) => call(h, "toggleGrainCard"),
+      run: (h) => call(h, "toggleColorCard"),
     },
     {
       label: "M",

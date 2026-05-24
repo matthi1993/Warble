@@ -1,34 +1,24 @@
 /**
  * Global post-process store.
  *
- * Post-process settings (grain + post tone curve) are applied AFTER
- * the per-photo edit pipeline (tone + edit-curve) at draw time. They
- * are intentionally NOT per-photo: the user picks a look they like
- * and it sticks across every image until they change it. That makes
- * post-process effects feel like a film stock / camera profile
- * rather than a one-off correction.
+ * Post-process settings (color + post tone curve) are applied AFTER
+ * the per-photo edit pipeline (tone + edit-color + edit-curve) at
+ * draw time. They are intentionally NOT per-photo: the user picks a
+ * look they like and it sticks across every image until they change
+ * it. That makes post-process effects feel like a film stock /
+ * camera profile rather than a one-off correction.
  *
  * Persistence: `localStorage` (no Tauri round-trip needed). The store
  * publishes a synchronous in-memory snapshot via `getPostProcess()`
  * and notifies subscribers on every write.
  */
 
-import { defaultCurve, type CurveEdit } from "@domain/edits";
-
-export interface GrainSettings {
-  /** 0..100 — master intensity for the grain layer. 0 disables the
-   *  grain pass entirely. Acts as the headline "how much film look"
-   *  knob: it scales grain amplitude and (mildly) influences how
-   *  much chroma noise is mixed in. */
-  amount: number;
-  /** 0.5..5 — grain cell size in virtual-film-plane units. Larger
-   *  values give coarser, chunkier grain (high-ISO push-process
-   *  look); smaller values give micro-grain (slow-speed film). */
-  size: number;
-  /** Seed for the pseudo-random hash. Bumping this re-rolls the
-   *  grain pattern without changing any of the intensity knobs. */
-  seed: number;
-}
+import {
+  defaultColor,
+  defaultCurve,
+  type ColorEdit,
+  type CurveEdit,
+} from "@domain/edits";
 
 export interface PostProcessSettings {
   /** Master switch. When false, the canvas skips the post pipeline
@@ -36,22 +26,18 @@ export interface PostProcessSettings {
    *  remain editable so users can audition a look without seeing
    *  it applied. */
   enabled: boolean;
-  grain: GrainSettings;
+  color: ColorEdit;
   curve: CurveEdit;
 }
 
-const STORAGE_KEY = "warble.postProcess.v1";
-
-function defaultGrain(): GrainSettings {
-  return {
-    amount: 0,
-    size: 1.5,
-    seed: 1,
-  };
-}
+const STORAGE_KEY = "warble.postProcess.v3";
 
 function defaultSettings(): PostProcessSettings {
-  return { enabled: true, grain: defaultGrain(), curve: defaultCurve() };
+  return {
+    enabled: true,
+    color: defaultColor(),
+    curve: defaultCurve(),
+  };
 }
 
 function load(): PostProcessSettings {
@@ -59,33 +45,10 @@ function load(): PostProcessSettings {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return defaultSettings();
   try {
-    // Legacy keys we migrate from older versions of the schema:
-    //  - iso  (0..3200) -> amount (0..100), via iso/32.
-    //  - dust, scratches, hair, flicker, strength -> dropped (older
-    //    film-scan artifact knobs that were removed).
-    type LegacyGrain = Partial<GrainSettings> & {
-      iso?: number;
-      hair?: number;
-      flicker?: number;
-      strength?: number;
-      dust?: number;
-      scratches?: number;
-    };
-    const parsed = JSON.parse(raw) as Partial<PostProcessSettings> & {
-      grain?: LegacyGrain;
-    };
-    const g: LegacyGrain = parsed.grain ?? {};
-    const migrated: Partial<GrainSettings> = {
-      amount: g.amount,
-      size: g.size,
-      seed: g.seed,
-    };
-    if (g.amount === undefined && typeof g.iso === "number") {
-      migrated.amount = Math.min(100, Math.max(0, g.iso / 32));
-    }
+    const parsed = JSON.parse(raw) as Partial<PostProcessSettings>;
     return {
       enabled: parsed.enabled ?? true,
-      grain: { ...defaultGrain(), ...migrated },
+      color: parsed.color ?? defaultColor(),
       curve: parsed.curve ?? defaultCurve(),
     };
   } catch (err) {
@@ -119,8 +82,8 @@ export function setPostProcessEnabled(enabled: boolean): void {
   notify();
 }
 
-export function setGrain(grain: Partial<GrainSettings>): void {
-  current = { ...current, grain: { ...current.grain, ...grain } };
+export function setPostColor(color: ColorEdit): void {
+  current = { ...current, color };
   save(current);
   notify();
 }
@@ -137,14 +100,14 @@ export function resetPostProcess(): void {
   notify();
 }
 
-/** Reset only the grain settings — leaves the post curve untouched. */
-export function resetGrain(): void {
-  current = { ...current, grain: defaultGrain() };
+/** Reset only the post-process color — leaves the post curve untouched. */
+export function resetPostColor(): void {
+  current = { ...current, color: defaultColor() };
   save(current);
   notify();
 }
 
-/** Reset only the post-process curve — leaves grain untouched. */
+/** Reset only the post-process curve — leaves color untouched. */
 export function resetPostCurve(): void {
   current = { ...current, curve: defaultCurve() };
   save(current);
@@ -162,4 +125,4 @@ function notify(): void {
   for (const fn of listeners) fn(current);
 }
 
-export { defaultGrain, defaultSettings as defaultPostProcess };
+export { defaultSettings as defaultPostProcess };

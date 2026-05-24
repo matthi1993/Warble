@@ -9,12 +9,15 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import {
+  type ColorEdit,
   type CropEdit,
   type CurveEdit,
   type PhotoEdit,
   type ToneEdit,
+  isColorZero,
   isCurveZero,
   isToneZero,
+  normalizeColor,
 } from "@domain/edits";
 
 interface PersistedRow {
@@ -22,6 +25,7 @@ interface PersistedRow {
   crop: CropEdit | null;
   tone: ToneEdit | null;
   curve: CurveEdit | null;
+  color: ColorEdit | null;
 }
 
 const edits = new Map<string, PhotoEdit>();
@@ -39,6 +43,7 @@ export function loadPhotoEdits(): Promise<void> {
           crop: r.crop ?? null,
           tone: r.tone ?? null,
           curve: r.curve ?? null,
+          color: r.color ? normalizeColor(r.color) : null,
         });
       }
       loaded = true;
@@ -58,7 +63,12 @@ export function getPhotoEdit(path: string): PhotoEdit | null {
 export function hasEdits(path: string): boolean {
   const e = edits.get(path);
   if (!e) return false;
-  return !!e.crop || !isToneZero(e.tone) || !isCurveZero(e.curve);
+  return (
+    !!e.crop ||
+    !isToneZero(e.tone) ||
+    !isCurveZero(e.curve) ||
+    !isColorZero(e.color)
+  );
 }
 
 function persistedTone(t: ToneEdit | null): ToneEdit | null {
@@ -71,16 +81,22 @@ function persistedCurve(c: CurveEdit | null): CurveEdit | null {
   return c;
 }
 
+function persistedColor(c: ColorEdit | null): ColorEdit | null {
+  if (!c || isColorZero(c)) return null;
+  return c;
+}
+
 async function persist(path: string): Promise<void> {
   const e = edits.get(path);
   const crop = e?.crop ?? null;
   const tone = persistedTone(e?.tone ?? null);
   const curve = persistedCurve(e?.curve ?? null);
+  const color = persistedColor(e?.color ?? null);
   try {
-    if (!crop && !tone && !curve) {
+    if (!crop && !tone && !curve && !color) {
       await invoke("clear_photo_edit", { path });
     } else {
-      await invoke("set_photo_edit", { path, crop, tone, curve });
+      await invoke("set_photo_edit", { path, crop, tone, curve, color });
     }
   } catch (err) {
     console.error("Failed to persist photo edit", err);
@@ -117,6 +133,36 @@ export async function flushPhotoEdit(path: string): Promise<void> {
   await persist(path);
 }
 
+function snapshot(path: string): {
+  crop: CropEdit | null;
+  tone: ToneEdit | null;
+  curve: CurveEdit | null;
+  color: ColorEdit | null;
+} {
+  const prev = edits.get(path);
+  return {
+    crop: prev?.crop ?? null,
+    tone: prev?.tone ?? null,
+    curve: prev?.curve ?? null,
+    color: prev?.color ?? null,
+  };
+}
+
+function commit(path: string, next: PhotoEdit) {
+  const empty =
+    !next.crop &&
+    isToneZero(next.tone) &&
+    isCurveZero(next.curve) &&
+    isColorZero(next.color);
+  if (empty) {
+    edits.delete(path);
+  } else {
+    edits.set(path, next);
+  }
+  notify(path);
+  schedulePersist(path);
+}
+
 /**
  * Persist a crop (or `null` to clear). The in-memory store and
  * subscribers update synchronously so the canvas can repaint on the
@@ -127,16 +173,8 @@ export function setPhotoCrop(
   path: string,
   crop: CropEdit | null,
 ): void {
-  const prev = edits.get(path);
-  const tone = prev?.tone ?? null;
-  const curve = prev?.curve ?? null;
-  if (!crop && isToneZero(tone) && isCurveZero(curve)) {
-    edits.delete(path);
-  } else {
-    edits.set(path, { crop, tone, curve });
-  }
-  notify(path);
-  schedulePersist(path);
+  const s = snapshot(path);
+  commit(path, { crop, tone: s.tone, curve: s.curve, color: s.color });
 }
 
 /**
@@ -147,17 +185,13 @@ export function setPhotoCrop(
  * debounced so a 60 Hz drag doesn't saturate the IPC channel.
  */
 export function setPhotoTone(path: string, tone: ToneEdit | null): void {
-  const prev = edits.get(path);
-  const crop = prev?.crop ?? null;
-  const curve = prev?.curve ?? null;
-  const cleaned = persistedTone(tone);
-  if (!crop && !cleaned && isCurveZero(curve)) {
-    edits.delete(path);
-  } else {
-    edits.set(path, { crop, tone: cleaned, curve });
-  }
-  notify(path);
-  schedulePersist(path);
+  const s = snapshot(path);
+  commit(path, {
+    crop: s.crop,
+    tone: persistedTone(tone),
+    curve: s.curve,
+    color: s.color,
+  });
 }
 
 /**
@@ -168,17 +202,31 @@ export function setPhotoCurve(
   path: string,
   curve: CurveEdit | null,
 ): void {
-  const prev = edits.get(path);
-  const crop = prev?.crop ?? null;
-  const tone = prev?.tone ?? null;
-  const cleaned = persistedCurve(curve);
-  if (!crop && isToneZero(tone) && !cleaned) {
-    edits.delete(path);
-  } else {
-    edits.set(path, { crop, tone, curve: cleaned });
-  }
-  notify(path);
-  schedulePersist(path);
+  const s = snapshot(path);
+  commit(path, {
+    crop: s.crop,
+    tone: s.tone,
+    curve: persistedCurve(curve),
+    color: s.color,
+  });
+}
+
+/**
+ * Persist per-photo color (HSL) adjustments. Same in-memory-sync /
+ * IPC-debounce pattern as the others. Pass `null` (or a fully-neutral
+ * `ColorEdit`) to clear.
+ */
+export function setPhotoColor(
+  path: string,
+  color: ColorEdit | null,
+): void {
+  const s = snapshot(path);
+  commit(path, {
+    crop: s.crop,
+    tone: s.tone,
+    curve: s.curve,
+    color: persistedColor(color),
+  });
 }
 
 export function subscribePhotoEdits(fn: (path: string) => void): () => void {
