@@ -393,4 +393,22 @@ impl LibraryRepository {
         .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    /// Write a clean, defragmented copy of the live database to `dest`
+    /// using SQLite's `VACUUM INTO`. Safe to call while the source DB
+    /// is open and being read/written; produces a single self-contained
+    /// file at `dest` (no WAL/SHM sidecars). The destination must not
+    /// already exist.
+    pub fn vacuum_into(&self, dest: &Path) -> Result<(), String> {
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| "destination path is not valid UTF-8".to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // `VACUUM INTO` does not accept bound parameters; quote the
+        // path by doubling single quotes (SQLite identifier rule).
+        let quoted = dest_str.replace('\'', "''");
+        conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }

@@ -681,11 +681,37 @@ export class TonePipeline {
 
         vec3 col = src.rgb * u_exposure;
 
-        // White balance: temperature pushes blue\u2194yellow, tint pushes
-        // magenta\u2194green. Amplitudes are intentionally modest so the
-        // sliders feel like calibration, not a colour-cast filter.
-        col += vec3( u_temperature,  0.0,           -u_temperature) * 0.15;
-        col += vec3(-u_tint,         u_tint,        -u_tint       ) * 0.08;
+        // White balance: temperature shifts the blue<->yellow axis,
+        // tint shifts the green<->magenta axis. Implemented as a
+        // per-channel GAIN (multiplicative) rather than an additive
+        // offset — that's what a real camera WB does, and it's the
+        // model Lightroom/Capture One use.
+        //
+        // Why not additive: an additive shift dumps the same amount
+        // onto R/B regardless of brightness, so shadows take a
+        // dramatic colour cast (and clamp to zero, losing data
+        // irreversibly) while highlights barely move because they
+        // clip to 1. A multiplicative gain scales the cast with
+        // scene brightness — black stays black, midtones shift
+        // proportionally, highlights warm/cool naturally — and the
+        // operation is fully reversible.
+        //
+        // We do this in sRGB rather than linear because the source
+        // bitmap is already gamma-encoded (JPEG, or RAW that was
+        // developed to sRGB upstream) and the slider feel is what
+        // matters here, not colorimetric accuracy.
+        //
+        // Gain magnitudes: temperature ±0.30 at the extremes
+        // (R goes x1.3 / x0.7 at ±100), tint ±0.20 on green with a
+        // half-strength counter-shift on R+B so a pure tint move
+        // doesn't also change apparent brightness.
+        float tempGain = u_temperature * 0.30;
+        col.r *= 1.0 + tempGain;
+        col.b *= 1.0 - tempGain;
+        float tintGain = u_tint * 0.20;
+        col.g *= 1.0 + tintGain;
+        col.r *= 1.0 - tintGain * 0.5;
+        col.b *= 1.0 - tintGain * 0.5;
         col = max(col, vec3(0.0));
 
         float L = clamp(dot(col, LUMA), 0.0, 1.0);

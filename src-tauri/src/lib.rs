@@ -65,6 +65,8 @@ pub fn run() {
             commands::clear_photo_edit,
             commands::get_photo_ratings,
             commands::set_photo_rating,
+            commands::save_library,
+            commands::load_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

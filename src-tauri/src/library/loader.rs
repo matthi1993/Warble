@@ -12,16 +12,22 @@ use crate::tasks;
 use imaging::{exif_cache, full_image, hd_image, thumbnails};
 use crate::library::LibraryRepository;
 
-pub fn init_library_repository(app: &tauri::App) {
-    let db_path = app
-        .path()
+/// Canonical on-disk location of the active library database. The same
+/// path is recomputed at every startup; "Load Library" works by
+/// overwriting the file here and restarting the app.
+pub fn library_db_path(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
         .picture_dir()
         .ok()
         .map(|mut p| {
             p.push("library.warble");
             p
         })
-        .unwrap_or_else(|| PathBuf::from("./library.warble"));
+        .unwrap_or_else(|| PathBuf::from("./library.warble"))
+}
+
+pub fn init_library_repository(app: &tauri::App) {
+    let db_path = library_db_path(app.handle());
     if let Some(parent) = db_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("failed to create library dir at {parent:?}: {e}");

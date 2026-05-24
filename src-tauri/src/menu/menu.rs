@@ -426,17 +426,13 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
             apply_bg_concurrency(app, n);
         }
     }
-    if let Some(rest) = id.strip_prefix(ID_FILE_LOAD) {
-        if let Ok(n) = rest.parse::<usize>() {
-            // TODO load library
-            println!("Load library - not implemented: {}", n);
-        }
+    if id == ID_FILE_LOAD {
+        let _ = app.emit("library:load-requested", ());
+        return;
     }
-    if let Some(rest) = id.strip_prefix(ID_FILE_SAVE) {
-        if let Ok(n) = rest.parse::<usize>() {
-            // TODO save library
-            println!("Save library - not implemented: {}", n);
-        }
+    if id == ID_FILE_SAVE {
+        let _ = app.emit("library:save-requested", ());
+        return;
     }
 }
 

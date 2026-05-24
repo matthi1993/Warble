@@ -8,6 +8,7 @@ mod library;
 mod preferences;
 mod ratings;
 mod reveal;
+mod warble_file;
 
 pub use cache::*;
 pub use diagnostics::*;
@@ -17,3 +18,4 @@ pub use library::*;
 pub use preferences::*;
 pub use ratings::*;
 pub use reveal::*;
+pub use warble_file::*;
