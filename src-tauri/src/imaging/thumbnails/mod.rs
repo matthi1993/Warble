@@ -35,7 +35,7 @@ const TARGET_WIDTH: u32 = 320;
 const JPEG_QUALITY: u8 = 80;
 /// Bumped when the pipeline changes in a way that invalidates existing
 /// on-disk cache entries (e.g. EXIF-orientation rotation added).
-const PIPELINE_VERSION: u32 = 2;
+const PIPELINE_VERSION: u32 = 5;
 
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
@@ -128,12 +128,14 @@ fn render_from_jpeg_file(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, S
 fn render_from_raw(path: &Path, _cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let preview = raw_preview::extract_preview(path)?;
     // The RAW preview's EXIF tags belong to the original RAW file,
-    // not the embedded JPEG. Parse them once from the RAW bytes via
-    // `read_full_metadata` so the cache row is populated; we already
-    // have orientation from `extract_preview`.
+    // not the demosaiced output we just produced. Parse them once
+    // from the RAW bytes via `read_full_metadata` so the cache row
+    // is populated with the *real* orientation tag (which the info
+    // panel surfaces) \u2014 not `preview.orientation`, which is now
+    // always `IDENTITY` since `imagepipe` pre-rotates the pixels.
     if exif_cache::get(path).is_none() {
-        if let Some((_, metadata)) = exif::read_full_metadata(path) {
-            exif_cache::warm_with(path, preview.orientation, &metadata);
+        if let Some((orient, metadata)) = exif::read_full_metadata(path) {
+            exif_cache::warm_with(path, orient, &metadata);
         }
     }
 

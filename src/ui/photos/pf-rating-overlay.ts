@@ -122,12 +122,6 @@ export class PfRatingOverlay extends LitElement {
   @property({ type: Boolean, reflect: true })
   fullscreen = false;
 
-  /** Auto-set for ~1s whenever the rating or label value changes
-   *  so the user gets a brief on-image confirmation in fullscreen
-   *  mode even when both badges are otherwise hidden. */
-  @state()
-  private flashing = false;
-
   private flashTimer: number | null = null;
 
   @state()
@@ -163,11 +157,9 @@ export class PfRatingOverlay extends LitElement {
    *  them again. Used to surface user actions in fullscreen where
    *  the overlay would otherwise stay invisible. */
   private startFlash(): void {
-    this.flashing = true;
     this.toggleAttribute("flashing", true);
     if (this.flashTimer !== null) clearTimeout(this.flashTimer);
     this.flashTimer = window.setTimeout(() => {
-      this.flashing = false;
       this.toggleAttribute("flashing", false);
       this.flashTimer = null;
     }, 1000);

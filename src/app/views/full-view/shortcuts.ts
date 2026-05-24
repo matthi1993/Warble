@@ -21,7 +21,8 @@ export interface ShortcutDef {
   /** Short description for tooltips / hint string. */
   readonly description: string;
   /** True if the shortcut only fires while the viewer is in edit
-   *  mode (i.e. the active variant is a JPEG). */
+   *  mode (i.e. the active variant is an editable format — JPEG or
+   *  RAW). */
   readonly editModeOnly?: boolean;
   /** Imperative action against the viewer host. */
   readonly run: (host: PfFullView) => void;

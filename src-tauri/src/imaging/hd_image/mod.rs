@@ -42,9 +42,20 @@ use crate::tasks::CancelToken;
 const LONG_SIDE_PX: u32 = 1920;
 const JPEG_QUALITY: u8 = 90;
 /// Bumped when the pipeline changes in a way that invalidates existing
-/// on-disk cache entries. v2: switched to DCT-scaled JPEG decode for
-/// JPEG / RAW-preview sources.
-const PIPELINE_VERSION: u32 = 2;
+/// on-disk cache entries.
+///   v2: switched to DCT-scaled JPEG decode for JPEG / RAW-preview sources.
+///   v3: RAW sources now go through `imagepipe` demosaic instead of the
+///       embedded JPEG preview — cached v2 bytes for RAW paths still
+///       contain the stale preview, so they must be evicted.
+///   v4: RAW decoder switched to a `rawler` → `imagepipe` bridge so
+///       modern bodies (e.g. Fujifilm X100VI / X-Trans) actually
+///       decode; cached v3 bytes either don't exist (the v3 attempt
+///       errored for unsupported cameras) or were produced by a
+///       different color pipeline.
+///   v5: Bridge now pulls the color matrix from rawler's
+///       `color_matrix` HashMap (the deprecated `xyz_to_cam` field is
+///       all zeros in 0.7.2), fixing all-black RAW output.
+const PIPELINE_VERSION: u32 = 5;
 
 static DISK_CACHE: OnceLock<DiskCache> = OnceLock::new();
 

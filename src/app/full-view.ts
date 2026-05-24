@@ -72,7 +72,7 @@ import { CurveTool } from "./views/full-view/tools/curve-tool";
 import { BloomTool } from "./views/full-view/tools/bloom-tool";
 import {
   currentSelection,
-  isJpegSelection,
+  isEditableSelection,
   resolvedPath,
 } from "./views/full-view/variant-selector";
 import { IdleController } from "./views/full-view/idle-controller";
@@ -193,9 +193,11 @@ export class PfFullView extends LitElement {
     },
   });
 
-  /** Edit affordances are always available for JPEGs. */
+  /** Edit affordances are available for any selection the backend can
+   *  hand us as a display-ready bitmap — JPEG today and RAW via the
+   *  Rust-side demosaic pipeline. */
   private get editMode(): boolean {
-    return isJpegSelection(this.currentPhoto);
+    return isEditableSelection(this.currentPhoto);
   }
 
   /** Adapter object passed to tools. */

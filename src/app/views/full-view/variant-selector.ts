@@ -48,8 +48,12 @@ export function resolvedPath(photo: Photo): string {
   return fileForSelection(photo, sel.format, sel.variant) ?? photo.path;
 }
 
-/** True when the active selection is a JPEG — only format we edit. */
-export function isJpegSelection(photo: Photo | null): boolean {
+/** True when the active selection has an editable format. Both JPEG
+ *  and RAW selections run through the same in-canvas edit pipeline
+ *  (tone, curve, crop) — RAW is decoded server-side into a
+ *  display-ready bitmap, so the frontend treats the two identically. */
+export function isEditableSelection(photo: Photo | null): boolean {
   if (!photo) return false;
-  return currentSelection(photo)?.format === "jpg";
+  const fmt = currentSelection(photo)?.format;
+  return fmt === "jpg" || fmt === "raw";
 }
