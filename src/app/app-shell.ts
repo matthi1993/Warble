@@ -767,7 +767,21 @@ export class WarbleApp extends LitElement {
       folderPath: path,
       recursive: this.includeSubfolders,
     });
-    this.selectedPhoto = null;
+    // If the full view is open, jump to the first photo of the new
+    // folder so the user sees something immediately (not a blank
+    // screen from the stale index). Close the full view if the
+    // new folder is empty.
+    if (this.fullViewIndex !== null) {
+      if (this.photos.length > 0) {
+        this.selectedPhoto = this.photos[0];
+        this.fullViewIndex = 0;
+      } else {
+        this.selectedPhoto = null;
+        this.fullViewIndex = null;
+      }
+    } else {
+      this.selectedPhoto = null;
+    }
     // Cancel any in-flight HD prewarm for the previous folder so its
     // background jobs don't keep running once the user has moved on.
     this.hdPrewarmHandle?.cancel();

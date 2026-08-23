@@ -240,8 +240,13 @@ export class PfPhotoGrid extends LitElement {
     const card = this.renderRoot.querySelector(
       `pf-thumbnail-card[data-path="${CSS.escape(this.selectedPath)}"]`
     ) as HTMLElement | null;
-    card?.scrollIntoView({ block: "center", inline: "nearest" });
+    card?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
+
+  /** Whether the last selection change originated from a click
+   *  inside the grid. Set by onClick so updated() knows to skip
+   *  scrollSelectionIntoView (the card is already on screen). */
+  private selectionFromClick = false;
 
   protected updated(changed: Map<string, unknown>): void {
     // When the full-view overlay closes the grid becomes visible
@@ -252,13 +257,17 @@ export class PfPhotoGrid extends LitElement {
       changed.get("fullViewOpen") === true &&
       !this.fullViewOpen
     ) {
-      // Wait for layout to settle (the overlay was hiding us, so
-      // cards may not have had a layout box yet).
       requestAnimationFrame(() => this.scrollSelectionIntoView());
     } else if (changed.has("selectedPath") && this.selectedPath) {
       // The selection moved (e.g. arrow keys propagated from the
-      // shell) — keep the focused card on screen.
-      requestAnimationFrame(() => this.scrollSelectionIntoView());
+      // shell) — keep the focused card on screen. Skip when the
+      // change came from a direct click (the card is already
+      // visible and centering it would cause a jump that makes
+      // double-click impossible).
+      if (!this.selectionFromClick) {
+        requestAnimationFrame(() => this.scrollSelectionIntoView());
+      }
+      this.selectionFromClick = false;
     }
   }
 
@@ -266,7 +275,18 @@ export class PfPhotoGrid extends LitElement {
     if (this.selectedPath) {
       requestAnimationFrame(() => this.scrollSelectionIntoView());
     }
+    this.addEventListener('click', this.onGridClick);
   }
+
+  private onGridClick = (e: Event) => {
+    // A click inside the grid (on a thumbnail card) selects that
+    // photo. Set the flag so updated() skips scrollIntoView — the
+    // clicked card is already visible and centering it would jump,
+    // making double-click impossible.
+    if (e.target instanceof HTMLElement && e.target.closest('pf-thumbnail-card')) {
+      this.selectionFromClick = true;
+    }
+  };
 
   private get filteredPhotos(): Photo[] {
     // Keep a reactive dependency on `ratingsTick` so Lit re-renders
