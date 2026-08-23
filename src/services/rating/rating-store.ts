@@ -49,6 +49,15 @@ export function loadPhotoRatings(): Promise<void> {
   return loadPromise;
 }
 
+/** Drop all in-memory ratings and re-fetch from the backend. Used
+ *  after a library hot-swap. */
+export function reloadPhotoRatings(): Promise<void> {
+  ratings.clear();
+  loaded = false;
+  loadPromise = null;
+  return loadPhotoRatings();
+}
+
 export function getPhotoRating(path: string): PhotoRating {
   return ratings.get(path) ?? { rating: 0, label: "", ratedAt: 0 };
 }

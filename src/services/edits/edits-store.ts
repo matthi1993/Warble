@@ -56,6 +56,15 @@ export function loadPhotoEdits(): Promise<void> {
   return loadPromise;
 }
 
+/** Drop all in-memory edits and re-fetch from the backend. Used
+ *  after a library hot-swap so the new DB's edits are loaded. */
+export function reloadPhotoEdits(): Promise<void> {
+  edits.clear();
+  loaded = false;
+  loadPromise = null;
+  return loadPhotoEdits();
+}
+
 export function getPhotoEdit(path: string): PhotoEdit | null {
   return edits.get(path) ?? null;
 }

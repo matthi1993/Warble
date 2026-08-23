@@ -441,7 +441,7 @@ fn apply_thumb_max(app: &AppHandle<Wry>, n: usize) {
     let Ok(repo) = state.repository() else { return };
     let snapshot = state
         .settings
-        .update(repo, |s| s.thumbnail_disk_max_entries = n);
+        .update(&repo, |s| s.thumbnail_disk_max_entries = n);
     thumbnails::set_disk_cache_max_entries(n);
     sync_group_check_state(ID_THUMB_PREFIX, THUMB_PRESETS, n);
     let _ = app.emit("cache-settings-changed", snapshot);
@@ -452,7 +452,7 @@ fn apply_hd_max(app: &AppHandle<Wry>, n: usize) {
     let Ok(repo) = state.repository() else { return };
     let snapshot = state
         .settings
-        .update(repo, |s| s.hd_image_disk_max_entries = n);
+        .update(&repo, |s| s.hd_image_disk_max_entries = n);
     hd_image::set_disk_cache_max_entries(n);
     sync_group_check_state(ID_HD_PREFIX, HD_PRESETS, n);
     let _ = app.emit("cache-settings-changed", snapshot);
@@ -463,7 +463,7 @@ fn apply_full_mem_max(app: &AppHandle<Wry>, n: usize) {
     let Ok(repo) = state.repository() else { return };
     let snapshot = state
         .settings
-        .update(repo, |s| s.full_image_memory_max_entries = n);
+        .update(&repo, |s| s.full_image_memory_max_entries = n);
     full_image::set_memory_cache_capacity(n);
     sync_group_check_state(ID_FULL_MEM_PREFIX, FULL_MEM_PRESETS, n);
     let _ = app.emit("cache-settings-changed", snapshot);
@@ -474,7 +474,7 @@ fn apply_full_bitmap_max(app: &AppHandle<Wry>, n: usize) {
     let Ok(repo) = state.repository() else { return };
     let snapshot = state
         .settings
-        .update(repo, |s| s.full_image_bitmap_max_entries = n);
+        .update(&repo, |s| s.full_image_bitmap_max_entries = n);
     sync_group_check_state(ID_FULL_BITMAP_PREFIX, FULL_BITMAP_PRESETS, n);
     // Frontend listens to `cache-settings-changed` and resizes its own
     // ImageBitmap LRU.
@@ -488,7 +488,7 @@ fn apply_bg_concurrency(app: &AppHandle<Wry>, n: usize) {
     let clamped = n.clamp(1, cap);
     let snapshot = state
         .settings
-        .update(repo, |s| s.background_pool_workers = clamped);
+        .update(&repo, |s| s.background_pool_workers = clamped);
     tasks::pool().set_bg_concurrency(clamped);
     sync_group_check_state(ID_BG_PREFIX, BG_PRESETS, clamped);
     let _ = app.emit("cache-settings-changed", snapshot);

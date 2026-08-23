@@ -10,7 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { message, open, save } from "@tauri-apps/plugin-dialog";
 
 const LIBRARY_FILTER = {
     name: "Warble Library",
@@ -43,6 +43,10 @@ async function handleSaveRequested(): Promise<void> {
         await invoke("save_library", { path });
     } catch (err) {
         console.error("save_library failed:", err);
+        void message(`Failed to save library: ${err}`, {
+            title: "Save Library",
+            kind: "error",
+        });
     }
 }
 
@@ -66,6 +70,14 @@ async function handleLoadRequested(): Promise<void> {
         // normally in that case.
         await invoke("load_library", { path });
     } catch (err) {
+        // The backend returns an error string if the selected file
+        // doesn't exist, can't be copied, or isn't a valid SQLite
+        // database. Show it to the user; the old library is left
+        // untouched so the app keeps working.
         console.error("load_library failed:", err);
+        void message(`Failed to load library: ${err}`, {
+            title: "Load Library",
+            kind: "error",
+        });
     }
 }

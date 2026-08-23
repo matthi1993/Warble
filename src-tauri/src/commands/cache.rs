@@ -22,7 +22,7 @@ pub fn set_thumbnail_cache_max(
     let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(repo, |s| s.thumbnail_disk_max_entries = max);
+        .update(&repo, |s| s.thumbnail_disk_max_entries = max);
     thumbnails::set_disk_cache_max_entries(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -37,7 +37,7 @@ pub fn set_hd_image_cache_max(
     let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(repo, |s| s.hd_image_disk_max_entries = max);
+        .update(&repo, |s| s.hd_image_disk_max_entries = max);
     hd_image::set_disk_cache_max_entries(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -52,7 +52,7 @@ pub fn set_full_image_memory_cache_max(
     let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(repo, |s| s.full_image_memory_max_entries = max);
+        .update(&repo, |s| s.full_image_memory_max_entries = max);
     full_image::set_memory_cache_capacity(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -67,7 +67,7 @@ pub fn set_full_image_bitmap_cache_max(
     let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(repo, |s| s.full_image_bitmap_max_entries = max);
+        .update(&repo, |s| s.full_image_bitmap_max_entries = max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
 }
@@ -101,7 +101,7 @@ pub fn set_background_pool_workers(
     let clamped = workers.clamp(1, cap);
     let snapshot = state
         .settings
-        .update(repo, |s| s.background_pool_workers = clamped);
+        .update(&repo, |s| s.background_pool_workers = clamped);
     tasks::pool().set_bg_concurrency(clamped);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)

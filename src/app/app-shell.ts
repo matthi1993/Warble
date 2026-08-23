@@ -6,11 +6,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Folder } from "@domain/folder";
 import type { Photo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
-import { loadVariantOverrides } from "./variant-store";
+import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
+import { reloadPhotoEdits } from "@services/edits/edits-store";
 import {
   applyRatingShortcut,
   loadPhotoRatings,
+  reloadPhotoRatings,
 } from "@services/rating/rating-store";
 import {
   clearThumbnailBatch,
@@ -405,6 +407,9 @@ export class WarbleApp extends LitElement {
    super.connectedCallback();
    window.addEventListener("keydown", this.onGlobalKey);
    window.addEventListener("mousemove", this.onMouseMove);
+   this.unlistenLibraryReload = await listen("library-reloaded", () => {
+     void this.onLibraryReloaded();
+   });
    this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
       this.maybeStartHdPrewarm(state);
@@ -499,8 +504,11 @@ export class WarbleApp extends LitElement {
     }
   }
 
+  private unlistenLibraryReload: UnlistenFn | null = null;
+
   disconnectedCallback(): void {
    super.disconnectedCallback();
+   this.unlistenLibraryReload?.();
    window.removeEventListener("keydown", this.onGlobalKey);
    window.removeEventListener("mousemove", this.onMouseMove);
    this.unsubscribeProgress?.();
@@ -920,6 +928,31 @@ export class WarbleApp extends LitElement {
     } catch (err) {
       console.warn("Failed to persist app view", err);
     }
+  }
+
+  /** Called when the backend hot-swaps the library DB. Re-fetches
+   *  everything from the new DB so the UI reflects the new library. */
+  private async onLibraryReloaded(): Promise<void> {
+    void reloadPhotoEdits();
+    void reloadPhotoRatings();
+    void reloadVariantOverrides();
+    dropAllThumbnailState();
+    try {
+      this.imports = await invoke<Folder[]>("list_imported_folders");
+    } catch (err) {
+      console.error("Failed to reload folders after library swap", err);
+    }
+    this.selectedPhoto = null;
+    this.fullViewIndex = null;
+    if (this.imports.length > 0) {
+      const first = this.imports[0];
+      await this.selectFolder(first.id, first.path);
+    } else {
+      this.photos = [];
+      this.selectedFolderId = null;
+      this.selectedFolderName = null;
+    }
+    this.requestUpdate();
   }
 
   render() {

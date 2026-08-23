@@ -8,23 +8,31 @@
 //! external edit invalidates the row automatically.
 
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use super::exif::{self, ExifMetadata, IDENTITY};
 use crate::library::LibraryRepository;
 
-static REPO: OnceLock<Arc<LibraryRepository>> = OnceLock::new();
+static REPO: std::sync::OnceLock<std::sync::Mutex<Option<Arc<LibraryRepository>>>> = std::sync::OnceLock::new();
 
-/// Wire up the cache. Subsequent calls are ignored.
+fn repo_slot() -> &'static std::sync::Mutex<Option<Arc<LibraryRepository>>> {
+    REPO.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Wire up the cache. Replaces any previous repository (used by
+/// the library hot-swap flow).
 pub fn init(repo: Arc<LibraryRepository>) {
-    let _ = REPO.set(repo);
+    let slot = repo_slot();
+    if let Ok(mut guard) = slot.lock() {
+        *guard = Some(repo);
+    }
 }
 
 /// Return cached `(orientation, metadata)` for `path` if the row's
 /// fingerprint still matches the file on disk.
 pub fn get(path: &Path) -> Option<(u32, ExifMetadata)> {
-    let repo = REPO.get()?;
+    let repo = repo_slot().lock().ok()?.clone()?;
     let key = path.to_str()?;
     let (mtime, size) = file_fingerprint(path)?;
     let (cached_mtime, cached_size, orientation, metadata_json) =
@@ -77,7 +85,7 @@ pub fn warm_with(path: &Path, orientation: u32, metadata: &ExifMetadata) {
 }
 
 fn store(path: &Path, orientation: u32, metadata: &ExifMetadata) {
-    let Some(repo) = REPO.get() else { return };
+    let Some(repo) = (|| repo_slot().lock().ok()?.clone())() else { return };
     let Some(key) = path.to_str() else { return };
     let Some((mtime, size)) = file_fingerprint(path) else {
         return;
