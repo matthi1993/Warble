@@ -43,12 +43,14 @@ function readStoredColumns(): number {
 export class PfPhotoGrid extends LitElement {
   static styles = css`
     :host {
-      display: block;
+      display: flex;
+      flex-direction: column;
       position: relative;
+      height: 100%;
+      min-height: 0;
     }
     .grid-header {
-      position: sticky;
-      top: 0;
+      flex: 0 0 auto;
       z-index: 5;
       display: flex;
       flex-direction: column;
@@ -57,6 +59,11 @@ export class PfPhotoGrid extends LitElement {
       margin-bottom: var(--pf-space-3);
       background: var(--pf-bg);
       border-bottom: 1px solid var(--pf-border);
+    }
+    .grid-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
     }
     :host([full-view-open]) .grid-header {
       display: none;
@@ -448,29 +455,31 @@ export class PfPhotoGrid extends LitElement {
           </button>
         </div>
       </div>
-      ${visible.length === 0 && filtersActive
-        ? html`<div class="empty-filter">
-            No photos match the current filters.
-          </div>`
-        : html`<div
-            class="grid"
-            style=${`--pf-grid-cols: ${this.columns}`}
-          >
-            ${repeat(
-              visible,
-              (p) => p.path,
-              (p) => html`
-                <pf-thumbnail-card
-                  data-path=${p.path}
-                  .path=${p.path}
-                  .filename=${p.filename}
-                  .extensions=${p.extensions ?? []}
-                  .variantCount=${variantCount(p)}
-                  ?selected=${this.selectedPath === p.path}
-                ></pf-thumbnail-card>
-              `
-            )}
-          </div>`}
+      <div class="grid-scroll">
+        ${visible.length === 0 && filtersActive
+          ? html`<div class="empty-filter">
+              No photos match the current filters.
+            </div>`
+          : html`<div
+              class="grid"
+              style=${`--pf-grid-cols: ${this.columns}`}
+            >
+              ${repeat(
+                visible,
+                (p) => p.path,
+                (p) => html`
+                  <pf-thumbnail-card
+                    data-path=${p.path}
+                    .path=${p.path}
+                    .filename=${p.filename}
+                    .extensions=${p.extensions ?? []}
+                    .variantCount=${variantCount(p)}
+                    ?selected=${this.selectedPath === p.path}
+                  ></pf-thumbnail-card>
+                `
+              )}
+            </div>`}
+      </div>
     `;
   }
 }

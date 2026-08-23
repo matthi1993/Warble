@@ -204,7 +204,18 @@ export class WarbleApp extends LitElement {
     main.content {
       grid-area: main;
       margin: var(--pf-space-4);
-      overflow-y: auto;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    main.content > h1,
+    main.content > p {
+      flex: 0 0 auto;
+    }
+    main.content > pf-photo-grid {
+      flex: 1 1 auto;
+      min-height: 0;
     }
     h1 {
       margin: 0 0 var(--pf-space-4);
