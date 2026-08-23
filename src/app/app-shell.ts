@@ -56,11 +56,77 @@ export class WarbleApp extends LitElement {
       font-size: var(--pf-text-base);
     }
     :host(.sidebar-collapsed) {
-      grid-template-columns: 32px 0 1fr 380px;
-    }
-    :host(.sidebar-collapsed) aside.sidebar {
-      display: none;
-    }
+     grid-template-columns: 32px 0 1fr 380px;
+   }
+   :host(.sidebar-collapsed) aside.sidebar {
+     display: none;
+   }
+   /* Fullscreen full-view: collapse the grid so pf-full-view fills
+      the entire window. All other grid areas are hidden. */
+   :host(.fs-fullview) {
+     grid-template-rows: 1fr;
+     grid-template-columns: 1fr;
+     grid-template-areas: "fullview";
+   }
+   :host(.fs-fullview) > .sidebar-rail,
+   :host(.fs-fullview) > aside.sidebar,
+   :host(.fs-fullview) > main.content,
+   :host(.fs-fullview) > aside.detail,
+   :host(.fs-fullview) > footer.app-footer {
+     display: none;
+   }
+   :host(.fs-fullview) pf-full-view {
+    grid-area: fullview;
+    grid-row: 1;
+    grid-column: 1;
+  }
+  /* Edge hotzones that reveal the sidebar / detail panel as
+     overlays when the mouse approaches the screen edges in
+     fullscreen full-view mode. */
+  .fs-hotzone-left,
+  .fs-hotzone-right {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 12px;
+    z-index: 1001;
+  }
+  .fs-hotzone-left {
+    left: 0;
+  }
+
+  .fs-overlay-left {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 1002;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+    left: 0;
+    width: 260px;
+    display: flex;
+  }
+  .fs-overlay-left .sidebar-rail {
+    width: 32px;
+    flex: 0 0 32px;
+    border-right: 1px solid var(--pf-border);
+    background: var(--pf-surface);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: var(--pf-space-2);
+    box-sizing: border-box;
+  }
+  .fs-overlay-left aside.sidebar {
+    flex: 1;
+    min-width: 0;
+    border-right: 1px solid var(--pf-border);
+    background: var(--pf-surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
 
     /* Permanent left-rail that always reserves room for the sidebar
        toggle. Keeping this column in the grid — even when the
@@ -208,56 +274,11 @@ export class WarbleApp extends LitElement {
     }
 
     .ctx-menu-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 1000;
-    }
-    /* Hover hotzone + overlay used to reveal the folder sidebar on top
-       of the OS-fullscreen full view (which otherwise covers the
-       grid layout entirely). */
-    .sidebar-hover-hotzone {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 8px;
-      height: 100vh;
-      z-index: 1002;
-    }
-    .sidebar-hover-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      height: 100vh;
-      display: flex;
-      z-index: 1003;
-      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.4);
-    }
-    .sidebar-hover-overlay .sidebar-rail {
-      width: 32px;
-      flex: 0 0 32px;
-      border-right: 1px solid var(--pf-border);
-      background: var(--pf-surface);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding-top: var(--pf-space-2);
-      box-sizing: border-box;
-    }
-    .sidebar-hover-overlay aside.sidebar {
-      width: 228px;
-      flex: 0 0 228px;
-      border-right: 1px solid var(--pf-border);
-      background: var(--pf-surface);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    .sidebar-hover-overlay .tree {
-      flex: 1;
-      overflow-y: auto;
-      padding: var(--pf-space-2);
-    }
-    .ctx-menu {
+     position: fixed;
+     inset: 0;
+     z-index: 1000;
+   }
+   .ctx-menu {
       position: fixed;
       min-width: 180px;
       background: var(--pf-surface);
@@ -307,17 +328,12 @@ export class WarbleApp extends LitElement {
   private fullViewIndex: number | null = null;
 
   @state()
-  private sidebarCollapsed = false;
+ private sidebarCollapsed = false;
 
-  /** When the full view is open and the sidebar is hidden (either via
-   * collapse or because OS fullscreen is active), hovering the left
-   * edge reveals the sidebar as an overlay. */
-  @state()
-  private sidebarHoverReveal = false;
 
-  /** Whether photo listings should recurse into all subfolders of the
-   * currently selected folder. Persisted via `set_app_view`. */
-  @state()
+ /** Whether photo listings should recurse into all subfolders of the
+  * currently selected folder. Persisted via `set_app_view`. */
+ @state()
   private includeSubfolders = false;
 
   /** Whether the right-side edit panel is expanded in windowed mode.
@@ -332,10 +348,14 @@ export class WarbleApp extends LitElement {
    * shortcut and the maximize buttons in the detail panel and full
    * view. Drives `pf-full-view`'s overlay styling. */
   @state()
-  private windowFullscreen = false;
+ private windowFullscreen = false;
 
-  @state()
-  private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
+ /** Whether the left sidebar overlay is revealed in fullscreen. */
+ @state()
+ private fsLeftReveal = false;
+
+ @state()
+ private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
 
   @state()
   private hdProgress: HdPrewarmProgress = getHdPrewarmProgress();
@@ -371,9 +391,10 @@ export class WarbleApp extends LitElement {
   }
 
   async connectedCallback() {
-    super.connectedCallback();
-    window.addEventListener("keydown", this.onGlobalKey);
-    this.unsubscribeProgress = onThumbnailProgress((state) => {
+   super.connectedCallback();
+   window.addEventListener("keydown", this.onGlobalKey);
+   window.addEventListener("mousemove", this.onMouseMove);
+   this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
       this.maybeStartHdPrewarm(state);
     });
@@ -468,9 +489,10 @@ export class WarbleApp extends LitElement {
   }
 
   disconnectedCallback(): void {
-    super.disconnectedCallback();
-    window.removeEventListener("keydown", this.onGlobalKey);
-    this.unsubscribeProgress?.();
+   super.disconnectedCallback();
+   window.removeEventListener("keydown", this.onGlobalKey);
+   window.removeEventListener("mousemove", this.onMouseMove);
+   this.unsubscribeProgress?.();
     this.unsubscribeProgress = null;
     this.unsubscribeHdProgress?.();
     this.unsubscribeHdProgress = null;
@@ -529,6 +551,19 @@ export class WarbleApp extends LitElement {
    * keys; we run after it on the bubble phase, so this code never
    * fights with the full view over arrow/p/b/0/1/2.
    */
+
+  private onMouseMove = (e: MouseEvent) => {
+    if (!this.windowFullscreen || this.fullViewIndex === null) {
+      this.fsLeftReveal = false;
+      return;
+    }
+    this.fsLeftReveal = e.clientX <= 12 || this.fsLeftOverOverlay;
+  };
+
+  /** Tracks whether the cursor is currently over the left overlay so
+   *  it stays visible even after leaving the hotzone. */
+  private fsLeftOverOverlay = false;
+
   private onGlobalKey = (e: KeyboardEvent) => {
     // Ignore when typing in inputs/contenteditable.
     const target = e.target as HTMLElement | null;
@@ -819,23 +854,20 @@ export class WarbleApp extends LitElement {
     }
   };
 
-  private onLeftHotzoneEnter = () => {
-    this.sidebarHoverReveal = true;
-  };
-
-  private onSidebarOverlayLeave = () => {
-    this.sidebarHoverReveal = false;
-  };
-
-  updated(changed: Map<string, unknown>): void {
+ updated(changed: Map<string, unknown>): void {
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
     if (changed.has("windowFullscreen") || changed.has("fullViewIndex")) {
-      // In fullscreen with the full view open the folder sidebar is
-      // hidden entirely (no hover-to-reveal). Keep `full-view-open`
-      // for the windowed-mode chrome alignment.
       this.classList.toggle("full-view-open", this.fullViewIndex !== null);
+      this.classList.toggle(
+        "fs-fullview",
+        this.windowFullscreen && this.fullViewIndex !== null
+      );
+      if (!this.windowFullscreen || this.fullViewIndex === null) {
+        this.fsLeftReveal = false;
+        this.fsLeftOverOverlay = false;
+      }
     }
     if (
       this.appViewHydrated &&
@@ -845,12 +877,9 @@ export class WarbleApp extends LitElement {
         changed.has("editPanelOpen") ||
         changed.has("includeSubfolders"))
     ) {
-      void this.persistAppView();
-    }
-    if (changed.has("fullViewIndex") && this.fullViewIndex === null) {
-      this.sidebarHoverReveal = false;
-    }
-  }
+     void this.persistAppView();
+   }
+ }
 
   private async persistAppView() {
     try {
@@ -963,48 +992,82 @@ export class WarbleApp extends LitElement {
           ></pf-full-view>`
         : null}
 
-      ${this.fullViewIndex !== null && this.windowFullscreen
-        ? html`<div
-              class="sidebar-hover-hotzone"
-              @mouseenter=${this.onLeftHotzoneEnter}
+      ${this.windowFullscreen && this.fullViewIndex !== null
+        ? html`
+            <div
+              class="fs-hotzone-left"
+              aria-hidden="true"
             ></div>
-            ${this.sidebarHoverReveal
-              ? html`<div
-                  class="sidebar-hover-overlay"
-                  @mouseleave=${this.onSidebarOverlayLeave}
-                >
-                  <div class="sidebar-rail">
-                    <pf-icon-button
-                      icon=${this.sidebarCollapsed
-                        ? "panel-left-open"
-                        : "panel-left-close"}
-                      label=${this.sidebarCollapsed
-                        ? "Show sidebar"
-                        : "Hide sidebar"}
-                      @click=${this.toggleSidebar}
-                    ></pf-icon-button>
+
+            ${this.fsLeftReveal
+              ? html`
+                  <div
+                    class="fs-overlay-left"
+                    @mouseenter=${() => (this.fsLeftOverOverlay = true)}
+                    @mouseleave=${() => {
+                      this.fsLeftOverOverlay = false;
+                      this.fsLeftReveal = false;
+                    }}
+                  >
+                    <div class="sidebar-rail">
+                      <pf-icon-button
+                        icon=${this.sidebarCollapsed
+                          ? "panel-left-open"
+                          : "panel-left-close"}
+                        label=${this.sidebarCollapsed
+                          ? "Show sidebar"
+                          : "Hide sidebar"}
+                        @click=${this.toggleSidebar}
+                      ></pf-icon-button>
+                    </div>
+                    ${this.sidebarCollapsed
+                      ? null
+                      : html`
+                          <aside class="sidebar">
+                            <div class="sidebar-header">
+                              <div class="sidebar-header-row">
+                                <pf-button variant="primary" @click=${() => this.importFolder()}>
+                                  <pf-icon name="folder-plus"></pf-icon>
+                                  Add Folders
+                                </pf-button>
+                                <span class="header-actions">
+                                  <pf-icon-button
+                                    icon="refresh"
+                                    label="Refresh folders"
+                                    @click=${() => this.refreshFolders()}
+                                  ></pf-icon-button>
+                                  <pf-theme-toggle></pf-theme-toggle>
+                                </span>
+                              </div>
+                              <label class="subfolder-toggle" title="Show photos from all nested subfolders of the selected folder">
+                                <input
+                                  type="checkbox"
+                                  .checked=${this.includeSubfolders}
+                                  @change=${this.toggleIncludeSubfolders}
+                                />
+                                Include subfolders
+                              </label>
+                            </div>
+                            <div class="tree" @folder-select=${this.onFolderSelect}>
+                              ${this.folders.length === 0
+                                ? html`<div class="empty">No folders imported yet.</div>`
+                                : this.folders.map(
+                                    (f) => html`
+                                      <pf-folder-tree-item
+                                        .folder=${f}
+                                        is-root
+                                        selected-id=${this.selectedFolderId ?? ""}
+                                      ></pf-folder-tree-item>
+                                    `
+                                  )}
+                            </div>
+                          </aside>
+                        `}
                   </div>
-                  ${this.sidebarCollapsed
-                    ? null
-                    : html`<aside class="sidebar">
-                        <div class="tree" @folder-select=${this.onFolderSelect}>
-                          ${this.folders.length === 0
-                            ? html`<div class="empty">
-                                No folders imported yet.
-                              </div>`
-                            : this.folders.map(
-                                (f) => html`
-                                  <pf-folder-tree-item
-                                    .folder=${f}
-                                    is-root
-                                    selected-id=${this.selectedFolderId ?? ""}
-                                  ></pf-folder-tree-item>
-                                `
-                              )}
-                        </div>
-                      </aside>`}
-                </div>`
-              : null}`
+                `
+              : null}
+
+          `
         : null}
 
       ${this.renderFooter()}

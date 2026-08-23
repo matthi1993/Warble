@@ -1,10 +1,19 @@
 /**
  * Styles for `<pf-full-view>`. Extracted from `full-view.ts` to keep
  * the orchestrator focused on logic. Includes toolbar / bottombar /
- * stage / fullscreen overlays / edit rail / footer-button styling.
+ * stage / edit rail / footer-button styling.
  *
  * Card-specific styling (info / crop / basic / tone slider) lives
  * inside each sub-component.
+ *
+ * Fullscreen philosophy: the host app-shell collapses its grid so
+ * that `pf-full-view` fills the entire window. The layout inside is
+ * identical to windowed mode — same flex column (toolbar →
+ * stage-row → bottombar), same edit panel on the right. The only
+ * difference is that all chrome (toolbar, bottombar, nav, hint,
+ * edit rail/panel) fades out when the cursor is idle, and
+ * reappears when the cursor approaches a screen edge or hovers
+ * over a chrome element.
  */
 import { css } from "lit";
 
@@ -18,13 +27,70 @@ export const fullViewStyles = css`
     background: var(--pf-fv-bg, #000);
     color: var(--pf-fv-fg, #fff);
     outline: none;
+    overflow: hidden;
   }
+  /* In fullscreen the host element is positioned to fill the
+     entire window by the app-shell grid — no position:fixed here
+     so the normal flex layout works inside. */
   :host([fullscreen]) {
-    position: fixed;
+    position: absolute;
     inset: 0;
     z-index: 1000;
-    width: 100vw;
-    height: 100vh;
+    overflow: hidden;
+  }
+  .toolbar,
+  .bottombar,
+  .nav,
+  .hint {
+    transition: opacity 200ms ease;
+  }
+  /* In fullscreen, chrome overlays the image instead of taking
+     up flex space, so the image fills the entire viewport. */
+  :host([fullscreen]) .toolbar-wrap {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+  }
+  :host([fullscreen]) .bottombar-wrap {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+  }
+  :host([fullscreen]) .nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+  }
+  :host([fullscreen]) .nav.prev {
+    left: 12px;
+  }
+  :host([fullscreen]) .nav.next {
+    right: 12px;
+  }
+  :host([fullscreen]) .stage-row {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+  :host([fullscreen]) .stage {
+    position: absolute;
+    inset: 0;
+  }
+  /* Fade out all chrome when idle in fullscreen. */
+  :host([fullscreen][idle]) .toolbar-wrap,
+  :host([fullscreen][idle]) .bottombar-wrap,
+  :host([fullscreen][idle]) .nav,
+  :host([fullscreen][idle]) .hint {
+    opacity: 0;
+    pointer-events: none;
+  }
+  :host([fullscreen][idle]) {
+    cursor: none;
   }
   .toolbar {
     display: flex;
@@ -34,6 +100,10 @@ export const fullViewStyles = css`
     background: var(--pf-surface);
     color: var(--pf-text);
     border-bottom: 1px solid var(--pf-border);
+  }
+  :host([fullscreen]) .toolbar {
+    background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
+    backdrop-filter: blur(8px);
   }
   .toolbar-left,
   .toolbar-right {
@@ -65,6 +135,10 @@ export const fullViewStyles = css`
     border-top: 1px solid var(--pf-border);
     min-height: 32px;
     box-sizing: border-box;
+  }
+  :host([fullscreen]) .bottombar {
+    background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
+    backdrop-filter: blur(8px);
   }
   .bottombar .menu-popup {
     top: auto;
@@ -207,78 +281,46 @@ export const fullViewStyles = css`
   }
   .fv-rating-overlay {
     position: absolute;
-    inset: 0;
-    z-index: 2;
-  }
-  /* In fullscreen, push the overlay's stage inside the chrome bars
-     so the star row + colour label aren't hidden behind the
-     toolbar / bottombar. When the chrome fades on idle, the overlay
-     fades with it (the rating is no longer relevant to the empty
-     stage). */
-  :host([fullscreen]) .fv-rating-overlay {
-    top: 49px;
-    bottom: 49px;
-  }
-  :host([fullscreen][idle]) .fv-rating-overlay {
-    opacity: 0;
+    bottom: var(--pf-space-3);
+    right: var(--pf-space-3);
+    z-index: 6;
     pointer-events: none;
-  }
-  .fv-rating-overlay {
-    transition: opacity 200ms ease;
-  }
-  :host([fullscreen]) .toolbar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 3;
-    background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
-    backdrop-filter: blur(6px);
-  }
-  :host([fullscreen]) .bottombar {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 3;
-    background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
-    backdrop-filter: blur(6px);
   }
   .nav {
     position: absolute;
     top: 50%;
     transform: translateY(-50%);
-    width: 48px;
-    height: 48px;
-    border-radius: 999px;
-    border: none;
-    background: rgba(0, 0, 0, 0.45);
-    color: #fff;
-    cursor: pointer;
+    z-index: 6;
+    background: color-mix(in srgb, var(--pf-surface) 70%, transparent);
+    border: 1px solid var(--pf-border);
+    color: var(--pf-text);
+    border-radius: var(--pf-radius-full, 999px);
+    width: 36px;
+    height: 36px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: background var(--pf-transition);
-    z-index: 2;
+    cursor: pointer;
+    padding: 0;
+    backdrop-filter: blur(4px);
+  }
+  .nav.prev {
+    left: var(--pf-space-2);
+  }
+  .nav.next {
+    right: var(--pf-space-2);
   }
   .nav:hover {
-    background: rgba(0, 0, 0, 0.75);
+    background: var(--pf-surface-hover);
+    border-color: var(--pf-accent);
   }
   .nav:disabled {
     opacity: 0.3;
     cursor: default;
   }
-  .nav.prev {
-    left: var(--pf-space-3);
-  }
-  .nav.next {
-    right: var(--pf-space-3);
-  }
   .nav pf-icon {
-    font-size: 1.5rem;
+    font-size: 1.1rem;
   }
-  /* Native close button, never a custom element — guarantees clicks
-     reach this handler even if shadow-DOM children get weird. */
   .close-btn {
     background: var(--pf-surface-2);
     color: var(--pf-text);
@@ -320,25 +362,8 @@ export const fullViewStyles = css`
   .stage:hover .hint {
     opacity: 1;
   }
-  :host([fullscreen][idle]) .toolbar,
-  :host([fullscreen][idle]) .bottombar,
-  :host([fullscreen][idle]) .nav,
-  :host([fullscreen][idle]) .hint {
-    opacity: 0;
-    pointer-events: none;
-  }
-  .toolbar,
-  .bottombar,
-  .nav,
-  .hint {
-    transition: opacity 200ms ease;
-  }
-  :host([fullscreen][idle]) {
-    cursor: none;
-  }
-  /* Right-side editor panel: a floating overlay anchored to the
-     right edge of the stage-row in both windowed and fullscreen
-     modes. */
+  /* Right-side editor panel: in the flex flow alongside the stage
+     in both windowed and fullscreen modes. */
   pf-edit-side-panel {
     flex: 0 0 280px;
     max-width: 90vw;
@@ -362,75 +387,52 @@ export const fullViewStyles = css`
   .edit-side-rail pf-icon-button[aria-pressed="true"] {
     color: var(--pf-accent);
   }
-  /* In windowed mode the panel is in flex flow alongside the stage
-     and is shown only when the user has explicitly expanded it. */
-  :host(:not([fullscreen]):not([edit-panel-open])) pf-edit-side-panel {
+  /* Panel is shown only when the user has explicitly expanded it
+     (a tab is active). */
+  :host(:not([edit-panel-open])) pf-edit-side-panel {
     display: none;
   }
-  /* In fullscreen, float over the stage and fade in/out via the
-     edit-panel-visible host attribute. */
+  /* In fullscreen, float over the stage. Hidden by default,
+     only revealed when the cursor approaches the right edge. */
   :host([fullscreen]) .edit-side-rail,
   :host([fullscreen]) pf-edit-side-panel {
     position: absolute;
-    top: 49px;
-    bottom: 49px;
+    top: 0;
+    bottom: 0;
     flex: none;
-    z-index: 5;
+    z-index: 9;
     background: color-mix(in srgb, var(--pf-surface) 92%, transparent);
-    backdrop-filter: blur(6px);
+    backdrop-filter: blur(8px);
     opacity: 0;
-    transform: translateX(8px);
     pointer-events: none;
+    transform: translateX(8px);
     transition: opacity 200ms ease, transform 200ms ease;
   }
-  /* Rail anchors to the RIGHT edge in fullscreen, with the panel
-     opening to its left when expanded. (Windowed mode keeps the
-     panel on the right via the flex layout above.) */
+  /* Offset below toolbar / above bottombar when visible. */
+  :host([fullscreen]) .edit-side-rail,
+  :host([fullscreen]) pf-edit-side-panel {
+    top: 49px;
+    bottom: 49px;
+  }
   :host([fullscreen]) .edit-side-rail {
     right: 0;
     left: auto;
     width: 32px;
-    height: auto;
   }
   :host([fullscreen][edit-panel-open]) .edit-side-rail {
     right: 280px;
-    left: auto;
   }
   :host([fullscreen]) pf-edit-side-panel {
     right: 0;
     left: auto;
     width: 280px;
   }
-  :host([fullscreen][edit-panel-visible]) .edit-side-rail {
+  /* Reveal when rightReveal host attribute is set. */
+  :host([fullscreen][right-reveal]) .edit-side-rail,
+  :host([fullscreen][right-reveal]) pf-edit-side-panel {
     opacity: 1;
+    pointer-events: auto;
     transform: translateX(0);
-    pointer-events: auto;
-  }
-  /* Panel only fades in when a tab is actually selected. */
-  :host([fullscreen][edit-panel-visible][edit-panel-open]) pf-edit-side-panel {
-    opacity: 1;
-    transform: translateX(0);
-    pointer-events: auto;
-  }
-  /* Hover hot-zone on the RIGHT edge in fullscreen mode so the
-     floating panel can be summoned without grazing the edge
-     precisely. Kept narrow on purpose — the mouse has to be
-     essentially against the edge to summon the panel, so it
-     doesn't pop up while the user is just inspecting the photo. */
-  .edit-panel-hotzone {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    right: 0;
-    width: 16px;
-    z-index: 4;
-    pointer-events: auto;
-  }
-  :host(:not([fullscreen])) .edit-panel-hotzone {
-    display: none;
-  }
-  :host([fullscreen][idle]) .edit-panel-hotzone {
-    pointer-events: none;
   }
   /* Footer buttons inside the slotted side-panel footer. */
   .footer-btn {

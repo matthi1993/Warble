@@ -1,56 +1,64 @@
 /**
- * Cursor-idle controller. Tracks mouse movement over the canvas
- * area and flips an `idle` flag after a quiet period so the host
- * can auto-hide chrome in fullscreen.
+ * Cursor-idle controller for fullscreen mode.
  *
- * The "canvas area" definition (49 px from top/bottom, 260 px gutter
- * on the left, optional 312 / 80 px gutter on the right) is owned
- * here so the host doesn't need to keep two cursor-zone definitions
- * in sync.
+ * In fullscreen, all chrome (toolbar, bottombar, nav, edit panel,
+ * hint) floats over the image as overlays. They are visible by
+ * default and fade out after the cursor stays still over the image
+ * for a short period. Moving the cursor near any screen edge
+ * instantly cancels idle so the corresponding chrome reappears.
+ *
+ * Edge reveal zones:
+ *   - Top edge    (y < 60 px)    → toolbar
+ *   - Bottom edge (y > h - 60)   → bottombar + nav
+ *   - Left edge   (x < 60 px)    → nav (prev button)
+ *   - Right edge  (x > w - 60)   → edit rail/panel
+ *
+ * The controller also cancels idle whenever the cursor is directly
+ * over a chrome element (handled by the host via `cancelIdle()`).
  */
-
 export interface IdleControllerOptions {
-  /** Read live: is the host in fullscreen mode? */
   isFullscreen(): boolean;
-  /** Read live: are edit affordances on (right-side panel allowed)? */
-  isEditMode(): boolean;
-  /** Read live: is the edit panel currently visible in fullscreen? */
-  isEditPanelVisible(): boolean;
-  /** Called when the idle state should change. */
   onIdleChange(idle: boolean): void;
 }
 
-const IDLE_TIMEOUT_MS = 1000;
+const IDLE_TIMEOUT_MS = 1500;
+const EDGE_THRESHOLD = 60;
 
 export class IdleController {
   private idle = false;
   private timer: number | null = null;
+
   constructor(private readonly opts: IdleControllerOptions) {}
 
-  /** Process a mousemove. Returns whether the cursor is currently
-   *  inside the canvas area (host can use this to gate other
-   *  reveal behaviour). */
-  onMouseMove(x: number, y: number): boolean {
-    if (!this.opts.isFullscreen()) return false;
-    const onCanvas = this.cursorOnCanvasArea(x, y);
-    if (!onCanvas) {
-      this.clearTimer();
-      this.setIdle(false);
-      return false;
+  /** Process a mousemove. If the cursor is near an edge, idle is
+   *  cancelled immediately. Otherwise a timer is (re)started that
+   *  will flip to idle after {@link IDLE_TIMEOUT_MS}. */
+  onMouseMove(x: number, y: number): void {
+    if (!this.opts.isFullscreen()) return;
+    if (this.nearEdge(x, y)) {
+      this.cancelIdle();
+      return;
     }
-    if (this.idle) return true;
+    if (this.idle) {
+      this.setIdle(false);
+    }
     this.clearTimer();
     this.timer = window.setTimeout(() => {
       this.setIdle(true);
     }, IDLE_TIMEOUT_MS);
-    return true;
   }
 
-  /** Called when fullscreen toggles on so the timer restarts cleanly. */
+  /** Cancel idle immediately — called when the cursor enters a
+   *  chrome element (toolbar, bottombar, edit panel, etc.). */
+  cancelIdle(): void {
+    this.clearTimer();
+    this.setIdle(false);
+  }
+
+  /** Called when fullscreen toggles on. */
   bump(): void {
     this.setIdle(false);
     this.clearTimer();
-    if (!this.opts.isFullscreen()) return;
     this.timer = window.setTimeout(() => {
       this.setIdle(true);
     }, IDLE_TIMEOUT_MS);
@@ -66,6 +74,17 @@ export class IdleController {
     this.clearTimer();
   }
 
+  private nearEdge(x: number, y: number): boolean {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    return (
+      y < EDGE_THRESHOLD ||
+      y > h - EDGE_THRESHOLD ||
+      x < EDGE_THRESHOLD ||
+      x > w - EDGE_THRESHOLD
+    );
+  }
+
   private setIdle(v: boolean) {
     if (this.idle === v) return;
     this.idle = v;
@@ -77,20 +96,5 @@ export class IdleController {
       window.clearTimeout(this.timer);
       this.timer = null;
     }
-  }
-
-  /** True when the cursor sits over the image canvas area (i.e. not
-   *  over the toolbar, bottombar, or the floating edit panel). */
-  cursorOnCanvasArea(x: number, y: number): boolean {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    if (y < 49) return false;
-    if (y > h - 49) return false;
-    if (this.opts.isEditMode()) {
-      const rightZone = this.opts.isEditPanelVisible() ? 32 + 280 : 80;
-      if (x > w - rightZone) return false;
-    }
-    if (x < 260) return false;
-    return true;
   }
 }

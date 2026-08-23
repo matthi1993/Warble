@@ -143,17 +143,20 @@ export class PfFullView extends LitElement {
   @property({ type: Boolean, reflect: true })
   idle = false;
 
-  /** Reflects whether the rail + (optional) panel content are
-   *  currently revealed in fullscreen. Driven by cursor proximity to
-   *  the right edge or hover over the rail/panel. Inert in windowed
-   *  mode (rail is always shown). */
-  @property({ type: Boolean, reflect: true, attribute: "edit-panel-visible" })
-  editPanelVisible = false;
+  /** In fullscreen, the edit rail/panel is only visible when the
+   *  cursor approaches the right edge. Reflected as attribute so
+   *  CSS can gate the reveal. */
+  @property({ type: Boolean, reflect: true, attribute: "right-reveal" })
+  rightReveal = false;
 
-  /** Reflects whether the panel content (any tab) is expanded.
-   *  Equivalent to `activeTab !== null`. */
-  @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
-  editPanelOpen = false;
+  /** Whether the cursor is currently over the edit rail/panel so it
+   *  stays visible even after leaving the edge hotzone. */
+  private rightOverPanel = false;
+
+ /** Reflects whether the panel content (any tab) is expanded.
+  *  Equivalent to `activeTab !== null`. */
+ @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
+ editPanelOpen = false;
 
   /** Active side-panel tab, or null if the panel is collapsed. */
   @state()
@@ -192,12 +195,10 @@ export class PfFullView extends LitElement {
   private exifLoader = new ExifLoader(() => this.requestUpdate());
 
   private idleController = new IdleController({
-    isFullscreen: () => this.fullscreen,
-    isEditMode: () => this.editMode,
-    isEditPanelVisible: () => this.editPanelVisible,
-    onIdleChange: (v) => {
-      this.idle = v;
-      if (v) this.openMenu = null;
+   isFullscreen: () => this.fullscreen,
+   onIdleChange: (v) => {
+     this.idle = v;
+     if (v) this.openMenu = null;
     },
   });
 
@@ -236,23 +237,18 @@ export class PfFullView extends LitElement {
   private onKeyDown = (e: KeyboardEvent) => this.handleKey(e);
 
   private onMouseMoveGlobal = (e: MouseEvent) => {
-    if (this.editMode && this.fullscreen) {
-      const nearRight = e.clientX > window.innerWidth - 16;
-      const overRailOrPanel = this.cursorOverEditRailOrPanelXY(
-        e.clientX,
-        e.clientY
-      );
-      this.editPanelVisible = nearRight || overRailOrPanel;
-    }
     this.idleController.onMouseMove(e.clientX, e.clientY);
+    if (this.fullscreen && this.editMode) {
+      const nearRight = e.clientX >= window.innerWidth - 12;
+      this.rightReveal = nearRight || this.rightOverPanel;
+    } else {
+      this.rightReveal = false;
+    }
   };
 
-  private onMouseLeaveWindow = () => {
-    // When the cursor leaves the viewport entirely, hide the
-    // floating edit rail/panel so it doesn't linger on top of the
-    // photo while the user is off-screen.
-    if (this.fullscreen) this.editPanelVisible = false;
-  };
+ private onMouseLeaveWindow = () => {
+   if (this.fullscreen) this.idleController.cancelIdle();
+ };
 
   private onDocClick = (e: MouseEvent) => {
     if (!this.openMenu) return;
@@ -330,7 +326,11 @@ export class PfFullView extends LitElement {
     }
     if (changed.has("fullscreen")) {
       if (this.fullscreen) this.idleController.bump();
-      else this.idleController.reset();
+      else {
+        this.idleController.reset();
+        this.rightReveal = false;
+        this.rightOverPanel = false;
+      }
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
     if (changed.has("photos") || changed.has("index")) {
@@ -344,13 +344,12 @@ export class PfFullView extends LitElement {
         this.activeToolId = null;
       }
       this.previewOriginal = false;
-      if (!this.editMode) {
-        this.editPanelVisible = false;
-        if (this.activeTab !== null) {
-          this.activeTab = null;
-          this.editPanelOpen = false;
-        }
-      }
+     if (!this.editMode) {
+       if (this.activeTab !== null) {
+         this.activeTab = null;
+         this.editPanelOpen = false;
+       }
+     }
     }
     if (changed.has("activeTab")) {
       this.editPanelOpen = this.activeTab !== null;
@@ -647,34 +646,10 @@ export class PfFullView extends LitElement {
     this.requestUpdate();
   }
 
-  // --- Right-side rail/panel cursor hit-testing ----------------------
 
-  private cursorOverEditPanelXY(x: number, y: number): boolean {
-    const panel = this.renderRoot.querySelector(
-      "pf-edit-side-panel"
-    ) as HTMLElement | null;
-    if (!panel) return false;
-    const rect = panel.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
-    return (
-      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-    );
-  }
 
-  private cursorOverEditRailOrPanelXY(x: number, y: number): boolean {
-    if (this.cursorOverEditPanelXY(x, y)) return true;
-    const rail = this.renderRoot.querySelector(
-      ".edit-side-rail"
-    ) as HTMLElement | null;
-    if (!rail) return false;
-    const rect = rail.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
-    return (
-      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-    );
-  }
 
-  // --- Before/After preview ------------------------------------------
+ // --- Before/After preview ------------------------------------------
 
   private startPreviewOriginal = (e: Event) => {
     if (!this.canPreviewOriginal()) return;
@@ -758,8 +733,8 @@ export class PfFullView extends LitElement {
      { id: "post", icon: "wand", label: "Post Process" },
     ];
     return html`
-      <div class="edit-side-rail" @click=${(e: Event) => e.stopPropagation()}>
-        ${tabs.map(
+      <div class="edit-side-rail" @click=${(e: Event) => e.stopPropagation()} @mouseenter=${() => { this.idleController.cancelIdle(); this.rightOverPanel = true; }} @mouseleave=${() => { this.rightOverPanel = false; this.rightReveal = false; }}>
+       ${tabs.map(
           (t) => html`
             <pf-icon-button
               icon=${t.icon}
@@ -792,11 +767,12 @@ export class PfFullView extends LitElement {
 
   private renderEditPanel() {
     return html`
-      <pf-edit-side-panel
-        aria-label="Edit panel"
-        @click=${(e: Event) => e.stopPropagation()}
-        @mouseenter=${() => (this.editPanelVisible = true)}
-      >
+     <pf-edit-side-panel
+       aria-label="Edit panel"
+       @click=${(e: Event) => e.stopPropagation()}
+       @mouseenter=${() => { this.idleController.cancelIdle(); this.rightOverPanel = true; }}
+       @mouseleave=${() => { this.rightOverPanel = false; this.rightReveal = false; }}
+     >
         ${this.renderTabContent()}
         ${this.activeTab === "edit" ? this.renderEditTabFooter() : null}
       </pf-edit-side-panel>
@@ -856,21 +832,23 @@ export class PfFullView extends LitElement {
     const horizonMode = overrides.horizonMode ?? false;
     const sizing = overrides.sizing ?? this.sizing;
     return html`
-      ${renderToolbar({
-        photo,
-        index: this.index,
-        total,
-        fullscreen: this.fullscreen,
-        selection: currentSelection(photo),
-        openMenu: this.openMenu,
-        variantHasEdits: this.variantHasEdits,
-        onToggleMenu: this.toggleMenu,
-        onSetFormat: this.setFormat,
-        onSetVariant: this.setVariant,
-        onToggleFullscreen: this.toggleFullscreen,
-        onClose: this.close,
-      })}
-      <div class="stage-row">
+     <div class="toolbar-wrap" @mouseenter=${() => this.idleController.cancelIdle()}>
+       ${renderToolbar({
+       photo,
+       index: this.index,
+       total,
+       fullscreen: this.fullscreen,
+       selection: currentSelection(photo),
+       openMenu: this.openMenu,
+       variantHasEdits: this.variantHasEdits,
+       onToggleMenu: this.toggleMenu,
+       onSetFormat: this.setFormat,
+       onSetVariant: this.setVariant,
+       onToggleFullscreen: this.toggleFullscreen,
+       onClose: this.close,
+     })}
+     </div>
+     <div class="stage-row">
         <div class="stage">
           <pf-image-canvas
             .path=${path}
@@ -899,21 +877,23 @@ export class PfFullView extends LitElement {
               ></pf-rating-overlay>`
             : null}
           <button
-            class="nav prev"
-            aria-label="Previous"
-            ?disabled=${!hasPrev}
-            @click=${() => this.go(-1)}
-          >
-            <pf-icon name="chevron-left"></pf-icon>
-          </button>
-          <button
-            class="nav next"
-            aria-label="Next"
-            ?disabled=${!hasNext}
-            @click=${() => this.go(1)}
-          >
-            <pf-icon name="chevron-right"></pf-icon>
-          </button>
+           class="nav prev"
+           aria-label="Previous"
+           ?disabled=${!hasPrev}
+           @click=${() => this.go(-1)}
+           @mouseenter=${() => this.idleController.cancelIdle()}
+         >
+           <pf-icon name="chevron-left"></pf-icon>
+         </button>
+         <button
+           class="nav next"
+           aria-label="Next"
+           ?disabled=${!hasNext}
+           @click=${() => this.go(1)}
+           @mouseenter=${() => this.idleController.cancelIdle()}
+         >
+           <pf-icon name="chevron-right"></pf-icon>
+         </button>
           <div class="hint">
             ${buildHintLine(this.shortcuts, [
               "Scroll to zoom",
@@ -926,19 +906,14 @@ export class PfFullView extends LitElement {
           </div>
         </div>
         ${this.editMode
-          ? html`<div
-              class="edit-panel-hotzone"
-              aria-hidden="true"
-              @mouseenter=${() => (this.editPanelVisible = true)}
-            ></div>`
-          : null}
-        ${this.editMode ? this.renderSideRail() : null}
-        ${this.editMode && this.activeTab !== null
+      ? this.renderSideRail() : null}
+      ${this.editMode && this.activeTab !== null
           ? this.renderEditPanel()
           : null}
       </div>
-      ${renderBottombar({
-       bg: this.bg,
+     <div class="bottombar-wrap" @mouseenter=${() => this.idleController.cancelIdle()}>
+       ${renderBottombar({
+      bg: this.bg,
        fit: this.fit,
        sizing: this.sizing,
        smoothing: this.smoothing,
@@ -956,8 +931,9 @@ export class PfFullView extends LitElement {
        postProcessEnabled: getPostProcess().enabled,
         onTogglePostProcess: () =>
           setPostProcessEnabled(!getPostProcess().enabled),
-      })}
-    `;
+     })}
+     </div>
+   `;
   }
 }
 
