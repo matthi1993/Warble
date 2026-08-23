@@ -105,13 +105,13 @@ export class PfPostProcessCard extends LitElement {
    *  so the card behaves like every other collapsible in the edit
    *  panel. */
   @state()
-  private curveOpen = true;
+  private curveOpen = false;
 
   @state()
-  private colorOpen = true;
+  private colorOpen = false;
 
   @state()
-  private sharpenOpen = true;
+  private sharpenOpen = false;
 
   private unsub: (() => void) | null = null;
 
