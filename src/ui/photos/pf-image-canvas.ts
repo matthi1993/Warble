@@ -48,11 +48,9 @@ import {
   type PostProcessSettings,
 } from "@services/post-process/post-process-store";
 import {
-  getPhotoBloom,
   getPhotoSharpen,
   defaultSharpenForFormat,
   subscribePhotoEffects,
-  type BloomSettings,
   type SharpenSettings,
 } from "@services/effects/effects-store";
 import { classifyFormat } from "@domain/photo";
@@ -61,9 +59,19 @@ import { classifyFormat } from "@domain/photo";
 import { decodeBase64Jpeg } from "./canvas/decoder-bootstrap";
 import { TonePipeline, type ToneSource } from "./canvas/tone-pipeline";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
-import type { CropFrame, ImageFit, ImageSizing } from "./canvas/types";
+import type {
+  CropFrame,
+  ImageFit,
+  ImageSizing,
+  ImageSmoothingQuality,
+} from "./canvas/types";
 
-export type { CropFrame, ImageFit, ImageSizing } from "./canvas/types";
+export type {
+  CropFrame,
+  ImageFit,
+  ImageSizing,
+  ImageSmoothingQuality,
+} from "./canvas/types";
 
 /** Time the user must linger on a photo before we kick off a full-
  * resolution decode in addition to the HD preview.  */
@@ -169,6 +177,9 @@ export class PfImageCanvas extends LitElement {
 
   @property({ type: String, reflect: true })
   sizing: ImageSizing = "fit";
+
+  @property({ type: String })
+  smoothingQuality: ImageSmoothingQuality = "high";
 
   @property({ type: String })
   background = "transparent";
@@ -319,11 +330,8 @@ export class PfImageCanvas extends LitElement {
    * Updated via {@link subscribePostProcess}; redraws on change. */
   @state()
   private postProcess: PostProcessSettings = getPostProcess();
-  /** Saved (persisted) per-photo bloom effect. */
-  @state()
-  private savedBloom: BloomSettings | null = null;
-  /** Effective per-photo sharpening — either the explicitly stored
-   *  value (which may have strength=0 if the user disabled the
+ /** Effective per-photo sharpening — either the explicitly stored
+  *  value (which may have strength=0 if the user disabled the
    *  format default) or the format default (some for RAW, none for
    *  JPG). Never null while {@link path} is set. */
   @state()
@@ -414,7 +422,7 @@ export class PfImageCanvas extends LitElement {
       this.postProcess = next;
       this.scheduleDraw();
     });
-    // Per-photo effects (bloom, …) live in their own localStorage
+    // Per-photo effects (sharpen, …) live in their own localStorage
     // store. Slider drags push at the same rate as edit slider drags,
     // and the WebGL pipeline can absorb them without a re-upload.
     this.effectsUnsubscribe = subscribePhotoEffects((path) => {
@@ -443,17 +451,15 @@ export class PfImageCanvas extends LitElement {
   }
 
   private refreshSavedEffects() {
-    if (!this.path) {
-      this.savedBloom = null;
-      this.savedSharpen = null;
-      return;
-    }
-    this.savedBloom = getPhotoBloom(this.path);
-    const ext = this.path.split(".").pop() ?? "";
-    const fmt = classifyFormat(ext);
-    this.savedSharpen =
-      getPhotoSharpen(this.path) ?? defaultSharpenForFormat(fmt);
-  }
+   if (!this.path) {
+     this.savedSharpen = null;
+     return;
+   }
+   const ext = this.path.split(".").pop() ?? "";
+   const fmt = classifyFormat(ext);
+   this.savedSharpen =
+     getPhotoSharpen(this.path) ?? defaultSharpenForFormat(fmt);
+ }
 
   /**
    * Pin the canvas to the HD bitmap for {@link EDIT_SETTLE_MS} so a
@@ -553,6 +559,9 @@ export class PfImageCanvas extends LitElement {
       // attributes, so the canvas resizes on the next frame; a single
       // onResize() pass after layout settles refits and redraws.
       requestAnimationFrame(() => this.onResize());
+    }
+    if (changed.has("smoothingQuality")) {
+      this.scheduleDraw();
     }
     if (changed.has("cropMode")) {
       this.userInteracted = false;
@@ -1029,11 +1038,13 @@ export class PfImageCanvas extends LitElement {
       ctx = cv.getContext("2d");
     }
     if (!ctx) return null;
-    ctx.save();
-    ctx.translate(w / 2, h / 2);
-    ctx.rotate(rad);
-    ctx.drawImage(bm, -bm.width / 2, -bm.height / 2);
-    ctx.restore();
+   ctx.imageSmoothingEnabled = true;
+   ctx.imageSmoothingQuality = this.smoothingQuality;
+   ctx.save();
+   ctx.translate(w / 2, h / 2);
+   ctx.rotate(rad);
+   ctx.drawImage(bm, -bm.width / 2, -bm.height / 2);
+   ctx.restore();
     return { canvas: cv, width: w, height: h };
   }
 
@@ -1158,7 +1169,7 @@ export class PfImageCanvas extends LitElement {
       const x = cx - drawW / 2;
       const y = cy - drawH / 2;
       ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
+      ctx.imageSmoothingQuality = this.smoothingQuality;
       // Tone is applied in crop mode too so the user sees what their
       // adjustments do while re-framing. `previewOriginal` (the
       // before/after toggle) still bypasses tone + crop on purpose.
@@ -1175,22 +1186,19 @@ export class PfImageCanvas extends LitElement {
       const postCurveActive = ppEnabled && !isCurveZero(pp.curve);
       const postColorActive = ppEnabled && !isColorZero(pp.color);
       const editColorActive =
-        !!this.savedColor && !isColorZero(this.savedColor);
-      const bloomActive =
-        !!this.savedBloom && this.savedBloom.strength > 0;
-      const sharpenActive =
-        !!this.savedSharpen && this.savedSharpen.strength > 0;
-      const postSharpenActive = ppEnabled && pp.sharpen.strength > 0;
-      const applyPipeline =
-        !this.previewOriginal &&
-        (!isToneZero(this.savedTone) ||
-          !isCurveZero(this.savedCurve) ||
-          editColorActive ||
-          postCurveActive ||
-          postColorActive ||
-          bloomActive ||
-          sharpenActive ||
-          postSharpenActive);
+       !!this.savedColor && !isColorZero(this.savedColor);
+     const sharpenActive =
+       !!this.savedSharpen && this.savedSharpen.strength > 0;
+     const postSharpenActive = ppEnabled && pp.sharpen.strength > 0;
+     const applyPipeline =
+       !this.previewOriginal &&
+       (!isToneZero(this.savedTone) ||
+         !isCurveZero(this.savedCurve) ||
+         editColorActive ||
+         postCurveActive ||
+         postColorActive ||
+         sharpenActive ||
+         postSharpenActive);
       if (applyPipeline) {
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
@@ -1225,10 +1233,9 @@ export class PfImageCanvas extends LitElement {
               curve: this.savedCurve,
               postCurve: postCurveActive ? pp.curve : null,
               editColor: editColorActive ? this.savedColor : null,
-              postColor: postColorActive ? pp.color : null,
-              bloom: bloomActive ? this.savedBloom : null,
-              sharpen: sharpenActive ? this.savedSharpen : null,
-              postSharpen: postSharpenActive ? pp.sharpen : null,
+             postColor: postColorActive ? pp.color : null,
+             sharpen: sharpenActive ? this.savedSharpen : null,
+             postSharpen: postSharpenActive ? pp.sharpen : null,
             }
           );
           if (toned) {
@@ -2063,3 +2070,4 @@ declare global {
     "pf-image-canvas": PfImageCanvas;
   }
 }
+    // Per-photo effects (sharpen, …) live in their own localStorage

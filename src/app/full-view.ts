@@ -40,6 +40,7 @@ import {
   loadViewState,
   saveViewState,
   type BgColor,
+  type SmoothingQuality,
 } from "@services/view-state/view-state-service";
 import "@ui/controls/pf-icon-button";
 import "@ui/controls/pf-slider";
@@ -49,6 +50,7 @@ import "@ui/photos/pf-rating-overlay";
 import type {
   ImageFit,
   ImageSizing,
+  ImageSmoothingQuality,
   PfImageCanvas,
 } from "@ui/photos/pf-image-canvas";
 import "./views/full-view/pf-info-card";
@@ -70,7 +72,6 @@ import { CropTool } from "./views/full-view/tools/crop-tool";
 import { ToneTool } from "./views/full-view/tools/tone-tool";
 import { CurveTool } from "./views/full-view/tools/curve-tool";
 import { ColorTool } from "./views/full-view/tools/color-tool";
-import { BloomTool } from "./views/full-view/tools/bloom-tool";
 import { SharpenTool } from "./views/full-view/tools/sharpen-tool";
 import {
   currentSelection,
@@ -86,7 +87,7 @@ import {
   type ShortcutDef,
 } from "./views/full-view/shortcuts";
 
-type SidePanelTab = "info" | "edit" | "effects" | "post";
+type SidePanelTab = "info" | "edit" | "post";
 
 /** Module-level clipboard for cmd+c / cmd+v across photos. Each
  *  entry is keyed by tool id; the blob is whatever the tool's
@@ -115,7 +116,10 @@ export class PfFullView extends LitElement {
   private fit: ImageFit = DEFAULT_VIEW_STATE.fit;
 
   @state()
-  private sizing: ImageSizing = DEFAULT_VIEW_STATE.sizing;
+ private sizing: ImageSizing = DEFAULT_VIEW_STATE.sizing;
+
+ @state()
+ private smoothing: SmoothingQuality = DEFAULT_VIEW_STATE.smoothing;
 
   /** Suppresses the persistence side-effect during the initial hydrate. */
   private hydrated = false;
@@ -164,29 +168,25 @@ export class PfFullView extends LitElement {
   private toneTool = new ToneTool();
   private colorTool = new ColorTool();
   private curveTool = new CurveTool();
-  private bloomTool = new BloomTool();
   private sharpenTool = new SharpenTool();
   private tools: EditTool[] = [
-    this.cropTool,
-    this.toneTool,
-    this.colorTool,
-    this.curveTool,
-    this.bloomTool,
-    this.sharpenTool,
-  ];
-  /** Tools rendered under the "Edit" tab in the side panel. */
-  private editTabTools: EditTool[] = [
-    this.cropTool,
-    this.toneTool,
-    this.colorTool,
-    this.curveTool,
-    this.sharpenTool,
-  ];
-  /** Tools rendered under the "Effects" tab. */
-  private effectsTabTools: EditTool[] = [this.bloomTool, this.sharpenTool];
-  /** The tool currently in foreground/interactive mode. Crop is the
-   *  only one that takes over the canvas; tone runs passively. */
-  @state()
+   this.cropTool,
+   this.toneTool,
+   this.colorTool,
+   this.curveTool,
+   this.sharpenTool,
+ ];
+ /** Tools rendered under the "Edit" tab in the side panel. */
+ private editTabTools: EditTool[] = [
+   this.cropTool,
+   this.toneTool,
+   this.colorTool,
+   this.curveTool,
+   this.sharpenTool,
+ ];
+ /** The tool currently in foreground/interactive mode. Crop is the
+  *  only one that takes over the canvas; tone runs passively. */
+ @state()
   private activeToolId: string | null = null;
 
   private exifLoader = new ExifLoader(() => this.requestUpdate());
@@ -323,10 +323,10 @@ export class PfFullView extends LitElement {
       );
     }
     if (
-      (changed.has("bg") || changed.has("fit") || changed.has("sizing")) &&
+      (changed.has("bg") || changed.has("fit") || changed.has("sizing") || changed.has("smoothing")) &&
       this.hydrated
     ) {
-      void saveViewState({ bg: this.bg, fit: this.fit, sizing: this.sizing });
+      void saveViewState({ bg: this.bg, fit: this.fit, sizing: this.sizing, smoothing: this.smoothing });
     }
     if (changed.has("fullscreen")) {
       if (this.fullscreen) this.idleController.bump();
@@ -396,7 +396,8 @@ export class PfFullView extends LitElement {
     if (persisted.bg) this.bg = persisted.bg;
     if (persisted.fit) this.fit = persisted.fit;
     if (persisted.sizing) this.sizing = persisted.sizing;
-    this.hydrated = true;
+   if (persisted.smoothing) this.smoothing = persisted.smoothing;
+   this.hydrated = true;
   }
 
   private get currentPhoto(): Photo | null {
@@ -536,9 +537,14 @@ export class PfFullView extends LitElement {
     this.sizing = s;
     this.openMenu = null;
     if (same) this.canvasEl()?.resetView();
-  };
+ };
 
-  private toggleMenu = (which: FullViewMenu) => {
+ private setSmoothing = (q: SmoothingQuality) => {
+  this.smoothing = q;
+  this.openMenu = null;
+};
+
+ private toggleMenu = (which: FullViewMenu) => {
     this.openMenu = this.openMenu === which ? null : which;
   };
 
@@ -560,7 +566,7 @@ export class PfFullView extends LitElement {
     const sel = currentSelection(photo);
     const variant =
       variants.find((v) => v.key === sel?.variant)?.key ?? variants[0].key;
-    setVariantOverride(photo.path, { format, variant });
+    setVariantOverride(photo.path, { format, variant }); 
     this.openMenu = null;
   };
 
@@ -732,10 +738,14 @@ export class PfFullView extends LitElement {
   }
 
   private sizingLabel(s: ImageSizing): string {
-    return s === "fit" ? "Contain" : s === "fill" ? "Cover" : "Hybrid";
-  }
+   return s === "fit" ? "Contain" : s === "fill" ? "Cover" : "Hybrid";
+ }
 
-  // --- Render ---------------------------------------------------------
+ private smoothingLabel(q: ImageSmoothingQuality): string {
+   return q.charAt(0).toUpperCase() + q.slice(1);
+ }
+
+ // --- Render ---------------------------------------------------------
 
   private renderSideRail() {
     const tabs: ReadonlyArray<{
@@ -744,9 +754,8 @@ export class PfFullView extends LitElement {
       label: string;
     }> = [
       { id: "info", icon: "info", label: "Info" },
-      { id: "edit", icon: "pencil", label: "Edit" },
-      { id: "effects", icon: "sparkle", label: "Effects" },
-      { id: "post", icon: "wand", label: "Post Process" },
+     { id: "edit", icon: "pencil", label: "Edit" },
+     { id: "post", icon: "wand", label: "Post Process" },
     ];
     return html`
       <div class="edit-side-rail" @click=${(e: Event) => e.stopPropagation()}>
@@ -773,10 +782,8 @@ export class PfFullView extends LitElement {
           ?open=${true}
         ></pf-info-card>`;
       case "edit":
-        return this.editTabTools.map((t) => t.renderCard(this.toolHost));
-      case "effects":
-        return this.effectsTabTools.map((t) => t.renderCard(this.toolHost));
-      case "post":
+       return this.editTabTools.map((t) => t.renderCard(this.toolHost));
+     case "post":
         return html`<pf-post-process-card></pf-post-process-card>`;
       default:
         return null;
@@ -869,7 +876,8 @@ export class PfFullView extends LitElement {
             .path=${path}
             .fit=${this.fit}
             .sizing=${sizing}
-            .cropMode=${cropMode}
+           .smoothingQuality=${this.smoothing}
+           .cropMode=${cropMode}
             .cropAspect=${cropAspect}
             .rotation=${rotation}
             ?horizonMode=${horizonMode}
@@ -930,19 +938,22 @@ export class PfFullView extends LitElement {
           : null}
       </div>
       ${renderBottombar({
-        bg: this.bg,
-        fit: this.fit,
-        sizing: this.sizing,
-        openMenu: this.openMenu,
-        bgCss: (b) => this.bgCss(b),
-        bgLabel: (b) => this.bgLabel(b),
-        fitLabel: (m) => this.fitLabel(m),
-        sizingLabel: (s) => this.sizingLabel(s),
-        onToggleMenu: this.toggleMenu,
-        onSetBg: this.setBg,
-        onSetFit: this.setFit,
-        onSetSizing: this.setSizing,
-        postProcessEnabled: getPostProcess().enabled,
+       bg: this.bg,
+       fit: this.fit,
+       sizing: this.sizing,
+       smoothing: this.smoothing,
+       openMenu: this.openMenu,
+       bgCss: (b) => this.bgCss(b),
+       bgLabel: (b) => this.bgLabel(b),
+       fitLabel: (m) => this.fitLabel(m),
+       sizingLabel: (s) => this.sizingLabel(s),
+       smoothingLabel: (q) => this.smoothingLabel(q),
+       onToggleMenu: this.toggleMenu,
+       onSetBg: this.setBg,
+       onSetFit: this.setFit,
+       onSetSizing: this.setSizing,
+       onSetSmoothing: this.setSmoothing,
+       postProcessEnabled: getPostProcess().enabled,
         onTogglePostProcess: () =>
           setPostProcessEnabled(!getPostProcess().enabled),
       })}

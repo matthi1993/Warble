@@ -17,10 +17,17 @@ import {
 import type {
   ImageFit,
   ImageSizing,
+  ImageSmoothingQuality,
 } from "@ui/photos/pf-image-canvas";
 import type { BgColor } from "@services/view-state/view-state-service";
 
-export type FullViewMenu = "bg" | "fit" | "sizing" | "format" | "variant";
+export type FullViewMenu =
+  | "bg"
+  | "fit"
+  | "sizing"
+  | "smoothing"
+  | "format"
+  | "variant";
 
 export interface ToolbarOptions {
   photo: Photo;
@@ -133,15 +140,18 @@ export interface BottombarOptions {
   bg: BgColor;
   fit: ImageFit;
   sizing: ImageSizing;
+  smoothing: ImageSmoothingQuality;
   openMenu: FullViewMenu | null;
   bgCss: (bg: BgColor) => string;
   bgLabel: (bg: BgColor) => string;
   fitLabel: (m: ImageFit) => string;
   sizingLabel: (s: ImageSizing) => string;
+  smoothingLabel: (q: ImageSmoothingQuality) => string;
   onToggleMenu: (which: FullViewMenu) => void;
   onSetBg: (bg: BgColor) => void;
   onSetFit: (m: ImageFit) => void;
   onSetSizing: (s: ImageSizing) => void;
+  onSetSmoothing: (q: ImageSmoothingQuality) => void;
   /** Master post-process switch, shown as a quick toggle next to
    *  "Scale" so the user can flip the global look on/off without
    *  opening the side panel. */
@@ -150,7 +160,7 @@ export interface BottombarOptions {
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
-  const { bg, fit, sizing, openMenu } = opts;
+  const { bg, fit, sizing, smoothing, openMenu } = opts;
   return html`
     <div class="bottombar">
       <span class="menu-wrap">
@@ -269,12 +279,38 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
               </button>
             </div>`
           : null}
-      </span>
-      <span class="menu-wrap">
-        <button
-          class="menu-trigger"
-          type="button"
-          aria-pressed=${opts.postProcessEnabled}
+     </span>
+     <span class="menu-wrap">
+       <button
+         class="menu-trigger"
+         type="button"
+         aria-haspopup="menu"
+         aria-expanded=${openMenu === "smoothing"}
+         @click=${() => opts.onToggleMenu("smoothing")}
+       >
+         Quality: ${opts.smoothingLabel(smoothing)}
+         <pf-icon name="chevron-down"></pf-icon>
+       </button>
+       ${openMenu === "smoothing"
+         ? html`<div class="menu-popup" role="menu">
+             ${(["low", "medium", "high"] as ImageSmoothingQuality[]).map(
+               (q) => html`<button
+                 class="menu-item"
+                 role="menuitemradio"
+                 aria-pressed=${smoothing === q}
+                 @click=${() => opts.onSetSmoothing(q)}
+               >
+                 ${q.charAt(0).toUpperCase() + q.slice(1)}
+               </button>`
+             )}
+           </div>`
+         : null}
+     </span>
+     <span class="menu-wrap">
+       <button
+         class="menu-trigger"
+         type="button"
+         aria-pressed=${opts.postProcessEnabled}
           title="Toggle post-processing (grain, dust, post curve)"
           @click=${opts.onTogglePostProcess}
         >

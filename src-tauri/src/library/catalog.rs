@@ -42,12 +42,6 @@ impl LibraryCatalog {
         self.roots.clone()
     }
 
-    /// Return all photos directly inside `folder`, with sidecar files
-    /// (same stem, different extension) merged into a single entry.
-    pub fn photos_in_folder(&self, folder: &Path) -> Vec<Photo> {
-        self.photos_in_folder_filtered(folder, false)
-    }
-
     /// Like `photos_in_folder` but also includes photos in any nested
     /// subfolder when `recursive` is true.
     pub fn photos_in_folder_filtered(&self, folder: &Path, recursive: bool) -> Vec<Photo> {

@@ -1,31 +1,18 @@
 /**
  * Per-photo effects store.
  *
- * Effects (bloom, future tools) are non-destructive per-photo edits
- * applied on the canvas at draw time, like the entries in
- * `edits-store`. They are kept in a separate store because they
- * don't yet have Rust-side persistence — we avoid touching the
- * SQLite schema by keeping the whole table in `localStorage`. If the
- * effects feature graduates to a first-class edit, this file is the
- * single place that has to migrate into `edits-store`.
+ * Effects are non-destructive per-photo edits applied on the canvas
+ * at draw time, like the entries in `edits-store`. They are kept in
+ * a separate store because they don't yet have Rust-side persistence
+ * — we avoid touching the SQLite schema by keeping the whole table
+ * in `localStorage`. If an effect graduates to a first-class edit,
+ * this file is the single place that has to migrate into
+ * `edits-store`.
  *
  * Shape is intentionally `Record<toolId, settings>` so a new effect
- * (sharpen, vignette, …) is just another key — no migrations needed
- * unless an existing effect changes its own shape.
+ * is just another key — no migrations needed unless an existing
+ * effect changes its own shape.
  */
-
-export interface BloomSettings {
-  /** 0..300 — master strength of the bloom add. 0 disables the
-   *  bloom pass entirely. Values above 100 deliberately overdrive
-   *  the highlights for a dreamy / blown-out look. */
-  strength: number;
-  /** 1..200 — radius of the highlight glow in source pixels. */
-  size: number;
-  /** 0..100 — luminance threshold (as a percentage). Pixels at or
-   *  below this brightness contribute nothing to the bloom; brighter
-   *  pixels bloom proportionally above it. */
-  threshold: number;
-}
 
 /** Unsharp-mask sharpening. Applied as a per-photo effect (with a
  *  format-aware default — RAW gets a light pass, JPG gets nothing)
@@ -52,7 +39,6 @@ export interface SharpenSettings {
 }
 
 export interface PhotoEffects {
-  bloom: BloomSettings | null;
   /** `null` means "no per-photo override stored" — the canvas
    *  falls back to a format-aware default (see
    *  {@link defaultSharpenForFormat}). An explicit
@@ -62,14 +48,6 @@ export interface PhotoEffects {
 }
 
 const STORAGE_KEY = "warble.effects.v1";
-
-export function defaultBloom(): BloomSettings {
-  return { strength: 0, size: 12, threshold: 70 };
-}
-
-export function isBloomZero(b: BloomSettings | null | undefined): boolean {
-  return !b || b.strength <= 0;
-}
 
 /** Sensible "no sharpening" baseline. Radius / threshold are kept
  *  at the values the per-format defaults use so toggling strength
@@ -110,18 +88,14 @@ function load(): void {
   try {
     const parsed = JSON.parse(raw) as Record<
       string,
-      // Legacy `blur` key tolerated for one-time migration from
-      // the previous bilateral-blur prototype.
       {
-        bloom?: BloomSettings | null;
-        blur?: BloomSettings | null;
+        bloom?: unknown;
+        blur?: unknown;
         sharpen?: SharpenSettings | null;
       }
     >;
     for (const [path, e] of Object.entries(parsed)) {
-      const src = e.bloom ?? e.blur ?? null;
       effects.set(path, {
-        bloom: src ? { ...defaultBloom(), ...src } : null,
         sharpen: e.sharpen
           ? { ...defaultSharpen(), ...e.sharpen }
           : null,
@@ -143,7 +117,7 @@ function save(): void {
     try {
       const obj: Record<string, PhotoEffects> = {};
       for (const [path, e] of effects.entries()) {
-        if (e.bloom || e.sharpen) obj[path] = e;
+        if (e.sharpen) obj[path] = e;
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
     } catch (err) {
@@ -162,34 +136,6 @@ export function getPhotoEffects(path: string): PhotoEffects | null {
   return effects.get(path) ?? null;
 }
 
-export function getPhotoBloom(path: string | null): BloomSettings | null {
-  if (!path) return null;
-  return effects.get(path)?.bloom ?? null;
-}
-
-export function setPhotoBloom(
-  path: string,
-  bloom: BloomSettings | null
-): void {
-  const cleaned = bloom && !isBloomZero(bloom) ? { ...bloom } : null;
-  const existing = effects.get(path);
-  if (cleaned) {
-    effects.set(path, {
-      ...(existing ?? { bloom: null, sharpen: null }),
-      bloom: cleaned,
-    });
-  } else if (existing) {
-    if (existing.bloom == null) return;
-    const next: PhotoEffects = { ...existing, bloom: null };
-    if (!next.bloom && !next.sharpen) effects.delete(path);
-    else effects.set(path, next);
-  } else {
-    return;
-  }
-  save();
-  notify(path);
-}
-
 /** Read the explicitly-stored sharpen settings for `path`. Returns
  *  `null` if the user has never touched the slider — callers that
  *  need a renderable value should fall back to
@@ -199,7 +145,7 @@ export function getPhotoSharpen(path: string | null): SharpenSettings | null {
   return effects.get(path)?.sharpen ?? null;
 }
 
-/** Store an explicit per-photo sharpen override. Unlike bloom we
+/** Store an explicit per-photo sharpen override. We
  *  KEEP `strength: 0` rather than collapsing to `null`, because a
  *  user-zeroed value must beat the format default (otherwise
  *  disabling sharpening on a RAW would silently re-enable it on
@@ -213,13 +159,13 @@ export function setPhotoSharpen(
   const existing = effects.get(path);
   if (cleaned) {
     effects.set(path, {
-      ...(existing ?? { bloom: null, sharpen: null }),
+      ...(existing ?? { sharpen: null }),
       sharpen: cleaned,
     });
   } else if (existing) {
     if (existing.sharpen == null) return;
     const next: PhotoEffects = { ...existing, sharpen: null };
-    if (!next.bloom && !next.sharpen) effects.delete(path);
+    if (!next.sharpen) effects.delete(path);
     else effects.set(path, next);
   } else {
     return;
@@ -231,7 +177,7 @@ export function setPhotoSharpen(
 export function hasEffects(path: string): boolean {
   const e = effects.get(path);
   if (!e) return false;
-  return !isBloomZero(e.bloom) || e.sharpen != null;
+  return e.sharpen != null;
 }
 
 export function subscribePhotoEffects(listener: Listener): () => void {

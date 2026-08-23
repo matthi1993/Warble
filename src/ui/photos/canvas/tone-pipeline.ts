@@ -29,7 +29,7 @@ import {
   isColorZero,
   isCurveZero,
 } from "@domain/edits";
-import type { BloomSettings, SharpenSettings } from "@services/effects/effects-store";
+import type { SharpenSettings } from "@services/effects/effects-store";
 
 export type ToneSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
@@ -187,11 +187,7 @@ export class TonePipeline {
     postColorEnabled: WebGLUniformLocation | null;
     postColorChannels: WebGLUniformLocation | null;
     postColorGlobal: WebGLUniformLocation | null;
-    bloomStrength: WebGLUniformLocation | null;
-    bloomSize: WebGLUniformLocation | null;
-    bloomThreshold: WebGLUniformLocation | null;
-    bloomStep: WebGLUniformLocation | null;
-    editSharpenStrength: WebGLUniformLocation | null;
+   editSharpenStrength: WebGLUniformLocation | null;
     editSharpenRadius: WebGLUniformLocation | null;
     editSharpenThreshold: WebGLUniformLocation | null;
     postSharpenStrength: WebGLUniformLocation | null;
@@ -220,11 +216,7 @@ export class TonePipeline {
     postColorEnabled: null,
     postColorChannels: null,
     postColorGlobal: null,
-    bloomStrength: null,
-    bloomSize: null,
-    bloomThreshold: null,
-    bloomStep: null,
-    editSharpenStrength: null,
+   editSharpenStrength: null,
     editSharpenRadius: null,
     editSharpenThreshold: null,
     postSharpenStrength: null,
@@ -261,7 +253,6 @@ export class TonePipeline {
       postCurve?: CurveEdit | null;
       editColor?: ColorEdit | null;
       postColor?: ColorEdit | null;
-      bloom?: BloomSettings | null;
       /** Per-photo sharpening applied AFTER the per-photo color +
        *  curve passes but BEFORE the post-process layer, so it
        *  acts on the photo's "as edited" state. */
@@ -332,23 +323,8 @@ export class TonePipeline {
       this.uniforms.postColorGlobal,
       postColor ?? defaultColor()
     );
-    const bloom = opts.bloom;
-    const bloomStrength = bloom ? bloom.strength : 0;
-    gl.uniform1f(this.uniforms.bloomStrength, bloomStrength);
-    gl.uniform1f(this.uniforms.bloomSize, bloom ? bloom.size : 0);
-    gl.uniform1f(this.uniforms.bloomThreshold, bloom ? bloom.threshold : 0);
-    // Step in source-UV space: one screen-pixel = (1/outW, 1/outH)
-    // in the destination, which maps to (sw/outW, sh/outH) in
-    // source-UV. Using outW/outH here keeps bloom radius constant in
-    // *screen* pixels regardless of zoom, which feels right when
-    // the user drags the slider.
-    gl.uniform2f(
-      this.uniforms.bloomStep,
-      bloomStrength > 0 ? sw / outW : 0,
-      bloomStrength > 0 ? sh / outH : 0
-    );
-    const editSharpen = opts.sharpen;
-    const postSharpen = opts.postSharpen;
+   const editSharpen = opts.sharpen;
+   const postSharpen = opts.postSharpen;
     const editSharpenActive = !!editSharpen && editSharpen.strength > 0;
     const postSharpenActive = !!postSharpen && postSharpen.strength > 0;
     gl.uniform1f(
@@ -375,7 +351,7 @@ export class TonePipeline {
       this.uniforms.postSharpenThreshold,
       postSharpenActive ? postSharpen!.threshold : 0
     );
-    // Step in source-UV per *screen* pixel — same units as bloom.
+    // Step in source-UV per *screen* pixel.
     // The shader multiplies by `radius` to convert into the blur
     // kernel's offsets so a radius=1 setting always spans roughly
     // one source pixel on screen regardless of zoom.
@@ -459,13 +435,13 @@ export class TonePipeline {
       gl.RGBA,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
-      bm
-    );
-    // Generate the full mipmap chain so the bloom pass can sample
-    // pre-averaged lower levels via textureLod() — each tap then
-    // covers an area instead of a point, blending smoothly across
-    // the disc instead of leaving visible copies of bright spots.
-    gl.generateMipmap(gl.TEXTURE_2D);
+     bm
+   );
+   // Generate the full mipmap chain so the sharpen pass can sample
+   // pre-averaged lower levels via textureLod() — each tap then
+   // covers an area instead of a point, blending smoothly across
+   // the disc instead of leaving visible copies of bright spots.
+   gl.generateMipmap(gl.TEXTURE_2D);
     this.uploadedBitmap = bm;
   }
 
@@ -539,11 +515,7 @@ export class TonePipeline {
       uniform int   u_postColorEnabled;
       uniform vec3  u_postColorChannels[8];
       uniform vec3  u_postColorGlobal;
-      uniform float u_bloomStrength;
-      uniform float u_bloomSize;
-      uniform float u_bloomThreshold;
-      uniform vec2  u_bloomStep;
-      uniform float u_editSharpenStrength;
+     uniform float u_editSharpenStrength;
       uniform float u_editSharpenRadius;
       uniform float u_editSharpenThreshold;
       uniform float u_postSharpenStrength;
@@ -699,90 +671,9 @@ export class TonePipeline {
       }
 
       void main() {
-        vec4 src = texture(u_tex, v_uv);
+       vec4 src = texture(u_tex, v_uv);
 
-        // Highlight bloom — built as a soft alpha mask, not a
-        // colour-additive halo.
-        //
-        //   1. Per tap, threshold the source luminance against
-        //      u_bloomThreshold with a smooth knee. This yields a
-        //      binary-ish "is this pixel a highlight?" alpha in
-        //      [0, 1].
-        //   2. The taps are spread on a sunflower disc of radius
-        //      ~u_bloomSize source pixels and weighted by a 2D
-        //      Gaussian in radial distance — i.e. we Gaussian-
-        //      blur the highlight alpha mask in a single pass.
-        //   3. The resulting blurred mask M ∈ [0, 1] is used as
-        //      an exposure multiplier: rgb *= 1 + strength · M.
-        //
-        // Because the mask is blurred, pixels *near* a highlight
-        // get brightened too (a dark pixel adjacent to a bright
-        // light receives spill-over) — that's exactly the lens-
-        // halation look real photographic bloom has. The centre
-        // pixel's own colour is preserved, just exposed brighter,
-        // so highlights don't pick up the chroma of their
-        // neighbours.
-        if (u_bloomStrength > 0.0) {
-          float thr  = u_bloomThreshold * 0.01;
-          float knee = 0.15;
-          float sigma = max(u_bloomSize, 0.5);
-          float radius = sigma * 2.5;
-          float invTwoSigmaSq = 1.0 / (2.0 * sigma * sigma);
-
-          // Mip LOD chosen so each tap's source-texel footprint
-          // *exceeds* the spacing between adjacent taps on the
-          // disc, guaranteeing overlap and a continuous blur.
-          // With N taps on a sunflower of radius R, average
-          // neighbour spacing is ~R · sqrt(π/N); we set the
-          // footprint to roughly 2× that so neighbouring taps'
-          // averaged regions clearly overlap and you don't see
-          // discrete copies of bright features at large radii.
-          // Floor-clamped at 0 (no negative LOD).
-          float lod = max(log2(radius * 0.65), 0.0);
-
-          const int N = 48;
-          // Golden angle (radians) — 2π · (1 − 1/φ).
-          const float GOLDEN = 2.39996323;
-
-          float maskAcc = 0.0;
-          float wsum = 0.0;
-          for (int i = 0; i < N; i++) {
-            // Uniform disc sampling: r ∝ sqrt(t) keeps sample
-            // density constant per unit area.
-            float t = (float(i) + 0.5) / float(N);
-            float r = sqrt(t) * radius;
-            float a = float(i) * GOLDEN;
-            vec2 offset = vec2(cos(a), sin(a)) * r;
-            // textureLod fetches from a pre-averaged mip level —
-            // each tap is itself a small box-blur of the source,
-            // so the disc reads as a continuous Gaussian instead
-            // of N discrete point samples.
-            vec3 s = textureLod(u_tex, v_uv + offset * u_bloomStep, lod).rgb;
-            float l = dot(s, LUMA);
-            // Smooth knee: 0 below thr-knee, 1 above thr+knee.
-            float mask = smoothstep(thr - knee, thr + knee, l);
-            float w = exp(-(r * r) * invTwoSigmaSq);
-            maskAcc += mask * w;
-            wsum += w;
-          }
-          // Fold in the centre sample at full resolution so a lone
-          // bright pixel still receives full boost even when its
-          // neighbours are dark.
-          {
-            float l = dot(src.rgb, LUMA);
-            float mask = smoothstep(thr - knee, thr + knee, l);
-            maskAcc += mask * 1.0;
-            wsum += 1.0;
-          }
-          float M = maskAcc / max(wsum, 1e-4);
-          // u_bloomStrength is a percentage exposure boost at
-          // M=1: slider=100 doubles the brightness of fully-
-          // masked pixels, slider=300 quadruples it. Scaling
-          // factor 0.01 = "per percent".
-          src.rgb *= 1.0 + u_bloomStrength * 0.01 * M;
-        }
-
-        vec3 col = src.rgb * u_exposure;
+       vec3 col = src.rgb * u_exposure;
 
         // White balance: temperature shifts the blue<->yellow axis,
         // tint shifts the green<->magenta axis. Implemented as a
@@ -947,18 +838,8 @@ export class TonePipeline {
       program,
       "u_postColorGlobal"
     );
-    this.uniforms.bloomStrength = gl.getUniformLocation(
-      program,
-      "u_bloomStrength"
-    );
-    this.uniforms.bloomSize = gl.getUniformLocation(program, "u_bloomSize");
-    this.uniforms.bloomThreshold = gl.getUniformLocation(
-      program,
-      "u_bloomThreshold"
-    );
-    this.uniforms.bloomStep = gl.getUniformLocation(program, "u_bloomStep");
-    this.uniforms.editSharpenStrength = gl.getUniformLocation(
-      program,
+   this.uniforms.editSharpenStrength = gl.getUniformLocation(
+     program,
       "u_editSharpenStrength"
     );
     this.uniforms.editSharpenRadius = gl.getUniformLocation(
@@ -1009,7 +890,7 @@ export class TonePipeline {
 
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    // Trilinear min filter so the bloom pass can sample lower mip
+    // Trilinear min filter so the sharpen pass can sample lower mip
     // levels via textureLod() to bridge tap gaps in its disc.
     gl.texParameteri(
       gl.TEXTURE_2D,

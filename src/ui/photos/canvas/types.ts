@@ -7,6 +7,7 @@
 
 export type ImageFit = "contain" | "proof" | "tight";
 export type ImageSizing = "fit" | "fill" | "hybrid";
+export type ImageSmoothingQuality = "low" | "medium" | "high";
 
 /** Pending crop frame state, exposed via `getCropFrame()`. */
 export interface CropFrame {

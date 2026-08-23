@@ -74,6 +74,8 @@ pub struct ViewState {
     pub fit: Option<String>,
     #[serde(default)]
     pub sizing: Option<String>,
+    #[serde(default)]
+    pub smoothing: Option<String>,
 }
 
 #[tauri::command]

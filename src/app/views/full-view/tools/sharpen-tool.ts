@@ -1,9 +1,9 @@
 /**
  * Sharpen tool: per-photo unsharp-mask sharpening exposed on the
- * "Effects" panel. Mirrors {@link BloomTool} but with a format-
- * aware default — RAWs ship with a moderate amount of sharpening
- * (since they're stored unsharp from the sensor), JPGs default to
- * none (since the camera already applied output sharpening).
+ * "Edit" panel. Uses a format-aware default — RAWs ship with a
+ * moderate amount of sharpening
+* (since they're stored unsharp from the sensor), JPGs default to
+* none (since the camera already applied output sharpening).
  *
  * The persisted state distinguishes "no override" (use format
  * default) from "explicit override" (which may even be all zeros,

@@ -8,23 +8,27 @@ import { invoke } from "@tauri-apps/api/core";
 export type BgColor = "black" | "grey" | "white";
 export type FitMode = "contain" | "tight" | "proof";
 export type SizingMode = "fit" | "fill" | "hybrid";
+export type SmoothingQuality = "low" | "medium" | "high";
 
 export interface ViewState {
   bg: BgColor;
   fit: FitMode;
   sizing: SizingMode;
+  smoothing: SmoothingQuality;
 }
 
 export const DEFAULT_VIEW_STATE: ViewState = {
   bg: "black",
   fit: "contain",
   sizing: "fit",
+  smoothing: "high",
 };
 
 interface PersistedViewState {
   bg?: string | null;
   fit?: string | null;
   sizing?: string | null;
+  smoothing?: string | null;
 }
 
 function coerceBg(v: string | null | undefined): BgColor | null {
@@ -36,6 +40,9 @@ function coerceFit(v: string | null | undefined): FitMode | null {
 function coerceSizing(v: string | null | undefined): SizingMode | null {
   return v === "fit" || v === "fill" || v === "hybrid" ? v : null;
 }
+function coerceSmoothing(v: string | null | undefined): SmoothingQuality | null {
+  return v === "low" || v === "medium" || v === "high" ? v : null;
+}
 
 export async function loadViewState(): Promise<Partial<ViewState>> {
   try {
@@ -46,6 +53,9 @@ export async function loadViewState(): Promise<Partial<ViewState>> {
       ...(coerceFit(persisted.fit) ? { fit: coerceFit(persisted.fit)! } : {}),
       ...(coerceSizing(persisted.sizing)
         ? { sizing: coerceSizing(persisted.sizing)! }
+        : {}),
+      ...(coerceSmoothing(persisted.smoothing)
+        ? { smoothing: coerceSmoothing(persisted.smoothing)! }
         : {}),
     };
   } catch (err) {
