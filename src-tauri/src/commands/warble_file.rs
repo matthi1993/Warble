@@ -17,6 +17,20 @@ use crate::library::{library_db_path, LibraryRepository};
 const LIBRARY_FILE_EXT: &str = "warble";
 const LAST_LIBRARY_KEY: &str = "last_library_path";
 
+/// Return the user-facing path of the currently open library.
+///
+/// Loaded libraries are copied into the app's canonical working database, so
+/// prefer the recorded source path. A fresh library has no source path yet and
+/// is represented by the canonical database path instead.
+#[tauri::command]
+pub fn get_open_library_path(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    if let Some(path) = state.repository()?.get_setting(LAST_LIBRARY_KEY)? {
+        return Ok(path);
+    }
+
+    Ok(library_db_path(&app).to_string_lossy().into_owned())
+}
+
 /// Write a clean snapshot of the active library DB to `path`.
 #[tauri::command]
 pub async fn save_library(path: String, state: State<'_, AppState>) -> Result<(), String> {

@@ -1,4 +1,5 @@
 /** User-created presets for the global Post-Processing tab only. */
+import { invoke } from "@tauri-apps/api/core";
 import {
   defaultPostProcess,
   type PostProcessSettings,
@@ -12,7 +13,7 @@ export interface PostProcessPreset {
   values: PostProcessPresetValues;
 }
 
-const STORAGE_KEY = "warble.postProcessPresets.v1";
+const LEGACY_STORAGE_KEY = "warble.postProcessPresets.v1";
 const listeners = new Set<(presets: readonly PostProcessPreset[]) => void>();
 
 function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
@@ -24,10 +25,7 @@ function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
   });
 }
 
-function load(): PostProcessPreset[] {
-  if (typeof localStorage === "undefined") return [];
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return [];
+function parse(raw: string): PostProcessPreset[] {
   try {
     const parsed = JSON.parse(raw) as Array<Partial<PostProcessPreset>>;
     const defaults = defaultPostProcess();
@@ -51,15 +49,32 @@ function load(): PostProcessPreset[] {
   }
 }
 
-let presets = load();
+function loadLegacy(): PostProcessPreset[] {
+  if (typeof localStorage === "undefined") return [];
+  const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+  return raw ? parse(raw) : [];
+}
 
-function persist(): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
-  } catch (error) {
-    console.warn("post-process presets: failed to persist", error);
-  }
+let presets = loadLegacy();
+let loaded = false;
+let loadPromise: Promise<void> | null = null;
+let loadGeneration = 0;
+let persistChain: Promise<void> = Promise.resolve();
+let persistError: unknown = null;
+
+function persist(): Promise<void> {
+  const presetsJson = JSON.stringify(presets);
+  const operation = persistChain.then(() =>
+    invoke<void>("set_post_process_presets", { presetsJson })
+  );
+  persistChain = operation.then(
+    () => { persistError = null; },
+    (error) => {
+      persistError = error;
+      console.warn("post-process presets: failed to persist", error);
+    }
+  );
+  return operation;
 }
 
 function notify(): void {
@@ -69,6 +84,58 @@ function notify(): void {
 
 export function getPostProcessPresets(): readonly PostProcessPreset[] {
   return presets;
+}
+
+async function hydrate(migrateLegacy: boolean): Promise<void> {
+  const generation = loadGeneration;
+  try {
+    const raw = await invoke<string | null>("get_post_process_presets");
+    if (generation !== loadGeneration) return;
+    if (raw !== null) {
+      presets = parse(raw);
+    } else if (migrateLegacy && presets.length > 0) {
+      await persist();
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+      }
+    } else {
+      presets = [];
+    }
+  } catch (error) {
+    console.warn("post-process presets: failed to load", error);
+  } finally {
+    if (generation === loadGeneration) {
+      loaded = true;
+      notify();
+    }
+  }
+}
+
+/** Hydrate presets from the active library, migrating the legacy global
+ * localStorage value once for existing installations. */
+export function loadPostProcessPresets(): Promise<void> {
+  if (loaded) return Promise.resolve();
+  if (!loadPromise) loadPromise = hydrate(true);
+  return loadPromise;
+}
+
+/** Drop the previous library's presets and load the newly opened library. */
+export function reloadPostProcessPresets(): Promise<void> {
+  loadGeneration += 1;
+  loaded = false;
+  loadPromise = null;
+  presets = [];
+  notify();
+  loadPromise = hydrate(false);
+  return loadPromise;
+}
+
+/** Wait until every preset change has reached SQLite before snapshotting or
+ * replacing the active library. */
+export async function flushPostProcessPresets(): Promise<void> {
+  if (loadPromise) await loadPromise;
+  await persistChain;
+  if (persistError) await persist();
 }
 
 /** Save the current tool values. Reusing a name updates that preset. */
@@ -91,7 +158,7 @@ export function savePostProcessPreset(
   presets = existingIndex >= 0
     ? presets.map((item, index) => index === existingIndex ? preset : item)
     : [...presets, preset];
-  persist();
+  void persist().catch(() => {});
   notify();
   return preset;
 }
@@ -100,7 +167,7 @@ export function deletePostProcessPreset(id: string): void {
   const next = presets.filter((preset) => preset.id !== id);
   if (next.length === presets.length) return;
   presets = next;
-  persist();
+  void persist().catch(() => {});
   notify();
 }
 

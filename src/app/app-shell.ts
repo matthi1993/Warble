@@ -9,6 +9,8 @@ import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import { reloadPhotoEdits } from "@services/edits/edits-store";
+import { reloadPhotoEffects } from "@services/effects/effects-store";
+import { reloadPostProcessPresets } from "@services/post-process/post-process-presets-store";
 import {
   applyRatingShortcut,
   loadPhotoRatings,
@@ -31,6 +33,7 @@ import {
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
+import { beginAppBusy, subscribeAppBusy } from "./app-busy";
 
 function findFolderByPath(roots: Folder[], path: string): Folder | null {
   for (const r of roots) {
@@ -192,6 +195,52 @@ export class WarbleApp extends LitElement {
       accent-color: var(--pf-accent);
       cursor: pointer;
     }
+    .library-path {
+      overflow: hidden;
+      color: var(--pf-text-subtle);
+      font-size: var(--pf-text-xs);
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .app-busy-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: grid;
+      place-items: center;
+      background: color-mix(in srgb, var(--pf-bg) 72%, transparent);
+      backdrop-filter: blur(2px);
+      cursor: wait;
+    }
+    .app-busy-status {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-4) var(--pf-space-5);
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-lg);
+      background: var(--pf-surface);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+      color: var(--pf-text);
+      font-size: var(--pf-text-sm);
+    }
+    .app-busy-spinner {
+      width: 28px;
+      height: 28px;
+      box-sizing: border-box;
+      border: 3px solid var(--pf-border);
+      border-top-color: var(--pf-accent);
+      border-radius: 50%;
+      animation: app-busy-spin 0.75s linear infinite;
+    }
+    @keyframes app-busy-spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .app-busy-spinner { animation-duration: 1.5s; }
+    }
     .tree {
       flex: 1;
       overflow-y: auto;
@@ -335,6 +384,12 @@ export class WarbleApp extends LitElement {
   private selectedFolderName: string | null = null;
 
   @state()
+  private libraryPath = "";
+
+  @state()
+  private busyLabel: string | null = null;
+
+  @state()
   private selectedPhoto: Photo | null = null;
 
   @state()
@@ -384,6 +439,7 @@ export class WarbleApp extends LitElement {
   private unsubscribeProgress: (() => void) | null = null;
   private unsubscribeHdProgress: (() => void) | null = null;
   private unsubscribeCacheCleared: UnlistenFn | null = null;
+  private unsubscribeAppBusy: (() => void) | null = null;
 
   /** Active HD-image disk-cache prewarm for the currently selected
    * folder. Replaced (and the previous one cancelled) every time the
@@ -407,8 +463,11 @@ export class WarbleApp extends LitElement {
    super.connectedCallback();
    window.addEventListener("keydown", this.onGlobalKey);
    window.addEventListener("mousemove", this.onMouseMove);
+   this.unsubscribeAppBusy = subscribeAppBusy((label) => {
+     this.busyLabel = label;
+   });
    this.unlistenLibraryReload = await listen("library-reloaded", () => {
-     void this.onLibraryReloaded();
+     void this.reloadLibraryWithSpinner();
    });
    this.unsubscribeProgress = onThumbnailProgress((state) => {
       this.thumbProgress = state;
@@ -435,6 +494,8 @@ export class WarbleApp extends LitElement {
     } catch (err) {
       console.error("Failed to load imported folders", err);
     }
+
+    await this.loadLibraryPath();
 
     // Hydrate per-photo variant preferences before any thumbnail or
     // detail panel asks for an effective selection.
@@ -517,6 +578,8 @@ export class WarbleApp extends LitElement {
     this.unsubscribeHdProgress = null;
     this.unsubscribeCacheCleared?.();
     this.unsubscribeCacheCleared = null;
+    this.unsubscribeAppBusy?.();
+    this.unsubscribeAppBusy = null;
     this.hdPrewarmHandle?.cancel();
     this.hdPrewarmHandle = null;
     clearThumbnailBatch();
@@ -739,24 +802,29 @@ export class WarbleApp extends LitElement {
    *  then re-fetch the photo list for whatever folder is currently
    *  open so files added on disk show up immediately. */
   private async refreshFolders() {
+    const endBusy = beginAppBusy("Syncing folders…");
     try {
-      const trees = await invoke<Folder[]>("refresh_imported_folders");
-      this.imports = trees;
-    } catch (err) {
-      console.error("Failed to refresh imported folders", err);
-      return;
-    }
-    if (this.selectedFolderId && this.selectedFolderId !== null) {
       try {
-        const path = this.selectedFolderId;
-        this.photos = await invoke<Photo[]>("get_photos_in_folder", {
-          folderPath: path,
-          recursive: this.includeSubfolders,
-        });
-        startThumbnailBatch(this.photos.map((p) => p.path));
+        const trees = await invoke<Folder[]>("refresh_imported_folders");
+        this.imports = trees;
       } catch (err) {
-        console.error("Failed to refresh active folder", err);
+        console.error("Failed to refresh imported folders", err);
+        return;
       }
+      if (this.selectedFolderId && this.selectedFolderId !== null) {
+        try {
+          const path = this.selectedFolderId;
+          this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+            folderPath: path,
+            recursive: this.includeSubfolders,
+          });
+          startThumbnailBatch(this.photos.map((p) => p.path));
+        } catch (err) {
+          console.error("Failed to refresh active folder", err);
+        }
+      }
+    } finally {
+      endBusy();
     }
   }
 
@@ -933,15 +1001,20 @@ export class WarbleApp extends LitElement {
   /** Called when the backend hot-swaps the library DB. Re-fetches
    *  everything from the new DB so the UI reflects the new library. */
   private async onLibraryReloaded(): Promise<void> {
-    void reloadPhotoEdits();
-    void reloadPhotoRatings();
-    void reloadVariantOverrides();
+    await Promise.all([
+      reloadPhotoEdits(),
+      reloadPhotoEffects(),
+      reloadPostProcessPresets(),
+      reloadPhotoRatings(),
+      reloadVariantOverrides(),
+    ]);
     dropAllThumbnailState();
     try {
       this.imports = await invoke<Folder[]>("list_imported_folders");
     } catch (err) {
       console.error("Failed to reload folders after library swap", err);
     }
+    await this.loadLibraryPath();
     this.selectedPhoto = null;
     this.fullViewIndex = null;
     if (this.imports.length > 0) {
@@ -953,6 +1026,24 @@ export class WarbleApp extends LitElement {
       this.selectedFolderName = null;
     }
     this.requestUpdate();
+  }
+
+  private async reloadLibraryWithSpinner(): Promise<void> {
+    const endBusy = beginAppBusy("Opening library…");
+    try {
+      await this.onLibraryReloaded();
+    } finally {
+      endBusy();
+    }
+  }
+
+  private async loadLibraryPath(): Promise<void> {
+    try {
+      this.libraryPath = await invoke<string>("get_open_library_path");
+    } catch (err) {
+      console.error("Failed to load current library path", err);
+      this.libraryPath = "";
+    }
   }
 
   render() {
@@ -989,6 +1080,9 @@ export class WarbleApp extends LitElement {
             />
             Include subfolders
           </label>
+          ${this.libraryPath
+            ? html`<div class="library-path" title=${this.libraryPath}>${this.libraryPath}</div>`
+            : null}
         </div>
         <div class="tree" @folder-select=${this.onFolderSelect}>
           ${this.folders.length === 0
@@ -1105,6 +1199,9 @@ export class WarbleApp extends LitElement {
                                 />
                                 Include subfolders
                               </label>
+                              ${this.libraryPath
+                                ? html`<div class="library-path" title=${this.libraryPath}>${this.libraryPath}</div>`
+                                : null}
                             </div>
                             <div class="tree" @folder-select=${this.onFolderSelect}>
                               ${this.folders.length === 0
@@ -1131,6 +1228,16 @@ export class WarbleApp extends LitElement {
       ${this.renderFooter()}
       ${this.renderContextMenu()}
       <pf-debug-overlay></pf-debug-overlay>
+      ${this.busyLabel
+        ? html`
+            <div class="app-busy-overlay" aria-hidden="false">
+              <div class="app-busy-status" role="status" aria-live="polite">
+                <span class="app-busy-spinner" aria-hidden="true"></span>
+                <span>${this.busyLabel}</span>
+              </div>
+            </div>
+          `
+        : null}
     `;
   }
 

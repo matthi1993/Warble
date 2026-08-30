@@ -3,16 +3,15 @@
  *
  * Effects are non-destructive per-photo edits applied on the canvas
  * at draw time, like the entries in `edits-store`. They are kept in
- * a separate store because they don't yet have Rust-side persistence
- * — we avoid touching the SQLite schema by keeping the whole table
- * in `localStorage`. If an effect graduates to a first-class edit,
- * this file is the single place that has to migrate into
- * `edits-store`.
+ * a separate store and persisted as one JSON value in the active
+ * library's SQLite settings table.
  *
  * Shape is intentionally `Record<toolId, settings>` so a new effect
  * is just another key — no migrations needed unless an existing
  * effect changes its own shape.
  */
+
+import { invoke } from "@tauri-apps/api/core";
 
 /** Unsharp-mask sharpening. Applied as a per-photo effect (with a
  *  format-aware default — RAW gets a light pass, JPG gets nothing)
@@ -69,7 +68,7 @@ export interface PhotoEffects {
   grain: GrainSettings | null;
 }
 
-const STORAGE_KEY = "warble.effects.v1";
+const LEGACY_STORAGE_KEY = "warble.effects.v1";
 
 /** Sensible "no sharpening" baseline. Radius / threshold are kept
  *  at the values the per-format defaults use so toggling strength
@@ -103,10 +102,7 @@ type Listener = (path: string) => void;
 const effects = new Map<string, PhotoEffects>();
 const listeners = new Set<Listener>();
 
-function load(): void {
-  if (typeof localStorage === "undefined") return;
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return;
+function applySerialized(raw: string): void {
   try {
     const parsed = JSON.parse(raw) as Record<
       string,
@@ -131,27 +127,108 @@ function load(): void {
   }
 }
 
-let saveScheduled = false;
-function save(): void {
-  if (saveScheduled || typeof localStorage === "undefined") return;
-  saveScheduled = true;
-  // Debounce one tick — same shape of write storm as edits-store
-  // when the user drags a slider.
-  queueMicrotask(() => {
-    saveScheduled = false;
-    try {
-      const obj: Record<string, PhotoEffects> = {};
-      for (const [path, e] of effects.entries()) {
-        if (e.sharpen || e.grain) obj[path] = e;
-      }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
-    } catch (err) {
-      console.warn("effects: failed to persist", err);
-    }
-  });
+function loadLegacy(): void {
+  if (typeof localStorage === "undefined") return;
+  const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+  if (raw) applySerialized(raw);
 }
 
-load();
+function serialize(): string {
+  const value: Record<string, PhotoEffects> = {};
+  for (const [path, effect] of effects.entries()) {
+    if (effect.sharpen || effect.grain) value[path] = effect;
+  }
+  return JSON.stringify(value);
+}
+
+let loaded = false;
+let loadPromise: Promise<void> | null = null;
+let loadGeneration = 0;
+let persistTimer: number | null = null;
+let persistChain: Promise<void> = Promise.resolve();
+let persistError: unknown = null;
+
+function persistNow(): Promise<void> {
+  const effectsJson = serialize();
+  const operation = persistChain.then(() =>
+    invoke<void>("set_photo_effects", { effectsJson })
+  );
+  persistChain = operation.then(
+    () => { persistError = null; },
+    (err) => {
+      persistError = err;
+      console.warn("effects: failed to persist", err);
+    }
+  );
+  return operation;
+}
+
+function schedulePersist(): void {
+  if (persistTimer !== null) window.clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null;
+    void persistNow().catch(() => {});
+  }, 150);
+}
+
+async function hydrate(migrateLegacy: boolean): Promise<void> {
+  const generation = loadGeneration;
+  try {
+    const raw = await invoke<string | null>("get_photo_effects");
+    if (generation !== loadGeneration) return;
+    if (raw !== null) {
+      effects.clear();
+      applySerialized(raw);
+    } else if (migrateLegacy && effects.size > 0) {
+      await persistNow();
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+      }
+    } else {
+      effects.clear();
+    }
+  } catch (err) {
+    console.warn("effects: failed to load", err);
+  } finally {
+    if (generation === loadGeneration) {
+      loaded = true;
+      notify("");
+    }
+  }
+}
+
+loadLegacy();
+
+/** Hydrate per-photo grain and sharpening from the active library. */
+export function loadPhotoEffects(): Promise<void> {
+  if (loaded) return Promise.resolve();
+  if (!loadPromise) loadPromise = hydrate(true);
+  return loadPromise;
+}
+
+/** Replace the in-memory effects with those in a newly opened library. */
+export function reloadPhotoEffects(): Promise<void> {
+  loadGeneration += 1;
+  loaded = false;
+  loadPromise = null;
+  effects.clear();
+  notify("");
+  loadPromise = hydrate(false);
+  return loadPromise;
+}
+
+/** Flush the slider debounce and wait for SQLite before a library snapshot or
+ * hot-swap. */
+export async function flushPhotoEffects(): Promise<void> {
+  if (loadPromise) await loadPromise;
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+    void persistNow().catch(() => {});
+  }
+  await persistChain;
+  if (persistError) await persistNow();
+}
 
 function notify(path: string): void {
   for (const l of listeners) l(path);
@@ -195,7 +272,7 @@ export function setPhotoSharpen(
   } else {
     return;
   }
-  save();
+  schedulePersist();
   notify(path);
 }
 
@@ -223,7 +300,7 @@ export function setPhotoGrain(
   } else {
     return;
   }
-  save();
+  schedulePersist();
   notify(path);
 }
 

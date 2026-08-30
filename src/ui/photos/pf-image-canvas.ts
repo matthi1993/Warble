@@ -427,7 +427,7 @@ export class PfImageCanvas extends LitElement {
       this.postProcess = next;
       this.scheduleDraw();
     });
-    // Per-photo effects (sharpen, …) live in their own localStorage
+    // Per-photo effects (sharpen, grain) live in their own library-backed
     // store. Slider drags push at the same rate as edit slider drags,
     // and the WebGL pipeline can absorb them without a re-upload.
     this.effectsUnsubscribe = subscribePhotoEffects((path) => {

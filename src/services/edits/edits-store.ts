@@ -101,14 +101,10 @@ async function persist(path: string): Promise<void> {
   const tone = persistedTone(e?.tone ?? null);
   const curve = persistedCurve(e?.curve ?? null);
   const color = persistedColor(e?.color ?? null);
-  try {
-    if (!crop && !tone && !curve && !color) {
-      await invoke("clear_photo_edit", { path });
-    } else {
-      await invoke("set_photo_edit", { path, crop, tone, curve, color });
-    }
-  } catch (err) {
-    console.error("Failed to persist photo edit", err);
+  if (!crop && !tone && !curve && !color) {
+    await invoke("clear_photo_edit", { path });
+  } else {
+    await invoke("set_photo_edit", { path, crop, tone, curve, color });
   }
 }
 
@@ -120,13 +116,30 @@ async function persist(path: string): Promise<void> {
  */
 const PERSIST_DEBOUNCE_MS = 150;
 const pendingPersists = new Map<string, number>();
+const inFlightPersists = new Set<Promise<void>>();
+const failedPersists = new Set<string>();
+
+function runPersist(path: string): Promise<void> {
+  const operation = persist(path);
+  inFlightPersists.add(operation);
+  void operation
+    .then(
+      () => { failedPersists.delete(path); },
+      (err) => {
+        failedPersists.add(path);
+        console.error("Failed to persist photo edit", err);
+      }
+    )
+    .finally(() => inFlightPersists.delete(operation));
+  return operation;
+}
 
 function schedulePersist(path: string) {
   const existing = pendingPersists.get(path);
   if (existing !== undefined) window.clearTimeout(existing);
   const handle = window.setTimeout(() => {
     pendingPersists.delete(path);
-    void persist(path);
+    void runPersist(path);
   }, PERSIST_DEBOUNCE_MS);
   pendingPersists.set(path, handle);
 }
@@ -136,10 +149,25 @@ function schedulePersist(path: string) {
  * so we don't lose the last slider tick. */
 export async function flushPhotoEdit(path: string): Promise<void> {
   const handle = pendingPersists.get(path);
-  if (handle === undefined) return;
-  window.clearTimeout(handle);
-  pendingPersists.delete(path);
-  await persist(path);
+  if (handle !== undefined) {
+    window.clearTimeout(handle);
+    pendingPersists.delete(path);
+    await runPersist(path);
+  }
+  await Promise.allSettled([...inFlightPersists]);
+  if (failedPersists.has(path)) await runPersist(path);
+}
+
+/** Flush every photo's pending edit before a library is copied or replaced. */
+export async function flushAllPhotoEdits(): Promise<void> {
+  if (loadPromise) await loadPromise;
+  const paths = new Set(pendingPersists.keys());
+  for (const handle of pendingPersists.values()) window.clearTimeout(handle);
+  pendingPersists.clear();
+
+  await Promise.allSettled([...inFlightPersists]);
+  for (const path of failedPersists) paths.add(path);
+  await Promise.all([...paths].map((path) => runPersist(path)));
 }
 
 function snapshot(path: string): {

@@ -15,6 +15,39 @@ use crate::app_state::AppState;
 const LAST_FOLDER_KEY: &str = "last_folder";
 const VIEW_STATE_KEY: &str = "view_state";
 const APP_VIEW_KEY: &str = "app_view";
+const POST_PROCESS_PRESETS_KEY: &str = "post_process_presets_v1";
+const PHOTO_EFFECTS_KEY: &str = "photo_effects_v1";
+
+#[tauri::command]
+pub fn get_post_process_presets(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    state.repository()?.get_setting(POST_PROCESS_PRESETS_KEY)
+}
+
+#[tauri::command]
+pub fn set_post_process_presets(
+    presets_json: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Reject malformed data before putting it into a library file. The
+    // frontend owns the schema and handles forward-compatible defaults.
+    serde_json::from_str::<serde_json::Value>(&presets_json).map_err(|e| e.to_string())?;
+    state
+        .repository()?
+        .set_setting(POST_PROCESS_PRESETS_KEY, &presets_json)
+}
+
+#[tauri::command]
+pub fn get_photo_effects(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    state.repository()?.get_setting(PHOTO_EFFECTS_KEY)
+}
+
+#[tauri::command]
+pub fn set_photo_effects(effects_json: String, state: State<'_, AppState>) -> Result<(), String> {
+    serde_json::from_str::<serde_json::Value>(&effects_json).map_err(|e| e.to_string())?;
+    state
+        .repository()?
+        .set_setting(PHOTO_EFFECTS_KEY, &effects_json)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PhotoVariantPref {
