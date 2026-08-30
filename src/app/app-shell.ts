@@ -647,13 +647,14 @@ export class WarbleApp extends LitElement {
   private fsLeftOverOverlay = false;
 
   private onGlobalKey = (e: KeyboardEvent) => {
-    // Ignore when typing in inputs/contenteditable.
-    const target = e.target as HTMLElement | null;
+    // Events crossing nested shadow roots retarget `e.target` to the host.
+    // Use the original composed-path node so text fields (notably the preset
+    // name input) always own their keystrokes instead of triggering shortcuts.
+    const target = e.composedPath()[0];
     if (
-      target &&
-      (target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable)
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
     ) {
       return;
     }

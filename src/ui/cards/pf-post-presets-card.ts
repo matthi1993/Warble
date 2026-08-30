@@ -251,7 +251,11 @@ export class PfPostPresetsCard extends LitElement {
                 this.name = (event.target as HTMLInputElement).value;
               }}
               @keydown=${(event: KeyboardEvent) => {
-                if (event.key === "Enter") this.save();
+                event.stopPropagation();
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  this.save();
+                }
               }}
             />
             <button

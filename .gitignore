@@ -39,3 +39,5 @@ coverage
 
 /ui/
 /src-tauri/gen/
+
+tmp/
