@@ -15,6 +15,7 @@ import "@ui/cards/pf-color-card";
 import "@ui/cards/pf-curve-card";
 import "@ui/cards/pf-sharpen-card";
 import "@ui/cards/pf-grain-card";
+import "@ui/cards/pf-post-presets-card";
 import {
   defaultGrain,
   getPostProcess,
@@ -175,6 +176,7 @@ export class PfPostProcessCard extends LitElement {
   render() {
     const enabled = this.settings.enabled;
     return html`
+      <pf-post-presets-card></pf-post-presets-card>
       <div class="enable-row">
         <span class="label">Post-Processing</span>
         <button

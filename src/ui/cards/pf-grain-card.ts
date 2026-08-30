@@ -1,13 +1,13 @@
 /**
- * Global grain controls. The renderer owns the procedural texture and
- * persistence; this card only edits the three user-facing parameters.
+ * Shared grain controls. The host owns persistence; this card only edits
+ * the three user-facing parameters.
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import {
   defaultGrain,
   type GrainSettings,
-} from "@services/post-process/post-process-store";
+} from "@services/effects/effects-store";
 import "@ui/cards/pf-card";
 import "@ui/controls/pf-slider";
 import "@ui/icons/pf-icon";
@@ -75,6 +75,12 @@ export class PfGrainCard extends LitElement {
   @property({ type: Boolean })
   open = false;
 
+  @property()
+  title = "Grain";
+
+  @property({ type: Boolean, attribute: "can-revert" })
+  canRevert: boolean | null = null;
+
   private onToggle = (event: CustomEvent<{ open: boolean }>) => {
     event.stopPropagation();
     this.dispatchEvent(
@@ -121,12 +127,12 @@ export class PfGrainCard extends LitElement {
   render() {
     const value = this.value;
     const defaults = defaultGrain();
-    const canRevert =
-      value.size !== defaults.size ||
-      value.amount !== defaults.amount ||
-      value.fine !== defaults.fine;
+    const canRevert = this.canRevert ??
+      (value.size !== defaults.size ||
+        value.amount !== defaults.amount ||
+        value.fine !== defaults.fine);
     return html`
-      <pf-card title="Grain" ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"
@@ -143,12 +149,12 @@ export class PfGrainCard extends LitElement {
             <span class="label">Size</span>
             <span class="value">${value.size}</span>
             <pf-slider
-              min="1"
+              min="0.1"
               max="100"
-              step="1"
+              step="0.1"
               .value=${value.size}
               label="Grain size"
-              fill-from="1"
+              fill-from="0.1"
               @change=${this.onSize}
             ></pf-slider>
           </div>

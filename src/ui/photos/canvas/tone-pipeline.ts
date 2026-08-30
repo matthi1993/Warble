@@ -30,7 +30,7 @@ import {
   isCurveZero,
 } from "@domain/edits";
 import type { SharpenSettings } from "@services/effects/effects-store";
-import type { GrainSettings } from "@services/post-process/post-process-store";
+import type { GrainSettings } from "@services/effects/effects-store";
 
 export type ToneSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
@@ -47,53 +47,25 @@ const GRAIN_TEXTURE_SIZE = 1024;
  * `amplitude` — maximum signed luminance offset at slider ±100 and
  *   peak weight. The smaller this number, the less the slider does.
  *
- * `weightExp` — the shape of the per-region weight curve:
- *   - `{ kind: "endpoint-low",  exp: n }` →  weight = (1-L)^n
- *     (Blacks — bigger `n` = sharper localisation at L≈0).
- *   - `{ kind: "endpoint-high", exp: n }` →  weight = L^n
- *     (Whites — bigger `n` = sharper localisation at L≈1).
- *   - `{ kind: "midtone", a, b }` →  weight = K · L^a · (1-L)^b
- *     (Shadows / Highlights — bump centred at L = a/(a+b);
- *     larger a+b narrows the bump). K is auto-computed so the bump
- *     peaks at exactly 1.0.
+ * Region masks themselves are built in the shader as sequential
+ * `smoothstep` crossfades. They form a partition of unity: only adjacent
+ * regions overlap and their weights always sum to one. That prevents
+ * multiple sliders from stacking into noisy seams at band boundaries.
  */
-type RegionWeight =
-  | { kind: "endpoint-low"; exp: number }
-  | { kind: "endpoint-high"; exp: number }
-  | { kind: "midtone"; a: number; b: number };
-
 const TONE_REGION: Record<
   "blacks" | "shadows" | "highlights" | "whites",
-  { amplitude: number; weightExp: RegionWeight }
+  { amplitude: number }
 > = {
-  blacks: { amplitude: 0.25, weightExp: { kind: "endpoint-low", exp: 10 } },
-  whites: { amplitude: 0.25, weightExp: { kind: "endpoint-high", exp: 10 } },
-  shadows: { amplitude: 0.18, weightExp: { kind: "midtone", a: 1, b: 5 } },
-  highlights: { amplitude: 0.18, weightExp: { kind: "midtone", a: 5, b: 1 } },
+  blacks: { amplitude: 0.25 },
+  whites: { amplitude: 0.25 },
+  shadows: { amplitude: 0.18 },
+  highlights: { amplitude: 0.18 },
 };
 
 /** GLSL float literal with a decimal point, so the WebGL2 compiler
  *  treats it as a float and not an int. */
 function glslFloat(n: number): string {
   return Number.isInteger(n) ? `${n}.0` : n.toString();
-}
-
-/** Build the GLSL weight expression for a region from its
- *  {@link RegionWeight} descriptor. */
-function regionWeightGlsl(w: RegionWeight): string {
-  switch (w.kind) {
-    case "endpoint-low":
-      return `pow(oneMinusL, ${glslFloat(w.exp)})`;
-    case "endpoint-high":
-      return `pow(L, ${glslFloat(w.exp)})`;
-    case "midtone": {
-      const { a, b } = w;
-      const peak =
-        (Math.pow(a, a) * Math.pow(b, b)) / Math.pow(a + b, a + b);
-      const norm = peak > 0 ? 1 / peak : 1;
-      return `${glslFloat(norm)} * pow(L, ${glslFloat(a)}) * pow(oneMinusL, ${glslFloat(b)})`;
-    }
-  }
 }
 
 function toneCoefficients(t: ToneEdit): {
@@ -207,6 +179,9 @@ export class TonePipeline {
     grainSize: WebGLUniformLocation | null;
     grainAmount: WebGLUniformLocation | null;
     grainFine: WebGLUniformLocation | null;
+    editGrainSize: WebGLUniformLocation | null;
+    editGrainAmount: WebGLUniformLocation | null;
+    editGrainFine: WebGLUniformLocation | null;
     sourceSize: WebGLUniformLocation | null;
   } = {
     temperature: null,
@@ -241,6 +216,9 @@ export class TonePipeline {
     grainSize: null,
     grainAmount: null,
     grainFine: null,
+    editGrainSize: null,
+    editGrainAmount: null,
+    editGrainFine: null,
     sourceSize: null,
   };
   private failed = false;
@@ -283,6 +261,8 @@ export class TonePipeline {
       /** Final image-space grain overlay. The cached noise texture is
        *  stable across redraws, pan, and zoom. */
       grain?: GrainSettings | null;
+      /** Per-photo grain, applied before the global post-process layer. */
+      editGrain?: GrainSettings | null;
     } = {}
   ): HTMLCanvasElement | null {
     if (this.failed) return null;
@@ -383,9 +363,13 @@ export class TonePipeline {
       editSharpenActive || postSharpenActive ? sh / outH : 0
     );
     const grain = opts.grain;
+    const editGrain = opts.editGrain;
     gl.uniform1f(this.uniforms.grainSize, grain?.size ?? 25);
     gl.uniform1f(this.uniforms.grainAmount, grain?.amount ?? 0);
     gl.uniform1f(this.uniforms.grainFine, grain?.fine ?? 0);
+    gl.uniform1f(this.uniforms.editGrainSize, editGrain?.size ?? 25);
+    gl.uniform1f(this.uniforms.editGrainAmount, editGrain?.amount ?? 0);
+    gl.uniform1f(this.uniforms.editGrainFine, editGrain?.fine ?? 0);
     gl.uniform2f(this.uniforms.sourceSize, bm.width, bm.height);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -517,10 +501,6 @@ export class TonePipeline {
       }
     `;
     // Pipeline: exposure → region offsets → contrast → saturation.
-    const wB = regionWeightGlsl(TONE_REGION.blacks.weightExp);
-    const wS = regionWeightGlsl(TONE_REGION.shadows.weightExp);
-    const wH = regionWeightGlsl(TONE_REGION.highlights.weightExp);
-    const wW = regionWeightGlsl(TONE_REGION.whites.weightExp);
     const aB = glslFloat(TONE_REGION.blacks.amplitude);
     const aS = glslFloat(TONE_REGION.shadows.amplitude);
     const aH = glslFloat(TONE_REGION.highlights.amplitude);
@@ -558,6 +538,9 @@ export class TonePipeline {
       uniform float u_grainSize;
       uniform float u_grainAmount;
       uniform float u_grainFine;
+      uniform float u_editGrainSize;
+      uniform float u_editGrainAmount;
+      uniform float u_editGrainFine;
       uniform vec2  u_sourceSize;
       in vec2 v_uv;
       out vec4 outColor;
@@ -570,27 +553,33 @@ export class TonePipeline {
       // 800 px source with a 2000 px source cannot change its size. The
       // fixed mip level shapes the same cached field into larger grains;
       // it does not create a new field as the viewport changes.
-      float organicGrain() {
+      float organicGrain(float grainSize) {
         float shortEdge = max(min(u_sourceSize.x, u_sourceSize.y), 1.0);
         vec2 imageAspect = u_sourceSize / shortEdge;
-        vec2 p = v_uv * imageAspect;
-        float size01 = clamp((u_grainSize - 1.0) / 99.0, 0.0, 1.0);
+        // Below 1, repeat the field more densely to expose grain down to
+        // one tenth of the former minimum diameter.
+        float fineScale = 1.0 / min(max(grainSize, 0.1), 1.0);
+        vec2 p = v_uv * imageAspect * fineScale;
+        float size01 = clamp((grainSize - 1.0) / 99.0, 0.0, 1.0);
         float lod = mix(0.0, 4.0, size01);
-        float a = textureLod(
+        float blurScale = exp2(lod);
+        float a = textureGrad(
           u_grainTexture,
           p + vec2(0.173, 0.417),
-          lod
+          dFdx(p) * blurScale,
+          dFdy(p) * blurScale
         ).r - 0.5;
         vec2 q = mat2(0.819, -0.574, 0.574, 0.819) * p;
-        float b = textureLod(
+        float b = textureGrad(
           u_grainTexture,
           q + vec2(0.619, 0.271),
-          lod
+          dFdx(q) * blurScale,
+          dFdy(q) * blurScale
         ).g - 0.5;
         // Mip levels contain averages of 2^lod x 2^lod noise texels.
         // Restore their variance so changing Size changes grain diameter,
         // not the perceived strength of Amount.
-        return (a * 0.82 + b * 0.58) * exp2(lod) * 1.35;
+        return (a * 0.82 + b * 0.58) * blurScale * 1.35;
       }
 
       // Fine noise is binary black/white at native source-pixel centres.
@@ -604,6 +593,25 @@ export class TonePipeline {
         vec2 dx = dFdx(v_uv) * u_sourceSize / GRAIN_TEX_SIZE;
         vec2 dy = dFdy(v_uv) * u_sourceSize / GRAIN_TEX_SIZE;
         return textureGrad(u_grainTexture, uv, dx, dy).b * 2.0 - 1.0;
+      }
+
+      vec3 applyGrain(
+        vec3 col,
+        float grainSize,
+        float grainAmount,
+        float grainFine
+      ) {
+        float luma = clamp(dot(col, LUMA), 0.0, 1.0);
+        float midtone = sqrt(max(4.0 * luma * (1.0 - luma), 0.0));
+        float tonalMask = mix(0.35, 1.0, midtone);
+        float noise = 0.0;
+        if (grainAmount > 0.0) {
+          noise += organicGrain(grainSize) * (grainAmount * 0.0035);
+        }
+        if (grainFine > 0.0) {
+          noise += fineGrain() * (grainFine * 0.00055);
+        }
+        return col + vec3(noise * tonalMask);
       }
 
       // Unsharp-mask high-pass: compares the source pixel against
@@ -699,16 +707,15 @@ export class TonePipeline {
         return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
       }
 
-      // Per-hue HSV adjustments with smooth gaussian-style weights
-      // across the 8 channels. Each channel.xyz packs (hue, sat, val)
+      // Per-hue HSV adjustments with smooth adjacent crossfades across
+      // the 8 channels. Each channel.xyz packs (hue, sat, val)
       // shifts in normalized units (slider/100 ∈ [-1, 1]).
       //  - hue shift:        ±30° per unit, hue-axis wraps
       //  - saturation shift: multiplicative, clamped to [0, 2]
       //  - value shift:      multiplicative, clamped to [0, 2]
-      // Weights are normalized so they sum to 1 at every hue, which
-      // means a flat global shift (no per-channel changes) behaves
-      // identically across the spectrum.
-      const float COLOR_SIGMA = 0.083; // ~30° in normalized hue
+      // Exactly two neighbouring hue bands overlap at any in-between hue.
+      // The smoothstep pair forms a partition of unity, avoiding seams while
+      // giving every band compact support (no Gaussian tail color spill).
       vec3 applyColor(vec3 rgb, vec3 channels[8], vec3 globalShift) {
         // Centres in normalized hue [0, 1).
         // red, orange, yellow, green, aqua, blue, purple, magenta
@@ -727,23 +734,41 @@ export class TonePipeline {
         float s = hsv.y;
         float v = hsv.z;
 
-        float invTwoSigmaSq = 1.0 / (2.0 * COLOR_SIGMA * COLOR_SIGMA);
         vec3 acc = vec3(0.0);
         float wsum = 0.0;
         for (int i = 0; i < 8; i++) {
-          float d = abs(h - centres[i]);
-          d = min(d, 1.0 - d);
-          float w = exp(-(d * d) * invTwoSigmaSq);
+          int prevIndex = (i + 7) % 8;
+          int nextIndex = (i + 1) % 8;
+          float leftSpan = mod(centres[i] - centres[prevIndex] + 1.0, 1.0);
+          float rightSpan = mod(centres[nextIndex] - centres[i] + 1.0, 1.0);
+          float d = mod(h - centres[i] + 0.5, 1.0) - 0.5;
+          float w = 0.0;
+          if (d >= 0.0 && d <= rightSpan) {
+            w = 1.0 - smoothstep(0.0, rightSpan, d);
+          } else if (d < 0.0 && -d <= leftSpan) {
+            w = 1.0 - smoothstep(0.0, leftSpan, -d);
+          }
           acc += channels[i] * w;
           wsum += w;
         }
-        vec3 shift = acc / max(wsum, 1e-4) + globalShift;
 
-        float newH = fract(h + shift.x * (30.0 / 360.0) + 1.0);
-        // Only modulate sat/val for pixels that actually have any
-        // chroma; pure greys stay grey (otherwise a saturation
-        // boost on a grey image would amplify quantization noise).
-        float satGate = smoothstep(0.0, 0.05, s);
+        // Hue becomes numerically unstable in near-grey pixels and in dark
+        // chroma noise. Suppress per-band edits until there is enough both
+        // relative and absolute chroma to classify the pixel safely. The
+        // broad ramps avoid replacing noise with a visible threshold edge.
+        float absoluteChroma = s * v;
+        float relativeConfidence = smoothstep(0.03, 0.14, s);
+        float signalConfidence = smoothstep(0.015, 0.08, absoluteChroma);
+        float colorConfidence = relativeConfidence * signalConfidence;
+        vec3 channelShift = acc / max(wsum, 1e-4);
+        vec3 shift = channelShift * colorConfidence + globalShift;
+
+        // Do not let even the global saturation control amplify tiny
+        // quantisation / sensor colour noise in otherwise neutral pixels.
+        float satGate = smoothstep(0.01, 0.06, absoluteChroma);
+        float newH = fract(
+          h + shift.x * satGate * (30.0 / 360.0) + 1.0
+        );
         float newS = clamp(s * (1.0 + shift.y * satGate), 0.0, 1.0);
         float newV = clamp(v * (1.0 + shift.z), 0.0, 1.0);
         return hsv2rgb(vec3(newH, newS, newV));
@@ -788,12 +813,22 @@ export class TonePipeline {
         col = max(col, vec3(0.0));
 
         float L = clamp(dot(col, LUMA), 0.0, 1.0);
-        float oneMinusL = 1.0 - L;
 
-        float wBlacks    = ${wB};
-        float wWhites    = ${wW};
-        float wShadows   = ${wS};
-        float wHighlights= ${wH};
+        // Sequential crossfades make a smooth partition of unity. Adjacent
+        // tonal regions overlap broadly, but every region reaches exactly
+        // zero outside its safety range. This prevents distant-range spill
+        // and prevents overlapping controls from over-amplifying noise.
+        float blackToShadow = smoothstep(0.06, 0.30, L);
+        float shadowToHighlight = smoothstep(0.38, 0.62, L);
+        float highlightToWhite = smoothstep(0.70, 0.94, L);
+        float wBlacks = 1.0 - blackToShadow;
+        float wShadows = blackToShadow * (1.0 - shadowToHighlight);
+        float wHighlights = blackToShadow
+          * shadowToHighlight
+          * (1.0 - highlightToWhite);
+        float wWhites = blackToShadow
+          * shadowToHighlight
+          * highlightToWhite;
 
         float offset =
             u_blacks     * ${aB} * wBlacks
@@ -834,6 +869,15 @@ export class TonePipeline {
           col += detail * (u_editSharpenStrength * 0.01);
         }
 
+        if (u_editGrainAmount > 0.0 || u_editGrainFine > 0.0) {
+          col = applyGrain(
+            col,
+            u_editGrainSize,
+            u_editGrainAmount,
+            u_editGrainFine
+          );
+        }
+
         // ===== POST-PROCESS PASS =====================================
         // Same as the edit pass: colour first, then curve.
         if (u_postColorEnabled == 1) {
@@ -858,17 +902,12 @@ export class TonePipeline {
         // white. Both modes are monochrome, so they do not introduce a
         // colour cast.
         if (u_grainAmount > 0.0 || u_grainFine > 0.0) {
-          float luma = clamp(dot(col, LUMA), 0.0, 1.0);
-          float midtone = sqrt(max(4.0 * luma * (1.0 - luma), 0.0));
-          float tonalMask = mix(0.35, 1.0, midtone);
-          float noise = 0.0;
-          if (u_grainAmount > 0.0) {
-            noise += organicGrain() * (u_grainAmount * 0.0035);
-          }
-          if (u_grainFine > 0.0) {
-            noise += fineGrain() * (u_grainFine * 0.00055);
-          }
-          col += vec3(noise * tonalMask);
+          col = applyGrain(
+            col,
+            u_grainSize,
+            u_grainAmount,
+            u_grainFine
+          );
         }
 
         outColor = vec4(clamp(col, 0.0, 1.0), src.a);
@@ -970,6 +1009,18 @@ export class TonePipeline {
       "u_grainAmount"
     );
     this.uniforms.grainFine = gl.getUniformLocation(program, "u_grainFine");
+    this.uniforms.editGrainSize = gl.getUniformLocation(
+      program,
+      "u_editGrainSize"
+    );
+    this.uniforms.editGrainAmount = gl.getUniformLocation(
+      program,
+      "u_editGrainAmount"
+    );
+    this.uniforms.editGrainFine = gl.getUniformLocation(
+      program,
+      "u_editGrainFine"
+    );
     this.uniforms.sourceSize = gl.getUniformLocation(program, "u_sourceSize");
 
     // Wire the source sampler to texture unit 0 once and for all.

@@ -38,6 +38,26 @@ export interface SharpenSettings {
   threshold: number;
 }
 
+export interface GrainSettings {
+  /** 0.1..100 — diameter of the organic grain. Post-process grain is
+   * interpreted in normalised image space, not source pixels. */
+  size: number;
+  /** 0..100 — strength of the organic, softly-shaped film grain. */
+  amount: number;
+  /** 0..100 — strength of the additional monochrome per-pixel noise. */
+  fine: number;
+}
+
+export function defaultGrain(): GrainSettings {
+  return { size: 25, amount: 0, fine: 0 };
+}
+
+export function isGrainZero(
+  grain: GrainSettings | null | undefined
+): boolean {
+  return !grain || (grain.amount <= 0 && grain.fine <= 0);
+}
+
 export interface PhotoEffects {
   /** `null` means "no per-photo override stored" — the canvas
    *  falls back to a format-aware default (see
@@ -45,6 +65,8 @@ export interface PhotoEffects {
    *  `SharpenSettings` (even one with `strength: 0`) is treated
    *  as a deliberate user choice and overrides the default. */
   sharpen: SharpenSettings | null;
+  /** Explicit per-photo grain override. `null` is the zero-grain default. */
+  grain: GrainSettings | null;
 }
 
 const STORAGE_KEY = "warble.effects.v1";
@@ -92,14 +114,17 @@ function load(): void {
         bloom?: unknown;
         blur?: unknown;
         sharpen?: SharpenSettings | null;
+        grain?: GrainSettings | null;
       }
     >;
     for (const [path, e] of Object.entries(parsed)) {
-      effects.set(path, {
+      const effect: PhotoEffects = {
         sharpen: e.sharpen
           ? { ...defaultSharpen(), ...e.sharpen }
           : null,
-      });
+        grain: e.grain ? { ...defaultGrain(), ...e.grain } : null,
+      };
+      if (effect.sharpen || effect.grain) effects.set(path, effect);
     }
   } catch (err) {
     console.warn("effects: invalid persisted settings, resetting", err);
@@ -117,7 +142,7 @@ function save(): void {
     try {
       const obj: Record<string, PhotoEffects> = {};
       for (const [path, e] of effects.entries()) {
-        if (e.sharpen) obj[path] = e;
+        if (e.sharpen || e.grain) obj[path] = e;
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
     } catch (err) {
@@ -159,13 +184,41 @@ export function setPhotoSharpen(
   const existing = effects.get(path);
   if (cleaned) {
     effects.set(path, {
-      ...(existing ?? { sharpen: null }),
+      ...(existing ?? { sharpen: null, grain: null }),
       sharpen: cleaned,
     });
   } else if (existing) {
     if (existing.sharpen == null) return;
     const next: PhotoEffects = { ...existing, sharpen: null };
-    if (!next.sharpen) effects.delete(path);
+    if (!next.sharpen && !next.grain) effects.delete(path);
+    else effects.set(path, next);
+  } else {
+    return;
+  }
+  save();
+  notify(path);
+}
+
+export function getPhotoGrain(path: string | null): GrainSettings | null {
+  if (!path) return null;
+  return effects.get(path)?.grain ?? null;
+}
+
+export function setPhotoGrain(
+  path: string,
+  grain: GrainSettings | null
+): void {
+  const cleaned = grain ? { ...defaultGrain(), ...grain } : null;
+  const existing = effects.get(path);
+  if (cleaned) {
+    effects.set(path, {
+      ...(existing ?? { sharpen: null, grain: null }),
+      grain: cleaned,
+    });
+  } else if (existing) {
+    if (existing.grain == null) return;
+    const next: PhotoEffects = { ...existing, grain: null };
+    if (!next.sharpen && !next.grain) effects.delete(path);
     else effects.set(path, next);
   } else {
     return;
@@ -177,7 +230,7 @@ export function setPhotoSharpen(
 export function hasEffects(path: string): boolean {
   const e = effects.get(path);
   if (!e) return false;
-  return e.sharpen != null;
+  return e.sharpen != null || e.grain != null;
 }
 
 export function subscribePhotoEffects(listener: Listener): () => void {

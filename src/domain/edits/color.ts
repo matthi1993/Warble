@@ -7,11 +7,11 @@
  * "Color Mixer" layout). Each one carries hue / saturation /
  * luminance shifts in [-100, 100]. Three global sliders apply on top.
  *
- * The shader (`tone-pipeline.ts`) blends per-channel weights with a
- * smooth gaussian falloff so adjacent channels overlap and a colour
- * that sits between two centres (e.g. an orange-y red) gets a
- * weighted mix of both — there are no visible boundaries between
- * channels.
+ * The shader (`tone-pipeline.ts`) blends each channel into its immediate
+ * neighbours with complementary smoothstep falloffs. The weights form a
+ * continuous partition across the hue wheel without long tails into distant
+ * colors. A chroma-confidence ramp suppresses unstable hue classification in
+ * near-neutral and very dark pixels.
  *
  * Channel order MUST stay in sync with the shader's `centres[]`
  * table and the `uploadColorUniforms` packer.

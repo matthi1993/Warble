@@ -61,6 +61,7 @@ import {
   setPostProcessEnabled,
   subscribePostProcess,
 } from "@services/post-process/post-process-store";
+import { hasEffects } from "@services/effects/effects-store";
 import { fullViewStyles } from "./views/full-view/styles";
 import {
   renderBottombar,
@@ -73,6 +74,7 @@ import { ToneTool } from "./views/full-view/tools/tone-tool";
 import { CurveTool } from "./views/full-view/tools/curve-tool";
 import { ColorTool } from "./views/full-view/tools/color-tool";
 import { SharpenTool } from "./views/full-view/tools/sharpen-tool";
+import { GrainTool } from "./views/full-view/tools/grain-tool";
 import {
   currentSelection,
   isEditableSelection,
@@ -172,12 +174,14 @@ export class PfFullView extends LitElement {
   private colorTool = new ColorTool();
   private curveTool = new CurveTool();
   private sharpenTool = new SharpenTool();
+  private grainTool = new GrainTool();
   private tools: EditTool[] = [
    this.cropTool,
    this.toneTool,
    this.colorTool,
    this.curveTool,
    this.sharpenTool,
+   this.grainTool,
  ];
  /** Tools rendered under the "Edit" tab in the side panel. */
  private editTabTools: EditTool[] = [
@@ -186,6 +190,7 @@ export class PfFullView extends LitElement {
    this.colorTool,
    this.curveTool,
    this.sharpenTool,
+   this.grainTool,
  ];
  /** The tool currently in foreground/interactive mode. Crop is the
   *  only one that takes over the canvas; tone runs passively. */
@@ -424,6 +429,16 @@ export class PfFullView extends LitElement {
   }
 
   private handleKey(e: KeyboardEvent) {
+    // Text-entry controls own their keystrokes. In particular, preset names
+    // must not trigger edit shortcuts or rating labels while being typed.
+    const origin = e.composedPath()[0];
+    if (
+      origin instanceof HTMLInputElement ||
+      origin instanceof HTMLTextAreaElement ||
+      (origin instanceof HTMLElement && origin.isContentEditable)
+    ) {
+      return;
+    }
     // `f`, `Escape`, and `g` are owned by the app shell so it can
     // coordinate window fullscreen + view stack. We don't trap them.
     const active = this.activeTool();
@@ -554,7 +569,7 @@ export class PfFullView extends LitElement {
   ): boolean => {
     void this.editsTick;
     const path = fileForSelection(photo, format, variant);
-    return path != null && hasEdits(path);
+    return path != null && (hasEdits(path) || hasEffects(path));
   };
 
   private setFormat = (format: PhotoFormat) => {
@@ -677,7 +692,7 @@ export class PfFullView extends LitElement {
   private canPreviewOriginal(): boolean {
     void this.editsTick;
     const target = this.editTargetPath();
-    return !!target && hasEdits(target);
+    return !!target && (hasEdits(target) || hasEffects(target));
   }
 
   /** Drop every tool's persisted edits on the active target. */

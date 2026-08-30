@@ -44,14 +44,16 @@ import {
 } from "@services/edits/edits-store";
 import {
   getPostProcess,
-  isGrainZero,
   subscribePostProcess,
   type PostProcessSettings,
 } from "@services/post-process/post-process-store";
 import {
+  getPhotoGrain,
   getPhotoSharpen,
   defaultSharpenForFormat,
+  isGrainZero,
   subscribePhotoEffects,
+  type GrainSettings,
   type SharpenSettings,
 } from "@services/effects/effects-store";
 import { classifyFormat } from "@domain/photo";
@@ -337,6 +339,8 @@ export class PfImageCanvas extends LitElement {
    *  JPG). Never null while {@link path} is set. */
   @state()
   private savedSharpen: SharpenSettings | null = null;
+  @state()
+  private savedGrain: GrainSettings | null = null;
   private editsUnsubscribe: (() => void) | null = null;
   private postProcessUnsubscribe: (() => void) | null = null;
   private effectsUnsubscribe: (() => void) | null = null;
@@ -454,12 +458,14 @@ export class PfImageCanvas extends LitElement {
   private refreshSavedEffects() {
    if (!this.path) {
      this.savedSharpen = null;
+     this.savedGrain = null;
      return;
    }
    const ext = this.path.split(".").pop() ?? "";
    const fmt = classifyFormat(ext);
    this.savedSharpen =
      getPhotoSharpen(this.path) ?? defaultSharpenForFormat(fmt);
+   this.savedGrain = getPhotoGrain(this.path);
  }
 
   /**
@@ -1191,6 +1197,7 @@ export class PfImageCanvas extends LitElement {
      const sharpenActive =
        !!this.savedSharpen && this.savedSharpen.strength > 0;
      const postSharpenActive = ppEnabled && pp.sharpen.strength > 0;
+     const editGrainActive = !isGrainZero(this.savedGrain);
      const grainActive = ppEnabled && !isGrainZero(pp.grain);
      const applyPipeline =
        !this.previewOriginal &&
@@ -1200,6 +1207,7 @@ export class PfImageCanvas extends LitElement {
          postCurveActive ||
          postColorActive ||
          sharpenActive ||
+         editGrainActive ||
          postSharpenActive ||
          grainActive);
       if (applyPipeline) {
@@ -1238,6 +1246,7 @@ export class PfImageCanvas extends LitElement {
               editColor: editColorActive ? this.savedColor : null,
              postColor: postColorActive ? pp.color : null,
              sharpen: sharpenActive ? this.savedSharpen : null,
+             editGrain: editGrainActive ? this.savedGrain : null,
              postSharpen: postSharpenActive ? pp.sharpen : null,
              grain: grainActive ? pp.grain : null,
             }

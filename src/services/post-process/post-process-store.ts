@@ -20,30 +20,14 @@ import {
   type CurveEdit,
 } from "@domain/edits";
 import {
+  defaultGrain,
   defaultSharpen,
+  type GrainSettings,
   type SharpenSettings,
 } from "@services/effects/effects-store";
 
-export interface GrainSettings {
-  /** 1..100 — diameter of the organic grain. This is interpreted in
-   *  normalised image space, not source pixels, so an 800 px and a
-   *  2000 px rendition receive the same apparent grain size. */
-  size: number;
-  /** 0..100 — strength of the organic, softly-shaped film grain. */
-  amount: number;
-  /** 0..100 — strength of the additional monochrome per-pixel noise. */
-  fine: number;
-}
-
-export function defaultGrain(): GrainSettings {
-  return { size: 25, amount: 0, fine: 0 };
-}
-
-export function isGrainZero(
-  grain: GrainSettings | null | undefined
-): boolean {
-  return !grain || (grain.amount <= 0 && grain.fine <= 0);
-}
+export { defaultGrain, isGrainZero } from "@services/effects/effects-store";
+export type { GrainSettings } from "@services/effects/effects-store";
 
 export interface PostProcessSettings {
   /** Master switch. When false, the canvas skips the post pipeline
@@ -106,75 +90,92 @@ function save(s: PostProcessSettings): void {
 }
 
 let current: PostProcessSettings = load();
+let previewBase: PostProcessSettings | null = null;
 const listeners = new Set<(s: PostProcessSettings) => void>();
 
 export function getPostProcess(): PostProcessSettings {
   return current;
 }
 
+/** The persisted state underneath a hover preview. Preset saving uses this
+ * so a transient preview can never accidentally become a new preset. */
+export function getCommittedPostProcess(): PostProcessSettings {
+  return previewBase ?? current;
+}
+
+function commit(next: PostProcessSettings): void {
+  previewBase = null;
+  current = next;
+  save(current);
+  notify();
+}
+
+/** Replace every post-processing tool value in one atomic update. */
+export function setPostProcess(settings: PostProcessSettings): void {
+  commit(structuredClone(settings));
+}
+
+/** Apply a non-persisted state while the pointer is over a preset. */
+export function previewPostProcess(settings: PostProcessSettings): void {
+  if (!previewBase) previewBase = current;
+  current = structuredClone(settings);
+  notify();
+}
+
+export function clearPostProcessPreview(): void {
+  if (!previewBase) return;
+  current = previewBase;
+  previewBase = null;
+  notify();
+}
+
 /** Toggle the master post-process switch. Settings are preserved
  *  so the user can flip back on and get the same look. */
 export function setPostProcessEnabled(enabled: boolean): void {
-  if (current.enabled === enabled) return;
-  current = { ...current, enabled };
-  save(current);
-  notify();
+  const base = getCommittedPostProcess();
+  if (base.enabled === enabled) {
+    clearPostProcessPreview();
+    return;
+  }
+  commit({ ...base, enabled });
 }
 
 export function setPostColor(color: ColorEdit): void {
-  current = { ...current, color };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), color });
 }
 
 export function setPostCurve(curve: CurveEdit): void {
-  current = { ...current, curve };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), curve });
 }
 
 export function setPostSharpen(sharpen: SharpenSettings): void {
-  current = { ...current, sharpen };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), sharpen });
 }
 
 export function resetPostSharpen(): void {
-  current = { ...current, sharpen: defaultSharpen() };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), sharpen: defaultSharpen() });
 }
 
 export function setPostGrain(grain: GrainSettings): void {
-  current = { ...current, grain };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), grain });
 }
 
 export function resetPostGrain(): void {
-  current = { ...current, grain: defaultGrain() };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), grain: defaultGrain() });
 }
 
 export function resetPostProcess(): void {
-  current = defaultSettings();
-  save(current);
-  notify();
+  commit(defaultSettings());
 }
 
 /** Reset only the post-process color — leaves the post curve untouched. */
 export function resetPostColor(): void {
-  current = { ...current, color: defaultColor() };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), color: defaultColor() });
 }
 
 /** Reset only the post-process curve — leaves color untouched. */
 export function resetPostCurve(): void {
-  current = { ...current, curve: defaultCurve() };
-  save(current);
-  notify();
+  commit({ ...getCommittedPostProcess(), curve: defaultCurve() });
 }
 
 export function subscribePostProcess(
