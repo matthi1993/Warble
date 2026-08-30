@@ -44,6 +44,7 @@ import {
 } from "@services/edits/edits-store";
 import {
   getPostProcess,
+  isGrainZero,
   subscribePostProcess,
   type PostProcessSettings,
 } from "@services/post-process/post-process-store";
@@ -1190,6 +1191,7 @@ export class PfImageCanvas extends LitElement {
      const sharpenActive =
        !!this.savedSharpen && this.savedSharpen.strength > 0;
      const postSharpenActive = ppEnabled && pp.sharpen.strength > 0;
+     const grainActive = ppEnabled && !isGrainZero(pp.grain);
      const applyPipeline =
        !this.previewOriginal &&
        (!isToneZero(this.savedTone) ||
@@ -1198,7 +1200,8 @@ export class PfImageCanvas extends LitElement {
          postCurveActive ||
          postColorActive ||
          sharpenActive ||
-         postSharpenActive);
+         postSharpenActive ||
+         grainActive);
       if (applyPipeline) {
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
@@ -1236,6 +1239,7 @@ export class PfImageCanvas extends LitElement {
              postColor: postColorActive ? pp.color : null,
              sharpen: sharpenActive ? this.savedSharpen : null,
              postSharpen: postSharpenActive ? pp.sharpen : null,
+             grain: grainActive ? pp.grain : null,
             }
           );
           if (toned) {

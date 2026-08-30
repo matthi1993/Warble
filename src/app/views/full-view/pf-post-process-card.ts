@@ -1,6 +1,6 @@
 /**
  * `pf-post-process-card` — container that stacks the post-process
- * tools (Color + Post Curve) shown in the right-side panel's
+ * tools (Color + Post Curve + output effects) shown in the right-side panel's
  * "Post" tab. Each individual tool is its own self-contained card
  * with its own revert button; this element is just a flex column.
  *
@@ -14,7 +14,9 @@ import { customElement, state } from "lit/decorators.js";
 import "@ui/cards/pf-color-card";
 import "@ui/cards/pf-curve-card";
 import "@ui/cards/pf-sharpen-card";
+import "@ui/cards/pf-grain-card";
 import {
+  defaultGrain,
   getPostProcess,
   setPostColor,
   resetPostColor,
@@ -22,9 +24,12 @@ import {
   resetPostCurve,
   setPostSharpen,
   resetPostSharpen,
+  setPostGrain,
+  resetPostGrain,
   setPostProcessEnabled,
   subscribePostProcess,
   type PostProcessSettings,
+  type GrainSettings,
 } from "@services/post-process/post-process-store";
 import {
   defaultColor,
@@ -113,6 +118,9 @@ export class PfPostProcessCard extends LitElement {
   @state()
   private sharpenOpen = false;
 
+  @state()
+  private grainOpen = false;
+
   private unsub: (() => void) | null = null;
 
   connectedCallback(): void {
@@ -150,6 +158,14 @@ export class PfPostProcessCard extends LitElement {
 
   private onSharpenReset = () => {
     resetPostSharpen();
+  };
+
+  private onGrainChange = (e: CustomEvent<GrainSettings>) => {
+    setPostGrain(e.detail);
+  };
+
+  private onGrainReset = () => {
+    resetPostGrain();
   };
 
   private onToggleEnabled = () => {
@@ -201,6 +217,14 @@ export class PfPostProcessCard extends LitElement {
           @toggle=${(e: CustomEvent<{ open: boolean }>) =>
             (this.sharpenOpen = e.detail.open)}
         ></pf-sharpen-card>
+        <pf-grain-card
+          ?open=${this.grainOpen}
+          .value=${this.settings.grain ?? defaultGrain()}
+          @grain-change=${this.onGrainChange}
+          @grain-reset=${this.onGrainReset}
+          @toggle=${(e: CustomEvent<{ open: boolean }>) =>
+            (this.grainOpen = e.detail.open)}
+        ></pf-grain-card>
       </div>
     `;
   }

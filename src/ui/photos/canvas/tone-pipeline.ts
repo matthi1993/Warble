@@ -30,8 +30,14 @@ import {
   isCurveZero,
 } from "@domain/edits";
 import type { SharpenSettings } from "@services/effects/effects-store";
+import type { GrainSettings } from "@services/post-process/post-process-store";
 
 export type ToneSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
+
+/** One cached noise field is enough for both grain modes. Red/green hold
+ * bell-shaped random values for organic grain; blue holds binary black or
+ * white values for the per-pixel mode. */
+const GRAIN_TEXTURE_SIZE = 1024;
 
 /**
  * Per-region tunables for the Blacks / Shadows / Highlights / Whites
@@ -160,6 +166,9 @@ export class TonePipeline {
   private editLutTex: WebGLTexture | null = null;
   /** 256x2 RGBA LUT for the global post-process curve (texture unit 2). */
   private postLutTex: WebGLTexture | null = null;
+  /** Procedural noise generated once, then sampled deterministically in
+   *  image space for every redraw (texture unit 3). */
+  private grainTex: WebGLTexture | null = null;
   /** Last-uploaded curve references so we don't re-upload an
    *  identical LUT every frame during a slider drag. */
   private uploadedEditCurve: CurveEdit | null = null;
@@ -194,6 +203,11 @@ export class TonePipeline {
     postSharpenRadius: WebGLUniformLocation | null;
     postSharpenThreshold: WebGLUniformLocation | null;
     sharpenStep: WebGLUniformLocation | null;
+    grainTexture: WebGLUniformLocation | null;
+    grainSize: WebGLUniformLocation | null;
+    grainAmount: WebGLUniformLocation | null;
+    grainFine: WebGLUniformLocation | null;
+    sourceSize: WebGLUniformLocation | null;
   } = {
     temperature: null,
     tint: null,
@@ -223,6 +237,11 @@ export class TonePipeline {
     postSharpenRadius: null,
     postSharpenThreshold: null,
     sharpenStep: null,
+    grainTexture: null,
+    grainSize: null,
+    grainAmount: null,
+    grainFine: null,
+    sourceSize: null,
   };
   private failed = false;
 
@@ -261,6 +280,9 @@ export class TonePipeline {
        *  post color + post curve. Conceptually the "output
        *  sharpening" stage. */
       postSharpen?: SharpenSettings | null;
+      /** Final image-space grain overlay. The cached noise texture is
+       *  stable across redraws, pan, and zoom. */
+      grain?: GrainSettings | null;
     } = {}
   ): HTMLCanvasElement | null {
     if (this.failed) return null;
@@ -360,6 +382,11 @@ export class TonePipeline {
       editSharpenActive || postSharpenActive ? sw / outW : 0,
       editSharpenActive || postSharpenActive ? sh / outH : 0
     );
+    const grain = opts.grain;
+    gl.uniform1f(this.uniforms.grainSize, grain?.size ?? 25);
+    gl.uniform1f(this.uniforms.grainAmount, grain?.amount ?? 0);
+    gl.uniform1f(this.uniforms.grainFine, grain?.fine ?? 0);
+    gl.uniform2f(this.uniforms.sourceSize, bm.width, bm.height);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.uniform1i(this.uniforms.editLut!, 1);
@@ -368,6 +395,9 @@ export class TonePipeline {
     gl.uniform1i(this.uniforms.postLut!, 2);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.postLutTex);
+    gl.uniform1i(this.uniforms.grainTexture!, 3);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.grainTex);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     return this.canvas;
   }
@@ -395,11 +425,13 @@ export class TonePipeline {
     if (this.texture) gl.deleteTexture(this.texture);
     if (this.editLutTex) gl.deleteTexture(this.editLutTex);
     if (this.postLutTex) gl.deleteTexture(this.postLutTex);
+    if (this.grainTex) gl.deleteTexture(this.grainTex);
     if (this.vao) gl.deleteVertexArray(this.vao);
     this.program = null;
     this.texture = null;
     this.editLutTex = null;
     this.postLutTex = null;
+    this.grainTex = null;
     this.vao = null;
     this.gl = null;
     this.uploadedBitmap = null;
@@ -498,6 +530,7 @@ export class TonePipeline {
       uniform sampler2D u_tex;
       uniform sampler2D u_editLut;
       uniform sampler2D u_postLut;
+      uniform sampler2D u_grainTexture;
       uniform int u_editLutEnabled;
       uniform int u_postLutEnabled;
       uniform float u_temperature;
@@ -522,10 +555,56 @@ export class TonePipeline {
       uniform float u_postSharpenRadius;
       uniform float u_postSharpenThreshold;
       uniform vec2  u_sharpenStep;
+      uniform float u_grainSize;
+      uniform float u_grainAmount;
+      uniform float u_grainFine;
+      uniform vec2  u_sourceSize;
       in vec2 v_uv;
       out vec4 outColor;
 
       const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+      const float GRAIN_TEX_SIZE = ${glslFloat(GRAIN_TEXTURE_SIZE)};
+
+      // Organic grain is sampled in normalised image space. Only the
+      // aspect ratio enters the coordinate calculation, so replacing an
+      // 800 px source with a 2000 px source cannot change its size. The
+      // fixed mip level shapes the same cached field into larger grains;
+      // it does not create a new field as the viewport changes.
+      float organicGrain() {
+        float shortEdge = max(min(u_sourceSize.x, u_sourceSize.y), 1.0);
+        vec2 imageAspect = u_sourceSize / shortEdge;
+        vec2 p = v_uv * imageAspect;
+        float size01 = clamp((u_grainSize - 1.0) / 99.0, 0.0, 1.0);
+        float lod = mix(0.0, 4.0, size01);
+        float a = textureLod(
+          u_grainTexture,
+          p + vec2(0.173, 0.417),
+          lod
+        ).r - 0.5;
+        vec2 q = mat2(0.819, -0.574, 0.574, 0.819) * p;
+        float b = textureLod(
+          u_grainTexture,
+          q + vec2(0.619, 0.271),
+          lod
+        ).g - 0.5;
+        // Mip levels contain averages of 2^lod x 2^lod noise texels.
+        // Restore their variance so changing Size changes grain diameter,
+        // not the perceived strength of Amount.
+        return (a * 0.82 + b * 0.58) * exp2(lod) * 1.35;
+      }
+
+      // Fine noise is binary black/white at native source-pixel centres.
+      // Explicit gradients let the texture mipmaps correctly average many
+      // source pixels when the photo is fitted below 100%, while zooming in
+      // simply magnifies the already-selected pixel values.
+      float fineGrain() {
+        vec2 sourcePixel = floor(v_uv * u_sourceSize);
+        vec2 uv = (mod(sourcePixel, GRAIN_TEX_SIZE) + 0.5)
+          / GRAIN_TEX_SIZE;
+        vec2 dx = dFdx(v_uv) * u_sourceSize / GRAIN_TEX_SIZE;
+        vec2 dy = dFdy(v_uv) * u_sourceSize / GRAIN_TEX_SIZE;
+        return textureGrad(u_grainTexture, uv, dx, dy).b * 2.0 - 1.0;
+      }
 
       // Unsharp-mask high-pass: compares the source pixel against
       // a blurred neighbourhood of itself, gates the difference by
@@ -774,6 +853,24 @@ export class TonePipeline {
           col += detail * (u_postSharpenStrength * 0.01);
         }
 
+        // Grain is the final overlay. A gentle midtone bias keeps the
+        // texture photographic and avoids hard clipping at pure black or
+        // white. Both modes are monochrome, so they do not introduce a
+        // colour cast.
+        if (u_grainAmount > 0.0 || u_grainFine > 0.0) {
+          float luma = clamp(dot(col, LUMA), 0.0, 1.0);
+          float midtone = sqrt(max(4.0 * luma * (1.0 - luma), 0.0));
+          float tonalMask = mix(0.35, 1.0, midtone);
+          float noise = 0.0;
+          if (u_grainAmount > 0.0) {
+            noise += organicGrain() * (u_grainAmount * 0.0035);
+          }
+          if (u_grainFine > 0.0) {
+            noise += fineGrain() * (u_grainFine * 0.00055);
+          }
+          col += vec3(noise * tonalMask);
+        }
+
         outColor = vec4(clamp(col, 0.0, 1.0), src.a);
       }
     `;
@@ -863,6 +960,17 @@ export class TonePipeline {
       "u_postSharpenThreshold"
     );
     this.uniforms.sharpenStep = gl.getUniformLocation(program, "u_sharpenStep");
+    this.uniforms.grainTexture = gl.getUniformLocation(
+      program,
+      "u_grainTexture"
+    );
+    this.uniforms.grainSize = gl.getUniformLocation(program, "u_grainSize");
+    this.uniforms.grainAmount = gl.getUniformLocation(
+      program,
+      "u_grainAmount"
+    );
+    this.uniforms.grainFine = gl.getUniformLocation(program, "u_grainFine");
+    this.uniforms.sourceSize = gl.getUniformLocation(program, "u_sourceSize");
 
     // Wire the source sampler to texture unit 0 once and for all.
     const uTex = gl.getUniformLocation(program, "u_tex");
@@ -942,7 +1050,67 @@ export class TonePipeline {
     };
     this.editLutTex = makeLut();
     this.postLutTex = makeLut();
-    return true;
+    this.grainTex = this.createGrainTexture();
+    return this.grainTex !== null;
+  }
+
+  /** Build the procedural field once. A tiny xorshift generator avoids
+   *  millions of calls into Math.random while still producing independent,
+   *  evenly-distributed texture values. Averaging four bytes gives the red
+   *  and green channels a natural bell-shaped distribution; blue is binary
+   *  for the Fine control. */
+  private createGrainTexture(): WebGLTexture | null {
+    const gl = this.gl!;
+    const texture = gl.createTexture();
+    if (!texture) return null;
+    const data = new Uint8Array(
+      GRAIN_TEXTURE_SIZE * GRAIN_TEXTURE_SIZE * 4
+    );
+    let state = ((Math.random() * 0xffffffff) >>> 0) || 0x6d2b79f5;
+    const randomWord = (): number => {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      return state >>> 0;
+    };
+    const gaussianByte = (): number => {
+      const word = randomWord();
+      return (
+        ((word & 0xff) +
+          ((word >>> 8) & 0xff) +
+          ((word >>> 16) & 0xff) +
+          ((word >>> 24) & 0xff)) >>>
+        2
+      );
+    };
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = gaussianByte();
+      data[i + 1] = gaussianByte();
+      data[i + 2] = (randomWord() & 1) === 0 ? 0 : 255;
+      data[i + 3] = 255;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MIN_FILTER,
+      gl.LINEAR_MIPMAP_LINEAR
+    );
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      GRAIN_TEXTURE_SIZE,
+      GRAIN_TEXTURE_SIZE,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      data
+    );
+    gl.generateMipmap(gl.TEXTURE_2D);
+    return texture;
   }
 
   private compile(type: number, src: string): WebGLShader | null {

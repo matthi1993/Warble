@@ -1,8 +1,8 @@
 /**
  * Global post-process store.
  *
- * Post-process settings (color + post tone curve) are applied AFTER
- * the per-photo edit pipeline (tone + edit-color + edit-curve) at
+ * Post-process settings (color, curve, sharpening, and grain) are applied
+ * AFTER the per-photo edit pipeline (tone + edit-color + edit-curve) at
  * draw time. They are intentionally NOT per-photo: the user picks a
  * look they like and it sticks across every image until they change
  * it. That makes post-process effects feel like a film stock /
@@ -24,6 +24,27 @@ import {
   type SharpenSettings,
 } from "@services/effects/effects-store";
 
+export interface GrainSettings {
+  /** 1..100 — diameter of the organic grain. This is interpreted in
+   *  normalised image space, not source pixels, so an 800 px and a
+   *  2000 px rendition receive the same apparent grain size. */
+  size: number;
+  /** 0..100 — strength of the organic, softly-shaped film grain. */
+  amount: number;
+  /** 0..100 — strength of the additional monochrome per-pixel noise. */
+  fine: number;
+}
+
+export function defaultGrain(): GrainSettings {
+  return { size: 25, amount: 0, fine: 0 };
+}
+
+export function isGrainZero(
+  grain: GrainSettings | null | undefined
+): boolean {
+  return !grain || (grain.amount <= 0 && grain.fine <= 0);
+}
+
 export interface PostProcessSettings {
   /** Master switch. When false, the canvas skips the post pipeline
    *  entirely and just shows the per-photo edits. UI controls
@@ -36,6 +57,8 @@ export interface PostProcessSettings {
    *  post color + curve. Defaults to zero strength so existing
    *  installs upgrade silently. */
   sharpen: SharpenSettings;
+  /** Resolution-independent film grain plus optional per-pixel noise. */
+  grain: GrainSettings;
 }
 
 const STORAGE_KEY = "warble.postProcess.v3";
@@ -46,6 +69,7 @@ function defaultSettings(): PostProcessSettings {
     color: defaultColor(),
     curve: defaultCurve(),
     sharpen: defaultSharpen(),
+    grain: defaultGrain(),
   };
 }
 
@@ -62,6 +86,9 @@ function load(): PostProcessSettings {
       sharpen: parsed.sharpen
         ? { ...defaultSharpen(), ...parsed.sharpen }
         : defaultSharpen(),
+      grain: parsed.grain
+        ? { ...defaultGrain(), ...parsed.grain }
+        : defaultGrain(),
     };
   } catch (err) {
     console.warn("post-process: invalid persisted settings, resetting", err);
@@ -114,6 +141,18 @@ export function setPostSharpen(sharpen: SharpenSettings): void {
 
 export function resetPostSharpen(): void {
   current = { ...current, sharpen: defaultSharpen() };
+  save(current);
+  notify();
+}
+
+export function setPostGrain(grain: GrainSettings): void {
+  current = { ...current, grain };
+  save(current);
+  notify();
+}
+
+export function resetPostGrain(): void {
+  current = { ...current, grain: defaultGrain() };
   save(current);
   notify();
 }
