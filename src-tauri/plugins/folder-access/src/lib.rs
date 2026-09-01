@@ -68,6 +68,17 @@ pub fn pick_library<R: Runtime>(app: &AppHandle<R>) -> Result<Option<FolderGrant
         .map_err(|e| e.to_string())
 }
 
+pub fn export_library<R: Runtime>(
+    app: &AppHandle<R>,
+    source: &str,
+) -> Result<Option<FolderGrant>, String> {
+    app.state::<FolderAccess<R>>()
+        .0
+        .run_mobile_plugin::<LibraryResponse>("exportLibrary", ExportPayload { source })
+        .map(|response| response.selection)
+        .map_err(|e| e.to_string())
+}
+
 pub fn replace_library<R: Runtime>(
     app: &AppHandle<R>,
     source: &str,
@@ -102,4 +113,9 @@ struct BookmarkPayload<'a> {
 struct ReplacePayload<'a> {
     source: &'a str,
     destination: &'a str,
+}
+
+#[derive(Serialize)]
+struct ExportPayload<'a> {
+    source: &'a str,
 }

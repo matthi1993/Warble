@@ -90,6 +90,8 @@ fn restore_last_library(state: &AppState, db_path: &std::path::Path) {
             "last library file no longer exists: {} — starting with existing library",
             source.display()
         );
+        let _ = state.device_storage.set_last_library_path(None);
+        let _ = state.device_storage.set_library_bookmark(None);
         return;
     }
     remove_sqlite_sidecars(db_path);

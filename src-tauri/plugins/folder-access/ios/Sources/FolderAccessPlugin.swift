@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct PickFoldersArgs: Decodable { let multiple: Bool }
 struct ResolveBookmarkArgs: Decodable { let bookmark: String }
 struct ReplaceLibraryArgs: Decodable { let source: String; let destination: String }
+struct ExportLibraryArgs: Decodable { let source: String }
 
 final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
   private var pending: Invoke?
@@ -49,6 +50,30 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
       } else {
         self.pending = nil
         invoke.reject("Opening a library requires iOS 14 or later")
+      }
+    }
+  }
+
+  @objc func exportLibrary(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(ExportLibraryArgs.self)
+    guard pending == nil else {
+      invoke.reject("A document picker is already open")
+      return
+    }
+    pending = invoke
+    pickingLibrary = true
+    let source = URL(fileURLWithPath: args.source)
+    DispatchQueue.main.async {
+      if #available(iOS 14.0, *) {
+        let picker = UIDocumentPickerViewController(forExporting: [source], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        picker.modalPresentationStyle = .fullScreen
+        self.manager.viewController?.present(picker, animated: true)
+      } else {
+        self.pending = nil
+        self.pickingLibrary = false
+        invoke.reject("Saving a library requires iOS 14 or later")
       }
     }
   }

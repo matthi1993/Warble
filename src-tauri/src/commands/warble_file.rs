@@ -90,6 +90,71 @@ pub async fn save_library(
     Ok(())
 }
 
+/// Present the platform's Save/Export picker and remember the selected file
+/// as the active library location for subsequent saves and next launch.
+#[tauri::command]
+pub async fn save_library_as(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let dialog_app = app.clone();
+        let selected = tauri::async_runtime::spawn_blocking(move || {
+            dialog_app
+                .dialog()
+                .file()
+                .set_file_name("library.warble")
+                .add_filter("Warble Library", &[LIBRARY_FILE_EXT])
+                .blocking_save_file()
+                .map(|path| path.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let Some(path) = selected else {
+            return Ok(None);
+        };
+        let dest = ensure_extension(PathBuf::from(path), LIBRARY_FILE_EXT);
+        write_snapshot(&app, &state, &dest)?;
+        state.device_storage.set_last_library_path(Some(&dest))?;
+        state.device_storage.set_library_bookmark(None)?;
+        return Ok(Some(dest.to_string_lossy().into_owned()));
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        // iOS saves documents by exporting an existing file through the Files
+        // picker. Build a clean SQLite snapshot first, then retain the returned
+        // security-scoped bookmark so it can be reopened at launch.
+        let mut temp = library_db_path(&app);
+        temp.set_file_name("Warble Library.warble");
+        if temp.exists() {
+            std::fs::remove_file(&temp).map_err(|e| e.to_string())?;
+        }
+        state.repository()?.vacuum_into(&temp)?;
+        let source = temp
+            .to_str()
+            .ok_or_else(|| "temporary library path is not valid UTF-8".to_string())?;
+        let result = tauri_plugin_folder_access::export_library(&app, source);
+        let _ = std::fs::remove_file(&temp);
+        let Some(grant) = result? else {
+            return Ok(None);
+        };
+        let dest = PathBuf::from(&grant.path);
+        state.device_storage.set_last_library_path(Some(&dest))?;
+        state
+            .device_storage
+            .set_library_bookmark(Some(&grant.bookmark))?;
+        return Ok(Some(grant.path));
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, state);
+        Err("Saving libraries is not implemented on Android".to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn save_open_library(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let dest = state
@@ -155,6 +220,11 @@ pub async fn load_library(
     }
     let dest = library_db_path(&app);
     if same_file(&source, &dest) {
+        let state = app.state::<AppState>();
+        state.device_storage.set_last_library_path(Some(&source))?;
+        if let Some(bookmark) = bookmark.as_deref() {
+            state.device_storage.set_library_bookmark(Some(bookmark))?;
+        }
         return Ok(());
     }
     if let Some(parent) = dest.parent() {

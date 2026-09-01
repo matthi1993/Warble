@@ -145,6 +145,11 @@ export class PfFullView extends LitElement {
   @property({ type: Boolean, reflect: true })
   idle = false;
 
+  /** Explicit tap-to-hide state for touch devices. Kept separate from
+   * cursor-idle hiding so an iPad tap remains authoritative. */
+  @property({ type: Boolean, reflect: true, attribute: "controls-hidden" })
+  controlsHidden = false;
+
   /** In fullscreen, the edit rail/panel is only visible when the
    *  cursor approaches the right edge. Reflected as attribute so
    *  CSS can gate the reveal. */
@@ -202,8 +207,11 @@ export class PfFullView extends LitElement {
   private idleController = new IdleController({
    isFullscreen: () => this.fullscreen,
    onIdleChange: (v) => {
-     this.idle = v;
-     if (v) this.openMenu = null;
+     // iPad chrome is controlled explicitly by image taps; an idle timer
+     // would make controls disappear without the requested user action.
+     const ipad = this.isIPad();
+     this.idle = ipad ? false : v;
+     if (v && !ipad) this.openMenu = null;
     },
   });
 
@@ -333,6 +341,7 @@ export class PfFullView extends LitElement {
       if (this.fullscreen) this.idleController.bump();
       else {
         this.idleController.reset();
+        this.controlsHidden = false;
         this.rightReveal = false;
         this.rightOverPanel = false;
       }
@@ -532,6 +541,31 @@ export class PfFullView extends LitElement {
         composed: true,
       })
     );
+  };
+
+  private isIPad(): boolean {
+    const ua = navigator.userAgent ?? "";
+    return /iPad/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+  }
+
+  private onImageActivate = () => {
+    if (!this.fullscreen) return;
+    this.controlsHidden = !this.controlsHidden;
+    this.openMenu = null;
+    if (this.controlsHidden) this.rightReveal = false;
+  };
+
+  private onImageDoubleActivate = (event: Event) => {
+    // Desktop keeps the established double-click 100%↔fit action. On iPad a
+    // double-tap toggles the app-level immersive viewer; native iOS window
+    // fullscreen cannot be exited programmatically.
+    if (!this.isIPad()) return;
+    event.preventDefault();
+    this.toggleFullscreen();
+  };
+
+  private onImageSwipe = (event: CustomEvent<{ delta: number }>) => {
+    this.go(event.detail.delta);
   };
 
   private setBg = (bg: BgColor) => {
@@ -881,13 +915,16 @@ export class PfFullView extends LitElement {
             @crop-change=${this.onCanvasCropChange}
             @orientation-flip=${this.onCanvasOrientationFlip}
             @horizon-line=${this.onCanvasHorizonLine}
+            @image-activate=${this.onImageActivate}
+            @image-double-activate=${this.onImageDoubleActivate}
+            @image-swipe=${this.onImageSwipe}
           ></pf-image-canvas>
           ${path
             ? html`<pf-rating-overlay
                 class="fv-rating-overlay"
                 .path=${path}
                 ?fullscreen=${this.fullscreen}
-                ?forceVisible=${this.fullscreen && !this.idle}
+                ?forceVisible=${this.fullscreen && !this.idle && !this.controlsHidden}
                 style="--pf-rating-inset: 16px; --pf-rating-star-size: 14px; --pf-rating-label-size: 8px;"
               ></pf-rating-overlay>`
             : null}
@@ -912,6 +949,7 @@ export class PfFullView extends LitElement {
           <div class="hint">
             ${buildHintLine(this.shortcuts, [
               "Scroll to zoom",
+              "pinch to zoom",
               "drag to pan",
               "double-click to toggle 100%",
               "F fullscreen",

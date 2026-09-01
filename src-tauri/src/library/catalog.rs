@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::folder::Folder;
 use super::photo::{is_photo_extension, parse_variant, viewable_rank, Photo, PhotoFile};
-use super::portable_path::make_portable_key;
+use super::portable_path::{make_portable_key, split_portable_key};
 
 #[derive(Default)]
 pub struct LibraryCatalog {
@@ -61,6 +61,44 @@ impl LibraryCatalog {
         self.roots.clone()
     }
 
+    /// Re-scan one folder subtree while leaving every other imported folder
+    /// untouched. `root` is this device's physical binding for the portable
+    /// root UUID contained in `folder_key`.
+    pub fn refresh_folder(&mut self, folder_key: &str, root: &Path) -> Result<(), String> {
+        let (root_id, relative) = split_portable_key(folder_key)?;
+        let physical_folder = root.join(relative);
+        if !physical_folder.is_dir() {
+            return Err(format!(
+                "folder is no longer available: {}",
+                physical_folder.display()
+            ));
+        }
+
+        let existing_name = find_folder(&self.roots, folder_key)
+            .map(|folder| folder.name.clone())
+            .ok_or_else(|| "folder is not present in the library".to_string())?;
+
+        // Scan into a temporary map first. If reading the folder fails, the
+        // currently displayed catalog remains intact.
+        let mut refreshed_photos = HashMap::new();
+        let mut refreshed = scan_tree(&physical_folder, root, root_id, &mut refreshed_photos)?;
+        // Root display names are persisted and may intentionally differ from
+        // the physical directory name.
+        if folder_key == root_id {
+            refreshed.name = existing_name;
+        }
+
+        let prefix = format!("{}/", folder_key.trim_end_matches('/'));
+        self.photos.retain(|path, _| !path.starts_with(&prefix));
+        self.photos.extend(refreshed_photos);
+
+        let mut replacement = Some(refreshed);
+        if !replace_folder(&mut self.roots, folder_key, &mut replacement) {
+            return Err("folder disappeared while it was being refreshed".to_string());
+        }
+        Ok(())
+    }
+
     /// Like `photos_in_folder` but also includes photos in any nested
     /// subfolder when `recursive` is true.
     pub fn photos_in_folder_filtered(&self, folder: &Path, recursive: bool) -> Vec<Photo> {
@@ -99,6 +137,33 @@ impl LibraryCatalog {
         result.sort_by(|a, b| a.filename.cmp(&b.filename));
         result
     }
+}
+
+fn find_folder<'a>(folders: &'a [Folder], id: &str) -> Option<&'a Folder> {
+    for folder in folders {
+        if folder.id == id {
+            return Some(folder);
+        }
+        if let Some(found) = find_folder(&folder.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn replace_folder(folders: &mut [Folder], id: &str, replacement: &mut Option<Folder>) -> bool {
+    for folder in folders {
+        if folder.id == id {
+            *folder = replacement
+                .take()
+                .expect("replacement is consumed only once");
+            return true;
+        }
+        if replace_folder(&mut folder.children, id, replacement) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Pick the primary file from a sidecar/variant group (preferring base
@@ -236,4 +301,42 @@ fn photo_from_path(entry_path: &Path, root: &Path, root_id: &str) -> Option<Phot
         extensions: vec![ext],
         files: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refreshes_only_the_requested_folder_subtree() {
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-refresh-{root_id}"));
+        let first = root.join("First");
+        let second = root.join("Second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("old.jpg"), []).unwrap();
+        fs::write(second.join("untouched.jpg"), []).unwrap();
+
+        let mut catalog = LibraryCatalog::default();
+        catalog.import_root(&root_id, "Photos", &root).unwrap();
+
+        fs::remove_file(first.join("old.jpg")).unwrap();
+        fs::write(first.join("new.jpg"), []).unwrap();
+        catalog
+            .refresh_folder(&format!("{root_id}/First"), &root)
+            .unwrap();
+
+        assert!(!catalog
+            .photos
+            .contains_key(&format!("{root_id}/First/old.jpg")));
+        assert!(catalog
+            .photos
+            .contains_key(&format!("{root_id}/First/new.jpg")));
+        assert!(catalog
+            .photos
+            .contains_key(&format!("{root_id}/Second/untouched.jpg")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

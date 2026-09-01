@@ -35,6 +35,12 @@ export class PfIconButton extends LitElement {
     pf-icon {
       font-size: 1.05rem;
     }
+    @media (pointer: coarse) {
+      button {
+        width: 44px;
+        height: 44px;
+      }
+    }
   `;
 
   @property({ type: String })

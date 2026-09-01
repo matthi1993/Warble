@@ -41,6 +41,8 @@ pub fn run() {
             commands::bind_media_root,
             commands::list_imported_folders,
             commands::refresh_imported_folders,
+            commands::refresh_folder,
+            commands::remove_imported_folder,
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,
@@ -80,6 +82,7 @@ pub fn run() {
             commands::get_open_library_path,
             commands::select_library_dialog,
             commands::save_library,
+            commands::save_library_as,
             commands::save_open_library,
             commands::load_library,
         ])

@@ -89,6 +89,10 @@ export class PfFolderTreeItem extends LitElement {
   @state()
   private expanded = false;
 
+  private longPressTimer: number | null = null;
+  private longPressStart: { x: number; y: number } | null = null;
+  private suppressNextClick = false;
+
   connectedCallback(): void {
     super.connectedCallback();
     if (this.isRoot) {
@@ -102,6 +106,10 @@ export class PfFolderTreeItem extends LitElement {
   }
 
   private select() {
+    if (this.suppressNextClick) {
+      this.suppressNextClick = false;
+      return;
+    }
     if (!this.folder.available) {
       this.dispatchEvent(
         new CustomEvent<{ rootId: string }>("root-reconnect", {
@@ -121,6 +129,55 @@ export class PfFolderTreeItem extends LitElement {
     );
   }
 
+  private openFolderMenu(clientX: number, clientY: number) {
+    this.dispatchEvent(
+      new CustomEvent("folder-context-menu", {
+        detail: {
+          folderId: this.folder.id,
+          path: this.folder.path,
+          name: this.folder.name,
+          isRoot: this.isRoot,
+          available: this.folder.available,
+          x: clientX,
+          y: clientY,
+        },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    this.openFolderMenu(event.clientX, event.clientY);
+  };
+
+  private onPointerDown = (event: PointerEvent) => {
+    if (event.pointerType === "mouse") return;
+    this.cancelLongPress();
+    this.longPressStart = { x: event.clientX, y: event.clientY };
+    this.longPressTimer = window.setTimeout(() => {
+      this.longPressTimer = null;
+      this.suppressNextClick = true;
+      this.openFolderMenu(event.clientX, event.clientY);
+    }, 550);
+  };
+
+  private onPointerMove = (event: PointerEvent) => {
+    const start = this.longPressStart;
+    if (!start) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) {
+      this.cancelLongPress();
+    }
+  };
+
+  private cancelLongPress = () => {
+    if (this.longPressTimer !== null) window.clearTimeout(this.longPressTimer);
+    this.longPressTimer = null;
+    this.longPressStart = null;
+  };
+
   render() {
     const hasChildren = this.folder.children.length > 0;
     const isSelected = this.selectedId === this.folder.id;
@@ -129,6 +186,12 @@ export class PfFolderTreeItem extends LitElement {
       <div
         class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""} ${this.folder.available ? "" : "unavailable"}"
         @click=${this.select}
+        @contextmenu=${this.onContextMenu}
+        @pointerdown=${this.onPointerDown}
+        @pointermove=${this.onPointerMove}
+        @pointerup=${this.cancelLongPress}
+        @pointercancel=${this.cancelLongPress}
+        @pointerleave=${this.cancelLongPress}
       >
         ${hasChildren
           ? html`<span class="chevron" @click=${this.toggle}>

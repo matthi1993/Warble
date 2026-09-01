@@ -310,6 +310,21 @@ export function hasEffects(path: string): boolean {
   return e.sharpen != null || e.grain != null;
 }
 
+/** Drop effects belonging to a media root before that root is forgotten. */
+export function removePhotoEffectsUnderRoot(rootId: string): void {
+  let changed = false;
+  for (const path of effects.keys()) {
+    if (path === rootId || path.startsWith(`${rootId}/`)) {
+      effects.delete(path);
+      changed = true;
+    }
+  }
+  if (changed) {
+    schedulePersist();
+    notify("");
+  }
+}
+
 export function subscribePhotoEffects(listener: Listener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

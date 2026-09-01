@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the exportLibrary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-exportLibrary",
+          "markdownDescription": "Enables the exportLibrary command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exportLibrary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-exportLibrary",
+          "markdownDescription": "Denies the exportLibrary command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pickFolders command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pickFolders",

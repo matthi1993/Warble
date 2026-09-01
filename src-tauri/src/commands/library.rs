@@ -9,7 +9,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
-use crate::library::{Folder, Photo};
+use crate::library::{Folder, LibraryCatalog, Photo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderSelection {
@@ -69,36 +69,148 @@ pub fn import_folder(
     bookmark: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Folder, String> {
+    import_folder_inner(path, bookmark, &state)
+}
+
+fn import_folder_inner(
+    path: String,
+    bookmark: Option<String>,
+    state: &AppState,
+) -> Result<Folder, String> {
     let root = std::fs::canonicalize(PathBuf::from(&path)).map_err(|e| e.to_string())?;
     if !root.is_dir() {
         return Err(format!("media root is not a directory: {}", root.display()));
     }
     let repo = state.repository()?;
     let library_id = repo.library_id()?;
-    reject_overlapping_root(
-        &root,
-        state.device_storage.bindings_for(&library_id).values(),
-    )?;
-    let root_id = uuid::Uuid::new_v4().to_string();
     let name = root
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("Photos")
         .to_string();
-    let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
-    let folder = catalog.import_root(&root_id, &name, &root)?;
-    drop(catalog);
-    state
-        .device_storage
-        .set_root_binding(&library_id, &root_id, &root)?;
-    if let Some(bookmark) = bookmark {
+    let bindings = state.device_storage.bindings_for(&library_id);
+    let media_roots = repo.media_roots()?;
+
+    // If an imported parent already covers this selection, keep the parent.
+    // Selecting the exact same root also refreshes its iOS bookmark.
+    for (existing_id, existing_path) in &bindings {
+        let Ok(existing_path) = std::fs::canonicalize(existing_path) else {
+            continue;
+        };
+        if root.starts_with(&existing_path) {
+            if root == existing_path {
+                if let Some(bookmark) = bookmark.as_deref() {
+                    state.device_storage.set_root_bookmark(
+                        &library_id,
+                        existing_id,
+                        bookmark,
+                    )?;
+                }
+            }
+            return state
+                .catalog
+                .lock()
+                .map_err(|e| e.to_string())?
+                .roots()
+                .into_iter()
+                .find(|folder| folder.id == *existing_id)
+                .ok_or_else(|| "existing media root is not loaded".to_string());
+        }
+    }
+
+    // On a second device the old roots are intentionally stored without
+    // absolute paths. Picking a folder with the same name reconnects that
+    // single root instead of creating a duplicate.
+    if let Some(existing) = media_roots
+        .iter()
+        .find(|entry| !bindings.contains_key(&entry.id) && entry.name == name)
+    {
         state
             .device_storage
-            .set_root_bookmark(&library_id, &root_id, &bookmark)?;
+            .set_root_binding(&library_id, &existing.id, &root)?;
+        if let Some(bookmark) = bookmark.as_deref() {
+            state
+                .device_storage
+                .set_root_bookmark(&library_id, &existing.id, bookmark)?;
+        }
+        crate::library::rehydrate_media_roots(repo.as_ref(), state);
+        return state
+            .catalog
+            .lock()
+            .map_err(|e| e.to_string())?
+            .roots()
+            .into_iter()
+            .find(|folder| folder.id == existing.id)
+            .ok_or_else(|| "reconnected media root is not loaded".to_string());
     }
-    repo.add_media_root(&root_id, &name)?;
+
+    // Find existing child roots. Connected roots are matched by canonical
+    // path; unavailable roots from another device can be matched to direct
+    // children by their portable display name.
+    let mut rewrites: Vec<(String, String)> = Vec::new();
+    for (existing_id, existing_path) in &bindings {
+        let Ok(existing_path) = std::fs::canonicalize(existing_path) else {
+            continue;
+        };
+        if existing_path.starts_with(&root) && existing_path != root {
+            let relative = existing_path.strip_prefix(&root).map_err(|e| e.to_string())?;
+            rewrites.push((existing_id.clone(), portable_relative(relative)?));
+        }
+    }
+    for existing in &media_roots {
+        if bindings.contains_key(&existing.id)
+            || rewrites.iter().any(|(id, _)| id == &existing.id)
+        {
+            continue;
+        }
+        if root.join(&existing.name).is_dir() {
+            rewrites.push((existing.id.clone(), existing.name.clone()));
+        }
+    }
+
+    let root_id = uuid::Uuid::new_v4().to_string();
+    // Scan before changing persistence so an unreadable parent cannot remove
+    // otherwise usable child imports.
+    let mut scanned = LibraryCatalog::default();
+    let folder = scanned.import_root(&root_id, &name, &root)?;
+
+    if rewrites.is_empty() {
+        repo.add_media_root(&root_id, &name)?;
+        state
+            .device_storage
+            .set_root_binding(&library_id, &root_id, &root)?;
+        if let Some(bookmark) = bookmark.as_deref() {
+            state
+                .device_storage
+                .set_root_bookmark(&library_id, &root_id, bookmark)?;
+        }
+    } else {
+        repo.consolidate_media_roots(&root_id, &name, &rewrites)?;
+        let old_ids: Vec<String> = rewrites.iter().map(|(id, _)| id.clone()).collect();
+        state.device_storage.consolidate_roots(
+            &library_id,
+            &old_ids,
+            &root_id,
+            &root,
+            bookmark.as_deref(),
+        )?;
+    }
+    crate::library::rehydrate_media_roots(repo.as_ref(), state);
     Ok(folder)
+}
+
+fn portable_relative(path: &Path) -> Result<String, String> {
+    path.components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .map(str::to_string)
+                .ok_or_else(|| "folder path is not valid UTF-8".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|parts| parts.join("/"))
 }
 
 /// Reconnect a root from a library created on another device.
@@ -119,6 +231,22 @@ pub fn bind_media_root(
         .into_iter()
         .find(|root| root.id == root_id)
         .ok_or_else(|| "unknown media-root UUID".to_string())?;
+
+    // If the user chooses a parent containing this unavailable root, treat it
+    // as a parent import. This reconnects and consolidates all direct child
+    // roots in one Files-picker operation on iPad.
+    let selected_name = root_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if selected_name != media_root.name && root_path.join(&media_root.name).is_dir() {
+        import_folder_inner(
+            root_path.to_string_lossy().into_owned(),
+            bookmark,
+            &state,
+        )?;
+        return list_imported_folders(state);
+    }
     let library_id = repo.library_id()?;
     let bindings = state.device_storage.bindings_for(&library_id);
     reject_overlapping_root(
@@ -154,6 +282,40 @@ pub fn list_imported_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, 
 #[tauri::command]
 pub fn refresh_imported_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, String> {
     let repo = state.repository()?;
+    crate::library::rehydrate_media_roots(repo.as_ref(), &state);
+    list_imported_folders(state)
+}
+
+/// Re-scan one root or nested folder without walking unrelated imports.
+#[tauri::command]
+pub fn refresh_folder(
+    folder_path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<Folder>, String> {
+    let (root_id, _) = crate::library::split_portable_key(&folder_path)?;
+    let repo = state.repository()?;
+    let library_id = repo.library_id()?;
+    let root_path = state
+        .device_storage
+        .bindings_for(&library_id)
+        .remove(root_id)
+        .ok_or_else(|| "media root needs reconnecting on this device".to_string())?;
+    let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
+    catalog.refresh_folder(&folder_path, &root_path)?;
+    Ok(catalog.roots())
+}
+
+/// Remove a top-level imported folder from the library without deleting any
+/// photos from disk.
+#[tauri::command]
+pub fn remove_imported_folder(
+    root_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<Folder>, String> {
+    let repo = state.repository()?;
+    let library_id = repo.library_id()?;
+    repo.remove_media_root(&root_id)?;
+    state.device_storage.remove_root(&library_id, &root_id)?;
     crate::library::rehydrate_media_roots(repo.as_ref(), &state);
     list_imported_folders(state)
 }

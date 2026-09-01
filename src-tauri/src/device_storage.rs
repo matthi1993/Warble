@@ -121,6 +121,54 @@ impl DeviceStorage {
             .insert(root_id.to_string(), bookmark.to_string());
         persist(&inner)
     }
+
+    pub fn remove_root(&self, library_id: &str, root_id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(bindings) = inner.data.root_bindings.get_mut(library_id) {
+            bindings.remove(root_id);
+        }
+        if let Some(bookmarks) = inner.data.root_bookmarks.get_mut(library_id) {
+            bookmarks.remove(root_id);
+        }
+        persist(&inner)
+    }
+
+    /// Atomically replace several child-root grants with one parent grant.
+    pub fn consolidate_roots(
+        &self,
+        library_id: &str,
+        old_root_ids: &[String],
+        new_root_id: &str,
+        path: &Path,
+        bookmark: Option<&str>,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let bindings = inner
+            .data
+            .root_bindings
+            .entry(library_id.to_string())
+            .or_default();
+        for old_root_id in old_root_ids {
+            bindings.remove(old_root_id);
+        }
+        bindings.insert(
+            new_root_id.to_string(),
+            path.to_string_lossy().into_owned(),
+        );
+
+        let bookmarks = inner
+            .data
+            .root_bookmarks
+            .entry(library_id.to_string())
+            .or_default();
+        for old_root_id in old_root_ids {
+            bookmarks.remove(old_root_id);
+        }
+        if let Some(bookmark) = bookmark {
+            bookmarks.insert(new_root_id.to_string(), bookmark.to_string());
+        }
+        persist(&inner)
+    }
 }
 
 fn persist(inner: &DeviceStorageInner) -> Result<(), String> {

@@ -9,7 +9,11 @@ import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import { flushAllPhotoEdits, reloadPhotoEdits } from "@services/edits/edits-store";
-import { flushPhotoEffects, reloadPhotoEffects } from "@services/effects/effects-store";
+import {
+  flushPhotoEffects,
+  reloadPhotoEffects,
+  removePhotoEffectsUnderRoot,
+} from "@services/effects/effects-store";
 import { flushPostProcessPresets, reloadPostProcessPresets } from "@services/post-process/post-process-presets-store";
 import {
   applyRatingShortcut,
@@ -49,6 +53,12 @@ interface FolderSelection {
   bookmark: string | null;
 }
 
+function isIPad(): boolean {
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent ?? "";
+  return /iPad/i.test(ua) ||
+    (/Macintosh/i.test(ua) && (navigator.maxTouchPoints ?? 0) > 1);
+}
+
 @customElement("warble-app")
 export class WarbleApp extends LitElement {
   static styles = css`
@@ -59,7 +69,14 @@ export class WarbleApp extends LitElement {
       grid-template-areas:
         "rail sidebar main detail"
         "footer footer footer footer";
-      height: 100vh;
+      width: 100%;
+      height: 100%;
+      max-height: 100%;
+      min-height: 0;
+      overflow: hidden;
+      padding-top: env(safe-area-inset-top);
+      padding-right: env(safe-area-inset-right);
+      padding-left: env(safe-area-inset-left);
       background: var(--pf-bg);
       color: var(--pf-text);
       font-family: var(--pf-font-sans);
@@ -77,6 +94,7 @@ export class WarbleApp extends LitElement {
      grid-template-rows: 1fr;
      grid-template-columns: 1fr;
      grid-template-areas: "fullview";
+     padding: 0;
    }
    :host(.fs-fullview) > .sidebar-rail,
    :host(.fs-fullview) > aside.sidebar,
@@ -309,7 +327,10 @@ export class WarbleApp extends LitElement {
       display: flex;
       align-items: center;
       gap: var(--pf-space-3);
-      padding: var(--pf-space-2) var(--pf-space-4);
+      padding-top: var(--pf-space-2);
+      padding-right: var(--pf-space-4);
+      padding-bottom: max(var(--pf-space-2), env(safe-area-inset-bottom));
+      padding-left: var(--pf-space-4);
       border-top: 1px solid var(--pf-border);
       background: var(--pf-surface);
       color: var(--pf-text-muted);
@@ -381,6 +402,30 @@ export class WarbleApp extends LitElement {
       background: var(--pf-surface-2);
       outline: none;
     }
+    .ctx-menu button.danger {
+      color: var(--pf-danger);
+    }
+    @media (pointer: coarse) {
+      :host {
+        grid-template-columns: 44px 228px 1fr 380px;
+      }
+      :host(.sidebar-collapsed) {
+        grid-template-columns: 44px 0 1fr 380px;
+      }
+      .fs-overlay-left .sidebar-rail {
+        width: 44px;
+        flex-basis: 44px;
+      }
+      .fs-overlay-left {
+        width: 272px;
+      }
+      .ctx-menu {
+        min-width: 220px;
+      }
+      .ctx-menu button {
+        min-height: 48px;
+      }
+    }
   `;
 
   @state()
@@ -444,6 +489,17 @@ export class WarbleApp extends LitElement {
   private contextMenu: {
     path: string;
     filename: string;
+    x: number;
+    y: number;
+  } | null = null;
+
+  @state()
+  private folderContextMenu: {
+    folderId: string;
+    path: string;
+    name: string;
+    isRoot: boolean;
+    available: boolean;
     x: number;
     y: number;
   } | null = null;
@@ -690,6 +746,12 @@ export class WarbleApp extends LitElement {
         this.contextMenu = null;
         return;
       }
+      if (this.folderContextMenu) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.folderContextMenu = null;
+        return;
+      }
       if (this.windowFullscreen) {
         e.preventDefault();
         e.stopPropagation();
@@ -767,6 +829,15 @@ export class WarbleApp extends LitElement {
   };
 
   private async setWindowFullscreen(enable: boolean) {
+    // An iPad app already owns its UIWindow, and iOS ignores requests to
+    // leave native window fullscreen. Keep photo fullscreen as a reversible
+    // UI state there; the iOS bundle config supplies the immersive window and
+    // hidden status bar. This also avoids depending on WebKit's unsupported
+    // DOM Fullscreen API.
+    if (isIPad()) {
+      this.windowFullscreen = enable;
+      return;
+    }
     try {
       await getCurrentWindow().setFullscreen(enable);
       this.windowFullscreen = enable;
@@ -802,34 +873,74 @@ export class WarbleApp extends LitElement {
   };
 
   private async importFolder() {
+    const endBusy = beginAppBusy("Adding folders…");
     try {
       const selections = await invoke<FolderSelection[]>("select_folders_dialog");
       if (!selections || selections.length === 0) return;
-      const trees: Folder[] = [];
+      await this.flushLibraryWrites();
+      const imported: Folder[] = [];
       // Keep imports ordered so the backend can reliably reject nested or
-      // otherwise overlapping roots selected in the same dialog.
+      // otherwise overlapping roots selected in the same dialog. A parent
+      // selected after its children consolidates them into one root.
       for (const { path, bookmark } of selections) {
-        trees.push(await invoke<Folder>("import_folder", { path, bookmark }));
+        imported.push(await invoke<Folder>("import_folder", { path, bookmark }));
       }
-      this.imports = [...this.imports, ...trees];
+      this.imports = await invoke<Folder[]>("list_imported_folders");
+      await Promise.all([
+        reloadPhotoEdits(),
+        reloadPhotoEffects(),
+        reloadPhotoRatings(),
+        reloadVariantOverrides(),
+      ]);
+
+      // If consolidation replaced the currently selected child UUID, move
+      // the view to the new parent instead of leaving a stale empty selection.
+      if (
+        this.selectedFolderId &&
+        !findFolderByPath(this.imports, this.selectedFolderId)
+      ) {
+        const replacement = imported
+          .map((folder) => findFolderByPath(this.imports, folder.path))
+          .find((folder): folder is Folder => folder !== null);
+        if (replacement) await this.selectFolder(replacement.id, replacement.path);
+      }
     } catch (err) {
       console.error("Failed to import media root", err);
+    } finally {
+      endBusy();
     }
   }
 
   private async reconnectRoot(e: CustomEvent<{ rootId: string }>) {
     e.stopPropagation();
+    const endBusy = beginAppBusy("Reconnecting folder…");
     try {
       const selections = await invoke<FolderSelection[]>("select_folders_dialog");
       const selection = selections?.[0];
       if (!selection) return;
+      await this.flushLibraryWrites();
       this.imports = await invoke<Folder[]>("bind_media_root", {
         rootId: e.detail.rootId,
         path: selection.path,
         bookmark: selection.bookmark,
       });
+      await Promise.all([
+        reloadPhotoEdits(),
+        reloadPhotoEffects(),
+        reloadPhotoRatings(),
+        reloadVariantOverrides(),
+      ]);
+      if (
+        this.selectedFolderId &&
+        !findFolderByPath(this.imports, this.selectedFolderId)
+      ) {
+        const replacement = this.imports.find((folder) => folder.available);
+        if (replacement) await this.selectFolder(replacement.id, replacement.path);
+      }
     } catch (err) {
       console.error("Failed to reconnect media root", err);
+    } finally {
+      endBusy();
     }
   }
 
@@ -858,11 +969,12 @@ export class WarbleApp extends LitElement {
     }
   }
 
-  private async saveOpenLibrary() {
+  private async saveLibraryAs() {
     const endBusy = beginAppBusy("Saving library…");
     try {
       await this.flushLibraryWrites();
-      await invoke("save_open_library");
+      const path = await invoke<string | null>("save_library_as");
+      if (path) this.libraryPath = path;
     } catch (err) {
       console.error("Failed to save library", err);
     } finally {
@@ -969,6 +1081,81 @@ export class WarbleApp extends LitElement {
   private dismissContextMenu = () => {
     if (this.contextMenu) this.contextMenu = null;
   };
+
+  private onFolderContextMenu(
+    e: CustomEvent<{
+      folderId: string;
+      path: string;
+      name: string;
+      isRoot: boolean;
+      available: boolean;
+      x: number;
+      y: number;
+    }>,
+  ) {
+    e.stopPropagation();
+    this.contextMenu = null;
+    this.folderContextMenu = { ...e.detail };
+  }
+
+  private dismissFolderContextMenu = () => {
+    this.folderContextMenu = null;
+  };
+
+  private async syncFolder(path: string, name: string) {
+    this.folderContextMenu = null;
+    const endBusy = beginAppBusy(`Syncing ${name}…`);
+    try {
+      this.imports = await invoke<Folder[]>("refresh_folder", {
+        folderPath: path,
+      });
+
+      if (!this.selectedFolderId) return;
+      const selectedIsInsideSyncedFolder =
+        this.selectedFolderId === path ||
+        this.selectedFolderId.startsWith(`${path}/`);
+      const syncedFolderIsInsideRecursiveSelection =
+        this.includeSubfolders && path.startsWith(`${this.selectedFolderId}/`);
+      if (!selectedIsInsideSyncedFolder && !syncedFolderIsInsideRecursiveSelection) {
+        return;
+      }
+
+      const selected = findFolderByPath(this.imports, this.selectedFolderId);
+      if (selected) {
+        await this.selectFolder(selected.id, selected.path);
+        return;
+      }
+      const fallback = findFolderByPath(this.imports, path);
+      if (fallback) await this.selectFolder(fallback.id, fallback.path);
+    } catch (err) {
+      console.error("Failed to sync folder", err);
+    } finally {
+      endBusy();
+    }
+  }
+
+  private async removeImportedFolder(rootId: string) {
+    this.folderContextMenu = null;
+    try {
+      removePhotoEffectsUnderRoot(rootId);
+      await this.flushLibraryWrites();
+      this.imports = await invoke<Folder[]>("remove_imported_folder", { rootId });
+      const selectedIsInsideRoot =
+        this.selectedFolderId === rootId ||
+        this.selectedFolderId?.startsWith(`${rootId}/`) === true;
+      if (selectedIsInsideRoot) {
+        this.selectedFolderId = null;
+        this.selectedFolderName = null;
+        this.selectedPhoto = null;
+        this.fullViewIndex = null;
+        this.photos = [];
+        clearThumbnailBatch();
+        void invoke("set_last_folder", { path: "" });
+      }
+    } catch (err) {
+      console.error("Failed to remove imported folder", err);
+    }
+  }
 
   private async revealInFileManager(path: string) {
     this.contextMenu = null;
@@ -1158,10 +1345,10 @@ export class WarbleApp extends LitElement {
             : null}
           <div class="library-actions">
             <pf-button @click=${this.openLibrary}>Open Library</pf-button>
-            <pf-button @click=${this.saveOpenLibrary}>Save</pf-button>
+            <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
           </div>
         </div>
-        <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot}>
+        <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot} @folder-context-menu=${this.onFolderContextMenu}>
           ${this.folders.length === 0
             ? html`<div class="empty">No folders imported yet.</div>`
             : this.folders.map(
@@ -1281,10 +1468,10 @@ export class WarbleApp extends LitElement {
                                 : null}
                               <div class="library-actions">
                                 <pf-button @click=${this.openLibrary}>Open Library</pf-button>
-                                <pf-button @click=${this.saveOpenLibrary}>Save</pf-button>
+                                <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
                               </div>
                             </div>
-                            <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot}>
+                            <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot} @folder-context-menu=${this.onFolderContextMenu}>
                               ${this.folders.length === 0
                                 ? html`<div class="empty">No folders imported yet.</div>`
                                 : this.folders.map(
@@ -1308,6 +1495,7 @@ export class WarbleApp extends LitElement {
 
       ${this.renderFooter()}
       ${this.renderContextMenu()}
+      ${this.renderFolderContextMenu()}
       <pf-debug-overlay></pf-debug-overlay>
       ${this.busyLabel
         ? html`
@@ -1345,6 +1533,57 @@ export class WarbleApp extends LitElement {
         >
           ${this.revealLabel()}
         </button>
+      </div>
+    `;
+  }
+
+  private renderFolderContextMenu() {
+    const cm = this.folderContextMenu;
+    if (!cm) return null;
+    return html`
+      <div
+        class="ctx-menu-backdrop"
+        @click=${this.dismissFolderContextMenu}
+        @contextmenu=${(event: MouseEvent) => {
+          event.preventDefault();
+          this.dismissFolderContextMenu();
+        }}
+      ></div>
+      <div
+        class="ctx-menu"
+        role="menu"
+        aria-label=${`Actions for ${cm.name}`}
+        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 230))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - (cm.isRoot ? 118 : 62)))}px;"
+      >
+        ${cm.available
+          ? html`<button
+              role="menuitem"
+              @click=${() => this.syncFolder(cm.path, cm.name)}
+            >
+              Sync Folder
+            </button>`
+          : html`<button
+              role="menuitem"
+              @click=${() => {
+                this.folderContextMenu = null;
+                void this.reconnectRoot(
+                  new CustomEvent("root-reconnect", {
+                    detail: { rootId: cm.folderId },
+                  }),
+                );
+              }}
+            >
+              Reconnect Folder
+            </button>`}
+        ${cm.isRoot
+          ? html`<button
+              class="danger"
+              role="menuitem"
+              @click=${() => this.removeImportedFolder(cm.folderId)}
+            >
+              Remove from Library
+            </button>`
+          : null}
       </div>
     `;
   }

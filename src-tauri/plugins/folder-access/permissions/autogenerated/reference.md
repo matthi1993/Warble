@@ -10,6 +10,32 @@
 <tr>
 <td>
 
+`folder-access:allow-exportLibrary`
+
+</td>
+<td>
+
+Enables the exportLibrary command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`folder-access:deny-exportLibrary`
+
+</td>
+<td>
+
+Denies the exportLibrary command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `folder-access:allow-pickFolders`
 
 </td>

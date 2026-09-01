@@ -43,6 +43,12 @@ export class PfButton extends LitElement {
       border-color: var(--pf-accent-hover);
       color: var(--pf-on-accent);
     }
+    @media (pointer: coarse) {
+      button {
+        min-height: 44px;
+        padding-inline: var(--pf-space-4);
+      }
+    }
   `;
 
   @property({ type: String, reflect: true })

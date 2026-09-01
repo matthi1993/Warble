@@ -1,6 +1,6 @@
 /**
  * Canvas-based image viewer with thumbnail-first loading, GPU-accelerated
- * draw, wheel zoom, drag-pan, and double-click 100%↔fit toggle.
+ * draw, wheel/pinch zoom, drag-pan, and double-click 100%↔fit toggle.
  *
  * Loading strategy:
  *   1. Kick off both the cached thumbnail and the full image in parallel.
@@ -109,6 +109,14 @@ export class PfImageCanvas extends LitElement {
     }
     :host([fit="proof"]) {
       padding: 48px;
+    }
+    @media (pointer: coarse) {
+      :host([fit="proof"]) {
+        padding: 24px;
+      }
+      :host([fit="tight"]) {
+        padding: 8px;
+      }
     }
     canvas {
       width: 100%;
@@ -299,6 +307,26 @@ export class PfImageCanvas extends LitElement {
   private dragStartY = 0;
   private dragOffX = 0;
   private dragOffY = 0;
+  /** Active touch contacts. Pointer Events let the same implementation work
+   * with Apple Pencil/mouse input while giving iPad a native-feeling pinch. */
+  private touchPointers = new Map<number, { x: number; y: number }>();
+  private touchStart: { x: number; y: number; time: number } | null = null;
+  private touchGestureHadPinch = false;
+  private pinch:
+    | {
+        distance: number;
+        scale: number;
+        imageCenterX: number;
+        imageCenterY: number;
+        midpointX: number;
+        midpointY: number;
+      }
+    | null = null;
+  private activationTimer: number | null = null;
+  private lastTouchTap: { x: number; y: number; time: number } | null = null;
+  /** WKWebView synthesises a mouse click after a touch. Ignore that duplicate. */
+  private suppressClickUntil = 0;
+  private pointerDragMoved = false;
 
   // --- Crop mode state ---------------------------------------------------
   /** Crop frame in normalised image coordinates (0..1) — the live frame
@@ -530,6 +558,10 @@ export class PfImageCanvas extends LitElement {
     if (this.editSettleTimer !== null) {
       window.clearTimeout(this.editSettleTimer);
       this.editSettleTimer = null;
+    }
+    if (this.activationTimer !== null) {
+      window.clearTimeout(this.activationTimer);
+      this.activationTimer = null;
     }
     // Full bitmap is owned by `full-image-cache`; do NOT close it here.
     this.thumbBitmap?.close?.();
@@ -1410,6 +1442,7 @@ export class PfImageCanvas extends LitElement {
     const cv = this.canvas!;
     cv.addEventListener("wheel", this.onWheel, { passive: false });
     cv.addEventListener("pointerdown", this.onPointerDown);
+    cv.addEventListener("click", this.onClick);
     cv.addEventListener("dblclick", this.onDblClick);
   }
 
@@ -1488,20 +1521,105 @@ export class PfImageCanvas extends LitElement {
       this.startCropDrag(e);
       return;
     }
-    this.dragging = true;
-    this.dragStartX = e.clientX;
-    this.dragStartY = e.clientY;
-    this.dragOffX = this.offsetX;
-    this.dragOffY = this.offsetY;
+    if (e.pointerType === "touch") {
+      e.preventDefault();
+      const wasEmpty = this.touchPointers.size === 0;
+      this.touchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (wasEmpty) {
+        this.touchStart = { x: e.clientX, y: e.clientY, time: performance.now() };
+        this.touchGestureHadPinch = false;
+      }
+      try {
+        this.canvas!.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture is best-effort */
+      }
+      if (this.touchPointers.size >= 2) {
+        this.beginPinch();
+      } else {
+        this.beginPan(e.clientX, e.clientY);
+      }
+      this.canvas!.addEventListener("pointermove", this.onPointerMove);
+      this.canvas!.addEventListener("pointerup", this.onPointerUp);
+      this.canvas!.addEventListener("pointercancel", this.onPointerUp);
+      return;
+    }
+    this.pointerDragMoved = false;
+    this.beginPan(e.clientX, e.clientY);
     this.canvas!.setPointerCapture(e.pointerId);
-    this.canvas!.classList.add("dragging");
     this.canvas!.addEventListener("pointermove", this.onPointerMove);
     this.canvas!.addEventListener("pointerup", this.onPointerUp);
     this.canvas!.addEventListener("pointercancel", this.onPointerUp);
   };
 
+  private beginPan(clientX: number, clientY: number) {
+    this.dragging = true;
+    this.dragStartX = clientX;
+    this.dragStartY = clientY;
+    this.dragOffX = this.offsetX;
+    this.dragOffY = this.offsetY;
+    this.canvas!.classList.add("dragging");
+  }
+
+  private beginPinch() {
+    if (!this.canvas) return;
+    const points = [...this.touchPointers.values()].slice(0, 2);
+    if (points.length < 2) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = this.canvas.getBoundingClientRect();
+    const midpointX = ((points[0].x + points[1].x) / 2 - rect.left) * dpr;
+    const midpointY = ((points[0].y + points[1].y) / 2 - rect.top) * dpr;
+    this.pinch = {
+      distance: Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)),
+      scale: this.scale,
+      imageCenterX: this.canvas.width / 2 + this.offsetX,
+      imageCenterY: this.canvas.height / 2 + this.offsetY,
+      midpointX,
+      midpointY,
+    };
+    this.touchGestureHadPinch = true;
+    this.dragging = false;
+    this.canvas.classList.remove("dragging");
+  }
+
   private onPointerMove = (e: PointerEvent) => {
+    if (e.pointerType === "touch" && this.touchPointers.has(e.pointerId)) {
+      this.touchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touchPointers.size >= 2 && this.pinch && this.canvas) {
+        e.preventDefault();
+        const points = [...this.touchPointers.values()].slice(0, 2);
+        const distance = Math.max(
+          1,
+          Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y),
+        );
+        const dpr = window.devicePixelRatio || 1;
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = ((points[0].x + points[1].x) / 2 - rect.left) * dpr;
+        const my = ((points[0].y + points[1].y) / 2 - rect.top) * dpr;
+        const minScale = this.minScale();
+        const maxScale = Math.max(20 * dpr, this.fitScale * 20);
+        const nextScale = Math.min(
+          maxScale,
+          Math.max(minScale, this.pinch.scale * (distance / this.pinch.distance)),
+        );
+        const ratio = nextScale / this.pinch.scale;
+        const nextCenterX =
+          mx - (this.pinch.midpointX - this.pinch.imageCenterX) * ratio;
+        const nextCenterY =
+          my - (this.pinch.midpointY - this.pinch.imageCenterY) * ratio;
+        this.scale = nextScale;
+        this.offsetX = nextCenterX - this.canvas.width / 2;
+        this.offsetY = nextCenterY - this.canvas.height / 2;
+        this.clampOffsets();
+        this.userInteracted = Math.abs(nextScale - this.fitScale) >= 1e-3;
+        this.scheduleDraw();
+        return;
+      }
+    }
     if (!this.dragging) return;
+    if (Math.hypot(e.clientX - this.dragStartX, e.clientY - this.dragStartY) > 5) {
+      this.pointerDragMoved = true;
+    }
     const dpr = window.devicePixelRatio || 1;
     this.offsetX = this.dragOffX + (e.clientX - this.dragStartX) * dpr;
     this.offsetY = this.dragOffY + (e.clientY - this.dragStartY) * dpr;
@@ -1511,6 +1629,35 @@ export class PfImageCanvas extends LitElement {
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    if (e.pointerType === "touch") {
+      const wasTracked = this.touchPointers.delete(e.pointerId);
+      if (!wasTracked) return;
+      try {
+        this.canvas?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* no-op */
+      }
+      if (this.touchPointers.size >= 2) {
+        this.beginPinch();
+        return;
+      }
+      this.pinch = null;
+      if (this.touchPointers.size === 1) {
+        const remaining = [...this.touchPointers.values()][0];
+        this.beginPan(remaining.x, remaining.y);
+        return;
+      }
+      this.dragging = false;
+      this.canvas?.classList.remove("dragging");
+      this.canvas?.removeEventListener("pointermove", this.onPointerMove);
+      this.canvas?.removeEventListener("pointerup", this.onPointerUp);
+      this.canvas?.removeEventListener("pointercancel", this.onPointerUp);
+      this.finishTouchGesture(e);
+      return;
+    }
+    if (this.pointerDragMoved) {
+      this.suppressClickUntil = performance.now() + 100;
+    }
     this.dragging = false;
     this.canvas?.classList.remove("dragging");
     try {
@@ -1523,20 +1670,110 @@ export class PfImageCanvas extends LitElement {
     this.canvas?.removeEventListener("pointercancel", this.onPointerUp);
   };
 
+  private finishTouchGesture(e: PointerEvent) {
+    const start = this.touchStart;
+    this.touchStart = null;
+    this.suppressClickUntil = performance.now() + 600;
+    if (!start || this.touchGestureHadPinch || e.type === "pointercancel") return;
+    const elapsed = performance.now() - start.time;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+
+    // At fitted zoom, a deliberate horizontal gesture navigates. Once the
+    // user has pinched in, the same one-finger gesture remains image panning.
+    const isFitting = Math.abs(this.scale - this.fitScale) < 1e-3;
+    if (
+      isFitting &&
+      elapsed <= 650 &&
+      Math.abs(dx) >= 56 &&
+      Math.abs(dx) > Math.abs(dy) * 1.35
+    ) {
+      this.lastTouchTap = null;
+      this.cancelPendingActivation();
+      this.userInteracted = false;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.dispatchEvent(
+        new CustomEvent("image-swipe", {
+          detail: { delta: dx < 0 ? 1 : -1 },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return;
+    }
+
+    const moved = Math.hypot(dx, dy);
+    if (moved > 10 || elapsed > 450) return;
+
+    const now = performance.now();
+    const previous = this.lastTouchTap;
+    if (
+      previous &&
+      now - previous.time <= 340 &&
+      Math.hypot(e.clientX - previous.x, e.clientY - previous.y) <= 28
+    ) {
+      this.lastTouchTap = null;
+      this.cancelPendingActivation();
+      this.handleDoubleActivation(e.clientX, e.clientY);
+      return;
+    }
+    this.lastTouchTap = { x: e.clientX, y: e.clientY, time: now };
+    this.scheduleActivation();
+  }
+
+  private onClick = () => {
+    if (performance.now() < this.suppressClickUntil) return;
+    this.scheduleActivation();
+  };
+
+  private scheduleActivation() {
+    this.cancelPendingActivation();
+    this.activationTimer = window.setTimeout(() => {
+      this.activationTimer = null;
+      this.dispatchEvent(
+        new CustomEvent("image-activate", { bubbles: true, composed: true }),
+      );
+    }, 280);
+  }
+
+  private cancelPendingActivation() {
+    if (this.activationTimer === null) return;
+    window.clearTimeout(this.activationTimer);
+    this.activationTimer = null;
+  }
+
   private onDblClick = (e: MouseEvent) => {
+    if (performance.now() < this.suppressClickUntil) {
+      e.preventDefault();
+      return;
+    }
     if (this.cropMode) {
       e.preventDefault();
       return;
     }
     if (!this.currentBitmap || !this.canvas) return;
     e.preventDefault();
+    this.cancelPendingActivation();
+    this.handleDoubleActivation(e.clientX, e.clientY);
+  };
+
+  private handleDoubleActivation(clientX: number, clientY: number) {
+    const claimed = !this.dispatchEvent(
+      new CustomEvent("image-double-activate", {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      }),
+    );
+    if (claimed || !this.currentBitmap || !this.canvas) return;
     const dpr = window.devicePixelRatio || 1;
     const oneToOne = dpr; // 1 image px == 1 css px
     const isFitting = Math.abs(this.scale - this.fitScale) < 1e-3;
     if (isFitting) {
       const rect = this.canvas.getBoundingClientRect();
-      const px = (e.clientX - rect.left) * dpr;
-      const py = (e.clientY - rect.top) * dpr;
+      const px = (clientX - rect.left) * dpr;
+      const py = (clientY - rect.top) * dpr;
       this.zoomAround(px, py, oneToOne);
       this.userInteracted = true;
     } else {
@@ -1546,7 +1783,7 @@ export class PfImageCanvas extends LitElement {
       this.userInteracted = false;
     }
     this.draw();
-  };
+  }
 
   /** Public: reset zoom/pan to fit. */
   resetView() {

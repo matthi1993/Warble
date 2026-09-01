@@ -89,6 +89,17 @@ export const fullViewStyles = css`
     opacity: 0;
     pointer-events: none;
   }
+  /* Touch fullscreen uses explicit taps rather than cursor idleness. */
+  :host([fullscreen][controls-hidden]) .toolbar-wrap,
+  :host([fullscreen][controls-hidden]) .bottombar-wrap,
+  :host([fullscreen][controls-hidden]) .nav,
+  :host([fullscreen][controls-hidden]) .hint,
+  :host([fullscreen][controls-hidden]) .edit-side-rail,
+  :host([fullscreen][controls-hidden]) pf-edit-side-panel,
+  :host([fullscreen][controls-hidden]) .fv-rating-overlay {
+    opacity: 0;
+    pointer-events: none;
+  }
   :host([fullscreen][idle]) {
     cursor: none;
   }
@@ -468,5 +479,47 @@ export const fullViewStyles = css`
   }
   .footer-btn pf-icon {
     font-size: 0.95rem;
+  }
+
+  /* iPad/touch refinements: retain the visual design while meeting Apple's
+     44pt target size and respecting the home indicator/notch safe areas. */
+  @media (pointer: coarse) {
+    :host([fullscreen]) .toolbar {
+      padding-top: max(var(--pf-space-2), env(safe-area-inset-top));
+      padding-left: max(var(--pf-space-3), env(safe-area-inset-left));
+      padding-right: max(var(--pf-space-3), env(safe-area-inset-right));
+    }
+    :host([fullscreen]) .bottombar {
+      padding-bottom: max(var(--pf-space-2), env(safe-area-inset-bottom));
+      padding-left: max(var(--pf-space-3), env(safe-area-inset-left));
+      padding-right: max(var(--pf-space-3), env(safe-area-inset-right));
+    }
+    .nav {
+      width: 48px;
+      height: 48px;
+    }
+    .close-btn,
+    .format-switch button,
+    .menu-trigger,
+    .menu-item,
+    .footer-btn {
+      min-height: 44px;
+    }
+    .hint {
+      display: none;
+    }
+    .edit-side-rail {
+      flex-basis: 44px;
+      width: 44px;
+    }
+    :host([fullscreen]:not([controls-hidden])) .edit-side-rail,
+    :host([fullscreen]:not([controls-hidden])) pf-edit-side-panel {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+    :host([fullscreen]) .edit-side-rail {
+      width: 44px;
+    }
   }
 `;

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Keep Warble immersive on iPad instead of allowing a cropped split-view window. -->
+  <key>UIRequiresFullScreen</key>
+  <true/>
+  <!-- Hide the clock, network and battery strip from app launch onward. -->
+  <key>UIStatusBarHidden</key>
+  <true/>
+  <key>UIViewControllerBasedStatusBarAppearance</key>
+  <false/>
+</dict>
+</plist>

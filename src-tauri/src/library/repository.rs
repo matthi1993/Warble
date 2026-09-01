@@ -372,6 +372,69 @@ impl LibraryRepository {
         Ok(out)
     }
 
+    /// Forget an imported media root and metadata keyed beneath it. Image
+    /// files are deliberately untouched; this only changes the library DB.
+    pub fn remove_media_root(&self, root_id: &str) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let prefix = format!("{root_id}/%");
+        for table in [
+            "photo_variants",
+            "photo_edits",
+            "photo_exif",
+            "photo_ratings",
+            "photo_effects",
+        ] {
+            // Some older libraries may not have every optional table yet.
+            let sql = format!("DELETE FROM {table} WHERE path = ?1 OR path LIKE ?2");
+            if let Err(error) = tx.execute(&sql, params![root_id, prefix]) {
+                if !matches!(
+                    error,
+                    rusqlite::Error::SqliteFailure(_, Some(ref msg))
+                        if msg.contains("no such table")
+                ) {
+                    return Err(error.to_string());
+                }
+            }
+        }
+        tx.execute("DELETE FROM media_roots WHERE id = ?1", params![root_id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Replace separately imported child roots with one parent root while
+    /// preserving every piece of photo metadata under its new portable key.
+    /// Each rewrite is `(old_root_id, path_from_new_parent_to_old_root)`.
+    pub fn consolidate_media_roots(
+        &self,
+        new_root_id: &str,
+        new_name: &str,
+        rewrites: &[(String, String)],
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        for table in ["photo_variants", "photo_edits", "photo_exif", "photo_ratings"] {
+            rewrite_root_paths(&tx, table, new_root_id, rewrites)?;
+        }
+        rewrite_root_settings(&tx, new_root_id, rewrites)?;
+
+        for (old_root_id, _) in rewrites {
+            tx.execute("DELETE FROM media_roots WHERE id = ?1", params![old_root_id])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute(
+            "INSERT INTO media_roots (id, name, added_at) VALUES (?1, ?2, ?3)",
+            params![new_root_id, new_name, now],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     pub fn library_id(&self) -> Result<String, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row("SELECT id FROM library_info LIMIT 1", [], |row| row.get(0))
@@ -451,6 +514,117 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+fn rewrite_root_paths(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    new_root_id: &str,
+    rewrites: &[(String, String)],
+) -> Result<(), String> {
+    for (old_root_id, relative_prefix) in rewrites {
+        let like = format!("{old_root_id}/%");
+        let paths: Vec<String> = {
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT path FROM {table} WHERE path = ?1 OR path LIKE ?2"
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![old_root_id, like], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+        for old_path in paths {
+            let new_path = remap_root_path(
+                &old_path,
+                old_root_id,
+                new_root_id,
+                relative_prefix,
+            )?;
+            tx.execute(
+                &format!("UPDATE {table} SET path = ?1 WHERE path = ?2"),
+                params![new_path, old_path],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_root_settings(
+    tx: &rusqlite::Transaction<'_>,
+    new_root_id: &str,
+    rewrites: &[(String, String)],
+) -> Result<(), String> {
+    if let Some(path) = read_setting(tx, "last_folder")? {
+        if let Some(mapped) = remap_from_any_root(&path, new_root_id, rewrites)? {
+            write_setting(tx, "last_folder", &mapped)?;
+        }
+    }
+    if let Some(raw) = read_setting(tx, "app_view")? {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        if let Some(path) = value.get("path").and_then(|entry| entry.as_str()) {
+            if let Some(mapped) = remap_from_any_root(path, new_root_id, rewrites)? {
+                value["path"] = serde_json::Value::String(mapped);
+                write_setting(
+                    tx,
+                    "app_view",
+                    &serde_json::to_string(&value).map_err(|e| e.to_string())?,
+                )?;
+            }
+        }
+    }
+    if let Some(raw) = read_setting(tx, "photo_effects_v1")? {
+        let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "photo_effects_v1 is not a JSON object".to_string())?;
+        let mut migrated = serde_json::Map::new();
+        for (path, effects) in object {
+            let mapped = remap_from_any_root(path, new_root_id, rewrites)?
+                .unwrap_or_else(|| path.clone());
+            migrated.insert(mapped, effects.clone());
+        }
+        write_setting(
+            tx,
+            "photo_effects_v1",
+            &serde_json::to_string(&migrated).map_err(|e| e.to_string())?,
+        )?;
+    }
+    Ok(())
+}
+
+fn remap_from_any_root(
+    path: &str,
+    new_root_id: &str,
+    rewrites: &[(String, String)],
+) -> Result<Option<String>, String> {
+    for (old_root_id, relative_prefix) in rewrites {
+        if path == old_root_id || path.starts_with(&format!("{old_root_id}/")) {
+            return remap_root_path(path, old_root_id, new_root_id, relative_prefix).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn remap_root_path(
+    path: &str,
+    old_root_id: &str,
+    new_root_id: &str,
+    relative_prefix: &str,
+) -> Result<String, String> {
+    let suffix = path
+        .strip_prefix(old_root_id)
+        .and_then(|value| value.strip_prefix('/').or(Some(value)))
+        .ok_or_else(|| format!("path {path} is not under media root {old_root_id}"))?;
+    Ok([new_root_id, relative_prefix, suffix]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/"))
 }
 
 #[derive(Clone)]
@@ -704,6 +878,70 @@ mod tests {
             root.to_string_lossy()
         );
         assert_eq!(repo.get_photo_exif(&key).unwrap(), None);
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn consolidates_child_roots_without_losing_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "warble-consolidate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("library.warble");
+        let repo = LibraryRepository::open(&db).unwrap();
+        repo.add_media_root("child-a", "A").unwrap();
+        repo.add_media_root("child-b", "B").unwrap();
+        repo.set_photo_variant("child-a/trip.jpg", "jpg", "base")
+            .unwrap();
+        repo.set_photo_rating_row("child-b/portrait.jpg", 5, "green", 2)
+            .unwrap();
+        repo.set_setting("last_folder", "child-a").unwrap();
+        repo.set_setting(
+            "app_view",
+            r#"{"path":"child-b/portrait.jpg","view":"full"}"#,
+        )
+        .unwrap();
+        repo.set_setting(
+            "photo_effects_v1",
+            r#"{"child-a/trip.jpg":{"grain":null}}"#,
+        )
+        .unwrap();
+
+        repo.consolidate_media_roots(
+            "parent",
+            "Pictures",
+            &[
+                ("child-a".to_string(), "A".to_string()),
+                ("child-b".to_string(), "B".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let roots = repo.media_roots().unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].id, "parent");
+        assert_eq!(
+            repo.all_photo_variants().unwrap()[0].0,
+            "parent/A/trip.jpg"
+        );
+        assert_eq!(
+            repo.all_photo_ratings().unwrap()[0].0,
+            "parent/B/portrait.jpg"
+        );
+        assert_eq!(repo.get_setting("last_folder").unwrap().unwrap(), "parent/A");
+        assert!(repo
+            .get_setting("app_view")
+            .unwrap()
+            .unwrap()
+            .contains("parent/B/portrait.jpg"));
+        assert!(repo
+            .get_setting("photo_effects_v1")
+            .unwrap()
+            .unwrap()
+            .contains("parent/A/trip.jpg"));
 
         drop(repo);
         let _ = std::fs::remove_dir_all(dir);
