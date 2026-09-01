@@ -8,9 +8,9 @@ import type { Photo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
-import { reloadPhotoEdits } from "@services/edits/edits-store";
-import { reloadPhotoEffects } from "@services/effects/effects-store";
-import { reloadPostProcessPresets } from "@services/post-process/post-process-presets-store";
+import { flushAllPhotoEdits, reloadPhotoEdits } from "@services/edits/edits-store";
+import { flushPhotoEffects, reloadPhotoEffects } from "@services/effects/effects-store";
+import { flushPostProcessPresets, reloadPostProcessPresets } from "@services/post-process/post-process-presets-store";
 import {
   applyRatingShortcut,
   loadPhotoRatings,
@@ -42,6 +42,11 @@ function findFolderByPath(roots: Folder[], path: string): Folder | null {
     if (child) return child;
   }
   return null;
+}
+
+interface FolderSelection {
+  path: string;
+  bookmark: string | null;
 }
 
 @customElement("warble-app")
@@ -202,6 +207,13 @@ export class WarbleApp extends LitElement {
       line-height: 1.35;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .library-actions {
+      display: flex;
+      gap: var(--pf-space-2);
+    }
+    .library-actions pf-button {
+      flex: 1;
     }
     .app-busy-overlay {
       position: fixed;
@@ -790,12 +802,72 @@ export class WarbleApp extends LitElement {
   };
 
   private async importFolder() {
-    const paths = await invoke<string[]>("select_folders_dialog");
-    if (!paths || paths.length === 0) return;
-    const trees = await Promise.all(
-      paths.map((path) => invoke<Folder>("import_folder", { path }))
-    );
-    this.imports = [...this.imports, ...trees];
+    try {
+      const selections = await invoke<FolderSelection[]>("select_folders_dialog");
+      if (!selections || selections.length === 0) return;
+      const trees: Folder[] = [];
+      // Keep imports ordered so the backend can reliably reject nested or
+      // otherwise overlapping roots selected in the same dialog.
+      for (const { path, bookmark } of selections) {
+        trees.push(await invoke<Folder>("import_folder", { path, bookmark }));
+      }
+      this.imports = [...this.imports, ...trees];
+    } catch (err) {
+      console.error("Failed to import media root", err);
+    }
+  }
+
+  private async reconnectRoot(e: CustomEvent<{ rootId: string }>) {
+    e.stopPropagation();
+    try {
+      const selections = await invoke<FolderSelection[]>("select_folders_dialog");
+      const selection = selections?.[0];
+      if (!selection) return;
+      this.imports = await invoke<Folder[]>("bind_media_root", {
+        rootId: e.detail.rootId,
+        path: selection.path,
+        bookmark: selection.bookmark,
+      });
+    } catch (err) {
+      console.error("Failed to reconnect media root", err);
+    }
+  }
+
+  private async flushLibraryWrites() {
+    await Promise.all([
+      flushAllPhotoEdits(),
+      flushPhotoEffects(),
+      flushPostProcessPresets(),
+    ]);
+  }
+
+  private async openLibrary() {
+    const endBusy = beginAppBusy("Opening library…");
+    try {
+      const selection = await invoke<FolderSelection | null>("select_library_dialog");
+      if (!selection) return;
+      await this.flushLibraryWrites();
+      await invoke("load_library", {
+        path: selection.path,
+        bookmark: selection.bookmark,
+      });
+    } catch (err) {
+      console.error("Failed to open library", err);
+    } finally {
+      endBusy();
+    }
+  }
+
+  private async saveOpenLibrary() {
+    const endBusy = beginAppBusy("Saving library…");
+    try {
+      await this.flushLibraryWrites();
+      await invoke("save_open_library");
+    } catch (err) {
+      console.error("Failed to save library", err);
+    } finally {
+      endBusy();
+    }
   }
 
   /** Re-walk every imported root from disk. The Rust side clears its
@@ -1018,8 +1090,8 @@ export class WarbleApp extends LitElement {
     await this.loadLibraryPath();
     this.selectedPhoto = null;
     this.fullViewIndex = null;
-    if (this.imports.length > 0) {
-      const first = this.imports[0];
+    const first = this.imports.find((folder) => folder.available);
+    if (first) {
       await this.selectFolder(first.id, first.path);
     } else {
       this.photos = [];
@@ -1084,8 +1156,12 @@ export class WarbleApp extends LitElement {
           ${this.libraryPath
             ? html`<div class="library-path" title=${this.libraryPath}>${this.libraryPath}</div>`
             : null}
+          <div class="library-actions">
+            <pf-button @click=${this.openLibrary}>Open Library</pf-button>
+            <pf-button @click=${this.saveOpenLibrary}>Save</pf-button>
+          </div>
         </div>
-        <div class="tree" @folder-select=${this.onFolderSelect}>
+        <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot}>
           ${this.folders.length === 0
             ? html`<div class="empty">No folders imported yet.</div>`
             : this.folders.map(
@@ -1203,8 +1279,12 @@ export class WarbleApp extends LitElement {
                               ${this.libraryPath
                                 ? html`<div class="library-path" title=${this.libraryPath}>${this.libraryPath}</div>`
                                 : null}
+                              <div class="library-actions">
+                                <pf-button @click=${this.openLibrary}>Open Library</pf-button>
+                                <pf-button @click=${this.saveOpenLibrary}>Save</pf-button>
+                              </div>
                             </div>
-                            <div class="tree" @folder-select=${this.onFolderSelect}>
+                            <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot}>
                               ${this.folders.length === 0
                                 ? html`<div class="empty">No folders imported yet.</div>`
                                 : this.folders.map(

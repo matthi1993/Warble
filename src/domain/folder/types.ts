@@ -1,6 +1,6 @@
 /**
  * Folder tree value object. A single recursive node carrying its
- * absolute path and the children discovered under it.
+ * portable root-relative key and the children discovered under it.
  */
 
 export interface Folder {
@@ -8,4 +8,6 @@ export interface Folder {
   path: string;
   name: string;
   children: Folder[];
+  /** False when this device has not yet been granted access to the root. */
+  available: boolean;
 }

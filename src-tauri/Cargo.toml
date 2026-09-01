@@ -29,6 +29,10 @@ imagepipe = "0.5"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["sync"] }
 rawler = "0.7"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri-plugin-folder-access = { path = "plugins/folder-access" }
 
 # Even in dev builds, run the imaging crates with full optimisation —
 # debug-built JPEG decode + SIMD resize is an order of magnitude slower

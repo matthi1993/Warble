@@ -7,6 +7,7 @@ use std::path::Path;
 
 use super::folder::Folder;
 use super::photo::{is_photo_extension, parse_variant, viewable_rank, Photo, PhotoFile};
+use super::portable_path::make_portable_key;
 
 #[derive(Default)]
 pub struct LibraryCatalog {
@@ -17,17 +18,35 @@ pub struct LibraryCatalog {
 impl LibraryCatalog {
     /// Walk `root` recursively, register every photo found, and return the
     /// folder tree.
-    pub fn import_root(&mut self, root: &Path) -> Result<Folder, String> {
-        let folder = scan_tree(root, &mut self.photos)?;
+    pub fn import_root(
+        &mut self,
+        root_id: &str,
+        name: &str,
+        root: &Path,
+    ) -> Result<Folder, String> {
+        let mut folder = scan_tree(root, root, root_id, &mut self.photos)?;
+        folder.name = name.to_string();
+        self.roots.retain(|existing| existing.id != root_id);
         self.roots.push(folder.clone());
         Ok(folder)
     }
 
     /// Re-hydrate a previously imported root without recording it twice.
-    pub fn rehydrate_root(&mut self, root: &Path) -> Result<(), String> {
-        let folder = scan_tree(root, &mut self.photos)?;
+    pub fn rehydrate_root(&mut self, root_id: &str, name: &str, root: &Path) -> Result<(), String> {
+        let mut folder = scan_tree(root, root, root_id, &mut self.photos)?;
+        folder.name = name.to_string();
         self.roots.push(folder);
         Ok(())
+    }
+
+    pub fn add_unavailable_root(&mut self, root_id: &str, name: &str) {
+        self.roots.push(Folder {
+            id: root_id.to_string(),
+            path: root_id.to_string(),
+            name: name.to_string(),
+            children: Vec::new(),
+            available: false,
+        });
     }
 
     /// Clear every imported root + photo entry. Used by the
@@ -146,7 +165,12 @@ fn lowercase_extension(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder, String> {
+fn scan_tree(
+    path: &Path,
+    root: &Path,
+    root_id: &str,
+    photos: &mut HashMap<String, Photo>,
+) -> Result<Folder, String> {
     let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut children = Vec::new();
 
@@ -162,11 +186,11 @@ fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder,
             continue;
         }
         if entry_path.is_dir() {
-            if let Ok(child) = scan_tree(&entry_path, photos) {
+            if let Ok(child) = scan_tree(&entry_path, root, root_id, photos) {
                 children.push(child);
             }
         } else if entry_path.is_file() {
-            if let Some(photo) = photo_from_path(&entry_path) {
+            if let Some(photo) = photo_from_path(&entry_path, root, root_id) {
                 photos.insert(photo.path.clone(), photo);
             }
         }
@@ -179,17 +203,19 @@ fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder,
         .and_then(|n| n.to_str())
         .unwrap_or_else(|| path.to_str().unwrap_or_default())
         .to_string();
-    let id = path.to_string_lossy().into_owned();
+    let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+    let id = make_portable_key(root_id, relative)?;
 
     Ok(Folder {
+        path: id.clone(),
         id,
-        path: path.to_path_buf(),
         name,
         children,
+        available: true,
     })
 }
 
-fn photo_from_path(entry_path: &Path) -> Option<Photo> {
+fn photo_from_path(entry_path: &Path, root: &Path, root_id: &str) -> Option<Photo> {
     let ext = entry_path
         .extension()
         .and_then(|e| e.to_str())?
@@ -202,7 +228,8 @@ fn photo_from_path(entry_path: &Path) -> Option<Photo> {
         .and_then(|n| n.to_str())
         .unwrap_or_default()
         .to_string();
-    let path = entry_path.to_string_lossy().into_owned();
+    let relative = entry_path.strip_prefix(root).ok()?;
+    let path = make_portable_key(root_id, relative).ok()?;
     Some(Photo {
         path,
         filename,

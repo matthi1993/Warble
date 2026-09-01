@@ -1,8 +1,10 @@
 mod app_state;
 mod caching;
 mod commands;
+mod device_storage;
 mod imaging;
 mod library;
+#[cfg(desktop)]
 mod menu;
 mod settings;
 mod tasks;
@@ -11,7 +13,10 @@ use app_state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(tauri_plugin_folder_access::init());
+    let builder = builder
         .manage(AppState::default())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -26,11 +31,14 @@ pub fn run() {
             library::init_settings_and_caches(app);
             library::init_menu(app);
             Ok(())
-        })
-        .on_menu_event(|app, event| menu::handle_event(app, event))
+        });
+    #[cfg(desktop)]
+    let builder = builder.on_menu_event(|app, event| menu::handle_event(app, event));
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::select_folders_dialog,
             commands::import_folder,
+            commands::bind_media_root,
             commands::list_imported_folders,
             commands::refresh_imported_folders,
             commands::get_photos_in_folder,
@@ -70,7 +78,9 @@ pub fn run() {
             commands::get_photo_ratings,
             commands::set_photo_rating,
             commands::get_open_library_path,
+            commands::select_library_dialog,
             commands::save_library,
+            commands::save_open_library,
             commands::load_library,
         ])
         .run(tauri::generate_context!())

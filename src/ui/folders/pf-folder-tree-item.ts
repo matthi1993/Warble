@@ -53,6 +53,16 @@ export class PfFolderTreeItem extends LitElement {
     .row.selected .folder-icon {
       color: var(--pf-accent);
     }
+    .row.unavailable {
+      color: var(--pf-text-subtle);
+    }
+    .row.unavailable .folder-icon {
+      color: var(--pf-danger);
+    }
+    .status {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-danger);
+    }
     .name {
       flex: 1;
       overflow: hidden;
@@ -92,6 +102,16 @@ export class PfFolderTreeItem extends LitElement {
   }
 
   private select() {
+    if (!this.folder.available) {
+      this.dispatchEvent(
+        new CustomEvent<{ rootId: string }>("root-reconnect", {
+          detail: { rootId: this.folder.id },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
     this.dispatchEvent(
       new CustomEvent<{ id: string; path: string }>("folder-select", {
         detail: { id: this.folder.id, path: this.folder.path },
@@ -107,7 +127,7 @@ export class PfFolderTreeItem extends LitElement {
     const label = this.folder.name;
     return html`
       <div
-        class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""}"
+        class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""} ${this.folder.available ? "" : "unavailable"}"
         @click=${this.select}
       >
         ${hasChildren
@@ -117,6 +137,7 @@ export class PfFolderTreeItem extends LitElement {
           : html`<span class="chevron placeholder">·</span>`}
         <pf-icon class="folder-icon" name="folder"></pf-icon>
         <span class="name" title=${this.folder.path}>${label}</span>
+        ${this.folder.available ? null : html`<span class="status">Reconnect</span>`}
       </div>
       ${this.expanded && hasChildren
         ? html`<div class="children">

@@ -102,7 +102,7 @@ const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 /// decode, orientation transform, resize/encode) so a cancelled
 /// request frees the worker thread promptly instead of running to
 /// completion and discarding the result.
-pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
+pub fn load_bytes(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
@@ -122,7 +122,7 @@ pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     }
 
     cancel.check()?;
-    let jpeg_bytes = render(p, cancel)?;
+    let jpeg_bytes = render(p, library_key, cancel)?;
 
     if let (Some(c), Some(k)) = (cache, cache_key) {
         c.put(&k, &jpeg_bytes);
@@ -130,16 +130,14 @@ pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     Ok(jpeg_bytes)
 }
 
-fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
+fn render(path: &Path, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let ext = lowercase_extension(path);
 
     if raw_preview::is_raw_extension(&ext) {
         let preview = raw_preview::extract_preview(path)?;
         cancel.check()?;
         // Embedded RAW previews are JPEG — same fast path applies.
-        if let Ok(out) =
-            render_jpeg_fast(&preview.jpeg_bytes, preview.orientation, cancel)
-        {
+        if let Ok(out) = render_jpeg_fast(&preview.jpeg_bytes, preview.orientation, cancel) {
             return Ok(out);
         }
         // Decoder rejected the format (rare CMYK previews, ...). Fall
@@ -150,7 +148,7 @@ fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     if JPEG_EXTENSIONS.iter().any(|e| *e == ext) {
         let raw = fs::read(path).map_err(|e| e.to_string())?;
         cancel.check()?;
-        let orient = exif_cache::orientation_or_warm(path, &raw);
+        let orient = exif_cache::orientation_or_warm(library_key, path, &raw);
         return match render_jpeg_fast(&raw, orient, cancel) {
             Ok(out) => Ok(out),
             Err(_) => render_jpeg_slow(&raw, orient, cancel),
@@ -160,7 +158,7 @@ fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     // PNG / TIFF / WebP / ... — no DCT scaling available; full decode.
     let raw = fs::read(path).map_err(|e| e.to_string())?;
     cancel.check()?;
-    let orient = exif_cache::orientation_or_warm(path, &raw);
+    let orient = exif_cache::orientation_or_warm(library_key, path, &raw);
     let img = ImageReader::new(Cursor::new(&raw))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
@@ -179,11 +177,7 @@ fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
 /// Fast path: DCT-scaled JPEG decode + SIMD resize. Aims for a decoded
 /// buffer ~2× the target long side so the SIMD resize still has good
 /// quality input — `jpeg-decoder` rounds to the nearest 1/2/4/8 ratio.
-fn render_jpeg_fast(
-    bytes: &[u8],
-    orient: u32,
-    cancel: &CancelToken,
-) -> Result<Vec<u8>, String> {
+fn render_jpeg_fast(bytes: &[u8], orient: u32, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     // The fast-path helper takes a `min_width` and aims for ~2× that.
     // We need the *long side* of the (post-orientation) result to be
     // at least `LONG_SIDE_PX`, so for portrait sources we have to
@@ -221,11 +215,7 @@ fn render_jpeg_fast(
 
 /// Slow path used when the fast path bails (unsupported pixel
 /// format, header parse error, …). Decodes through `image`.
-fn render_jpeg_slow(
-    bytes: &[u8],
-    orient: u32,
-    cancel: &CancelToken,
-) -> Result<Vec<u8>, String> {
+fn render_jpeg_slow(bytes: &[u8], orient: u32, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let img = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg)
         .decode()
         .map_err(|e| format!("Decode failed: {e}"))?;

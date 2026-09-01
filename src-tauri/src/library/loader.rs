@@ -1,31 +1,29 @@
 use crate::app_state;
 use crate::imaging;
 
-use tauri::Manager;
 use app_state::AppState;
+use tauri::Manager;
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+#[cfg(desktop)]
 use crate::menu;
 use crate::tasks;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use imaging::{exif_cache, full_image, hd_image, thumbnails};
 use crate::library::LibraryRepository;
+use imaging::{exif_cache, full_image, hd_image, thumbnails};
 
 /// Canonical on-disk location of the active library database.
 pub fn library_db_path(app: &tauri::AppHandle) -> PathBuf {
     app.path()
-        .picture_dir()
+        .app_data_dir()
         .ok()
         .map(|mut p| {
-            p.push("library.warble");
+            p.push("active-library.warble");
             p
         })
         .unwrap_or_else(|| PathBuf::from("./library.warble"))
 }
-
-/// DB setting key for the last loaded library path.
-const LAST_LIBRARY_KEY: &str = "last_library_path";
 
 pub fn init_library_repository(app: &tauri::App) {
     let db_path = library_db_path(app.handle());
@@ -35,16 +33,41 @@ pub fn init_library_repository(app: &tauri::App) {
         }
     }
 
-    // On startup, check whether the user previously loaded a different
-    // library file. If the saved path still exists and differs from
-    // the active DB, copy it in before opening the repository.
-    restore_last_library(&db_path);
-
     let state = app.state::<AppState>();
+    if let Ok(mut path) = app.path().app_data_dir() {
+        path.push("device-state.json");
+        if let Err(e) = state.device_storage.init(path) {
+            eprintln!("failed to initialise device state: {e}");
+        }
+    }
+    // One-time move from the pre-v8 canonical location in Pictures.
+    if !db_path.exists() && state.device_storage.last_library_path().is_none() {
+        if let Ok(mut legacy_path) = app.path().picture_dir() {
+            legacy_path.push("library.warble");
+            if legacy_path.is_file() {
+                let _ = state
+                    .device_storage
+                    .set_last_library_path(Some(&legacy_path));
+            }
+        }
+    }
+    restore_security_scoped_library(app.handle(), &state);
+    restore_last_library(&state, &db_path);
+
     match LibraryRepository::open(&db_path) {
         Ok(repo) => {
             let arc = Arc::new(repo);
-            rehydrate_imported_roots(arc.as_ref(), &state);
+            let library_id = match arc.library_id() {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("failed to read library id: {e}");
+                    return;
+                }
+            };
+            state.set_active_library_id(library_id.clone());
+            persist_legacy_bindings(arc.as_ref(), &state, &library_id);
+            restore_security_scoped_roots(app.handle(), &state, &library_id);
+            rehydrate_media_roots(arc.as_ref(), &state);
             exif_cache::init(Arc::clone(&arc));
             {
                 let mut guard = state.repository.lock().expect("repository mutex poisoned");
@@ -58,44 +81,17 @@ pub fn init_library_repository(app: &tauri::App) {
 /// If the active DB has a `last_library_path` setting pointing to an
 /// existing file different from the active DB, copy that file over
 /// the active DB. If the file is gone, clear the setting.
-fn restore_last_library(db_path: &Path) {
-    if !db_path.exists() {
+fn restore_last_library(state: &AppState, db_path: &std::path::Path) {
+    let Some(source) = state.device_storage.last_library_path() else {
         return;
-    }
-    let conn = match rusqlite::Connection::open(db_path) {
-        Ok(c) => c,
-        Err(_) => return,
     };
-    let _ = conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
-    );
-    let saved: Option<String> = match conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        rusqlite::params![LAST_LIBRARY_KEY],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(v) => Some(v),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(_) => None,
-    };
-    drop(conn);
-
-    let Some(saved_path) = saved else { return };
-    let source = PathBuf::from(&saved_path);
-
-    if same_file(&source, db_path) {
-        return;
-    }
-
     if !source.is_file() {
         eprintln!(
             "last library file no longer exists: {} — starting with existing library",
             source.display()
         );
-        clear_last_library_setting(db_path);
         return;
     }
-
     remove_sqlite_sidecars(db_path);
     if let Err(e) = std::fs::copy(&source, db_path) {
         eprintln!(
@@ -104,23 +100,6 @@ fn restore_last_library(db_path: &Path) {
         );
     } else {
         eprintln!("restored last library from {}", source.display());
-    }
-}
-
-fn clear_last_library_setting(db_path: &Path) {
-    let Ok(conn) = rusqlite::Connection::open(db_path) else {
-        return;
-    };
-    let _ = conn.execute(
-        "DELETE FROM app_settings WHERE key = ?1",
-        rusqlite::params![LAST_LIBRARY_KEY],
-    );
-}
-
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
     }
 }
 
@@ -160,6 +139,7 @@ pub fn init_settings_and_caches(app: &tauri::App) {
     tasks::pool().set_bg_concurrency(s.background_pool_workers);
 }
 
+#[cfg(desktop)]
 pub fn init_menu(app: &tauri::App) {
     match menu::build(app.handle()) {
         Ok(m) => {
@@ -171,14 +151,88 @@ pub fn init_menu(app: &tauri::App) {
     }
 }
 
-fn rehydrate_imported_roots(repo: &LibraryRepository, state: &AppState) {
-    let Ok(paths) = repo.imported_root_paths() else {
+#[cfg(mobile)]
+pub fn init_menu(_app: &tauri::App) {}
+
+pub fn rehydrate_media_roots(repo: &LibraryRepository, state: &AppState) {
+    let Ok(roots) = repo.media_roots() else {
         return;
     };
+    let Ok(library_id) = repo.library_id() else {
+        return;
+    };
+    let bindings = state.device_storage.bindings_for(&library_id);
     let Ok(mut catalog) = state.catalog.lock() else {
         return;
     };
-    for path in paths {
-        let _ = catalog.rehydrate_root(&PathBuf::from(path));
+    catalog.reset();
+    for root in roots {
+        match bindings.get(&root.id) {
+            Some(path) if path.is_dir() => {
+                if catalog.rehydrate_root(&root.id, &root.name, path).is_err() {
+                    catalog.add_unavailable_root(&root.id, &root.name);
+                }
+            }
+            _ => catalog.add_unavailable_root(&root.id, &root.name),
+        }
     }
+}
+
+fn persist_legacy_bindings(repo: &LibraryRepository, state: &AppState, library_id: &str) {
+    let Ok(bindings) = repo.legacy_root_bindings() else {
+        return;
+    };
+    for (root_id, path) in bindings {
+        if let Err(e) =
+            state
+                .device_storage
+                .set_root_binding(library_id, &root_id, std::path::Path::new(&path))
+        {
+            eprintln!("failed to preserve migrated media-root binding: {e}");
+            return;
+        }
+    }
+    let _ = repo.clear_legacy_root_bindings();
+}
+
+#[cfg(target_os = "ios")]
+pub fn restore_security_scoped_roots(app: &tauri::AppHandle, state: &AppState, library_id: &str) {
+    for (root_id, bookmark) in state.device_storage.root_bookmarks_for(library_id) {
+        match tauri_plugin_folder_access::resolve_bookmark(app, &bookmark) {
+            Ok(path) => {
+                let _ = state.device_storage.set_root_binding(
+                    library_id,
+                    &root_id,
+                    std::path::Path::new(&path),
+                );
+            }
+            Err(e) => eprintln!("media root {root_id} needs reconnecting: {e}"),
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn restore_security_scoped_library(app: &tauri::AppHandle, state: &AppState) {
+    let Some(bookmark) = state.device_storage.library_bookmark() else {
+        return;
+    };
+    match tauri_plugin_folder_access::resolve_bookmark(app, &bookmark) {
+        Ok(path) => {
+            let _ = state
+                .device_storage
+                .set_last_library_path(Some(std::path::Path::new(&path)));
+        }
+        Err(e) => eprintln!("library file needs reopening: {e}"),
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn restore_security_scoped_library(_app: &tauri::AppHandle, _state: &AppState) {}
+
+#[cfg(not(target_os = "ios"))]
+pub fn restore_security_scoped_roots(
+    _app: &tauri::AppHandle,
+    _state: &AppState,
+    _library_id: &str,
+) {
 }

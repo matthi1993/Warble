@@ -25,6 +25,7 @@ To build the Tauri desktop app:
 
 ```sh
 pnpm tauri build
+pnpm tauri ios build
 ```
 
 ### Running the Production App on macOS
