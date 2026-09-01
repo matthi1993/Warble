@@ -49,14 +49,6 @@ impl LibraryCatalog {
         });
     }
 
-    /// Clear every imported root + photo entry. Used by the
-    /// "Refresh imported folders" command before re-walking from
-    /// disk so stale entries (deleted files) disappear.
-    pub fn reset(&mut self) {
-        self.roots.clear();
-        self.photos.clear();
-    }
-
     pub fn roots(&self) -> Vec<Folder> {
         self.roots.clone()
     }
