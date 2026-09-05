@@ -64,6 +64,8 @@ export interface ColorChannelEdit {
 }
 
 export interface ColorEdit {
+  /** Convert the result of the HSL adjustments to neutral luminance. */
+  blackAndWhite: boolean;
   /** Global hue shift applied to every pixel on top of the
    *  per-channel weighted shift. Range [-100, 100]. */
   hue: number;
@@ -82,12 +84,19 @@ export function defaultColorChannel(): ColorChannelEdit {
 export function defaultColor(): ColorEdit {
   const channels = {} as Record<ColorChannel, ColorChannelEdit>;
   for (const k of COLOR_CHANNELS) channels[k] = defaultColorChannel();
-  return { hue: 0, saturation: 0, luminance: 0, channels };
+  return {
+    blackAndWhite: false,
+    hue: 0,
+    saturation: 0,
+    luminance: 0,
+    channels,
+  };
 }
 
 /** True when every slider is at its neutral position. */
 export function isColorZero(c: ColorEdit | null | undefined): boolean {
   if (!c) return true;
+  if (c.blackAndWhite) return false;
   if (c.hue !== 0 || c.saturation !== 0 || c.luminance !== 0) return false;
   for (const k of COLOR_CHANNELS) {
     const ch = c.channels[k];
@@ -109,6 +118,7 @@ export function normalizeColor(input: unknown): ColorEdit {
   const src = input as Partial<ColorEdit> & {
     channels?: Partial<Record<ColorChannel, Partial<ColorChannelEdit>>>;
   };
+  base.blackAndWhite = src.blackAndWhite === true;
   base.hue = numOr(src.hue, 0);
   base.saturation = numOr(src.saturation, 0);
   base.luminance = numOr(src.luminance, 0);

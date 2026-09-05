@@ -79,6 +79,46 @@ export class PfColorCard extends LitElement {
       flex-direction: column;
       gap: 10px;
     }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 4px 0;
+    }
+    .toggle-label {
+      font-size: var(--pf-text-sm);
+      color: var(--pf-text);
+    }
+    .toggle {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--pf-border);
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      transition: background 120ms ease;
+    }
+    .toggle[aria-pressed="true"] {
+      background: var(--pf-accent, #4a90e2);
+    }
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: white;
+      transition: transform 120ms ease;
+    }
+    .toggle[aria-pressed="true"]::after {
+      transform: translateX(16px);
+    }
     .tabs {
       display: flex;
       gap: 4px;
@@ -213,6 +253,13 @@ export class PfColorCard extends LitElement {
     this.emitChange({ ...this.value, [axis]: 0 });
   };
 
+  private toggleBlackAndWhite = () => {
+    this.emitChange({
+      ...this.value,
+      blackAndWhite: !this.value.blackAndWhite,
+    });
+  };
+
   private selectAxis(axis: Axis) {
     this.axis = axis;
   }
@@ -239,6 +286,20 @@ export class PfColorCard extends LitElement {
           <pf-icon name="rotate-ccw"></pf-icon>
         </button>
         <div class="body">
+          <div class="toggle-row">
+            <span class="toggle-label">Black &amp; White</span>
+            <button
+              type="button"
+              class="toggle"
+              role="switch"
+              aria-pressed=${this.value.blackAndWhite ? "true" : "false"}
+              aria-label="Toggle black and white"
+              title=${this.value.blackAndWhite
+                ? "Use color"
+                : "Convert to black and white"}
+              @click=${this.toggleBlackAndWhite}
+            ></button>
+          </div>
           <div class="tabs" role="tablist" aria-label="Color axis">
             ${(Object.keys(AXIS_LABELS) as Axis[]).map(
               (a) => html`

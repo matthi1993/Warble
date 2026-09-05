@@ -181,9 +181,11 @@ export class TonePipeline {
     editColorEnabled: WebGLUniformLocation | null;
     editColorChannels: WebGLUniformLocation | null;
     editColorGlobal: WebGLUniformLocation | null;
+    editBlackAndWhite: WebGLUniformLocation | null;
     postColorEnabled: WebGLUniformLocation | null;
     postColorChannels: WebGLUniformLocation | null;
     postColorGlobal: WebGLUniformLocation | null;
+    postBlackAndWhite: WebGLUniformLocation | null;
    editSharpenStrength: WebGLUniformLocation | null;
     editSharpenRadius: WebGLUniformLocation | null;
     editSharpenThreshold: WebGLUniformLocation | null;
@@ -220,9 +222,11 @@ export class TonePipeline {
     editColorEnabled: null,
     editColorChannels: null,
     editColorGlobal: null,
+    editBlackAndWhite: null,
     postColorEnabled: null,
     postColorChannels: null,
     postColorGlobal: null,
+    postBlackAndWhite: null,
    editSharpenStrength: null,
     editSharpenRadius: null,
     editSharpenThreshold: null,
@@ -335,6 +339,14 @@ export class TonePipeline {
     const postColorActive = !!postColor && !isColorZero(postColor);
     gl.uniform1i(this.uniforms.editColorEnabled, editColorActive ? 1 : 0);
     gl.uniform1i(this.uniforms.postColorEnabled, postColorActive ? 1 : 0);
+    gl.uniform1i(
+      this.uniforms.editBlackAndWhite,
+      editColor?.blackAndWhite ? 1 : 0
+    );
+    gl.uniform1i(
+      this.uniforms.postBlackAndWhite,
+      postColor?.blackAndWhite ? 1 : 0
+    );
     uploadColorUniforms(
       gl,
       this.uniforms.editColorChannels,
@@ -572,10 +584,12 @@ export class TonePipeline {
       uniform int   u_editColorEnabled;
       uniform vec3  u_editColorChannels[8];
       uniform vec3  u_editColorGlobal;
+      uniform int   u_editBlackAndWhite;
       uniform int   u_postColorEnabled;
       uniform vec3  u_postColorChannels[8];
       uniform vec3  u_postColorGlobal;
-     uniform float u_editSharpenStrength;
+      uniform int   u_postBlackAndWhite;
+      uniform float u_editSharpenStrength;
       uniform float u_editSharpenRadius;
       uniform float u_editSharpenThreshold;
       uniform float u_postSharpenStrength;
@@ -942,6 +956,9 @@ export class TonePipeline {
         // already-colour-graded image.
         if (u_editColorEnabled == 1) {
           col = applyColor(col, u_editColorChannels, u_editColorGlobal);
+          if (u_editBlackAndWhite == 1) {
+            col = vec3(dot(col, LUMA));
+          }
         }
 
         // Per-photo edit curve (after the basic tone math so the
@@ -977,6 +994,9 @@ export class TonePipeline {
         // Same as the edit pass: colour first, then curve.
         if (u_postColorEnabled == 1) {
           col = applyColor(col, u_postColorChannels, u_postColorGlobal);
+          if (u_postBlackAndWhite == 1) {
+            col = vec3(dot(col, LUMA));
+          }
         }
         if (u_postLutEnabled == 1) {
           col = applyCurveLut(col, u_postLut);
@@ -1061,6 +1081,10 @@ export class TonePipeline {
       program,
       "u_editColorGlobal"
     );
+    this.uniforms.editBlackAndWhite = gl.getUniformLocation(
+      program,
+      "u_editBlackAndWhite"
+    );
     this.uniforms.postColorEnabled = gl.getUniformLocation(
       program,
       "u_postColorEnabled"
@@ -1073,8 +1097,12 @@ export class TonePipeline {
       program,
       "u_postColorGlobal"
     );
-   this.uniforms.editSharpenStrength = gl.getUniformLocation(
-     program,
+    this.uniforms.postBlackAndWhite = gl.getUniformLocation(
+      program,
+      "u_postBlackAndWhite"
+    );
+    this.uniforms.editSharpenStrength = gl.getUniformLocation(
+      program,
       "u_editSharpenStrength"
     );
     this.uniforms.editSharpenRadius = gl.getUniformLocation(

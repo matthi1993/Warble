@@ -4,6 +4,7 @@ import {
   defaultPostProcess,
   type PostProcessSettings,
 } from "./post-process-store";
+import { normalizeColor } from "@domain/edits";
 
 export type PostProcessPresetValues = Omit<PostProcessSettings, "enabled">;
 
@@ -36,7 +37,7 @@ function parse(raw: string): PostProcessPreset[] {
         id: item.id,
         name: item.name,
         values: structuredClone({
-          color: values.color ?? defaults.color,
+          color: values.color ? normalizeColor(values.color) : defaults.color,
           curve: values.curve ?? defaults.curve,
           sharpen: values.sharpen ?? defaults.sharpen,
           grain: values.grain ?? defaults.grain,

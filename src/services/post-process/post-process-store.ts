@@ -16,6 +16,7 @@
 import {
   defaultColor,
   defaultCurve,
+  normalizeColor,
   type ColorEdit,
   type CurveEdit,
 } from "@domain/edits";
@@ -65,7 +66,7 @@ function load(): PostProcessSettings {
     const parsed = JSON.parse(raw) as Partial<PostProcessSettings>;
     return {
       enabled: parsed.enabled ?? true,
-      color: parsed.color ?? defaultColor(),
+      color: parsed.color ? normalizeColor(parsed.color) : defaultColor(),
       curve: parsed.curve ?? defaultCurve(),
       sharpen: parsed.sharpen
         ? { ...defaultSharpen(), ...parsed.sharpen }
