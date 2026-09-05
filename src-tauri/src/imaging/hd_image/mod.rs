@@ -134,7 +134,7 @@ fn render(path: &Path, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8
     let ext = lowercase_extension(path);
 
     if raw_preview::is_raw_extension(&ext) {
-        let preview = raw_preview::extract_preview(path)?;
+        let preview = raw_preview::extract_preview_sized(path, Some(LONG_SIDE_PX as usize))?;
         cancel.check()?;
         // Embedded RAW previews are JPEG — same fast path applies.
         if let Ok(out) = render_jpeg_fast(&preview.jpeg_bytes, preview.orientation, cancel) {

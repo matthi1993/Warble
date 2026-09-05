@@ -12,7 +12,14 @@ export {
   DYNAMIC_RANGE_KEYS,
   TONE_KEYS,
 } from "./types";
-export { defaultTone, isBaseToneZero, isDynamicRangeZero, isToneZero } from "./tone";
+export {
+  defaultTone,
+  isBaseToneZero,
+  isDynamicRangeZero,
+  isToneZero,
+  toneControlSpec,
+} from "./tone";
+export type { ToneControlSpec } from "./tone";
 export { cropEditsEqual } from "./crop";
 export type { CurveChannel, CurveEdit, CurvePoint } from "./curve";
 export {

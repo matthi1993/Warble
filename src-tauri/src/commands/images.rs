@@ -32,7 +32,7 @@ use tauri::ipc::Response;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::imaging::{exif_cache, full_image, hd_image, thumbnails};
+use crate::imaging::{exif_cache, full_image, hd_image, raw_preview, thumbnails};
 use crate::tasks::{self, Priority};
 
 #[tauri::command]
@@ -75,6 +75,34 @@ pub async fn get_full_image_bytes(
     };
     let bytes = tasks::run(prio, request_id, "full_image", move |cancel| {
         full_image::load_bytes(&resolved, cancel)
+    })
+    .await?;
+    Ok(Response::new(bytes))
+}
+
+/// Return a linear, demosaiced RGB16 working image for RAW editing. The
+/// frontend uploads this directly as a high-bit-depth WebGL texture instead
+/// of decoding a JPEG and losing the RAW headroom before the first slider.
+#[tauri::command]
+pub async fn get_raw_image_bytes(
+    photo_path: String,
+    request_id: Option<u64>,
+    priority: Option<String>,
+    max_long_side: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Response, String> {
+    let resolved = state.resolve_library_path(&photo_path)?;
+    let resolved = resolved.to_string_lossy().into_owned();
+    let prio = match priority.as_deref() {
+        Some(s) => Priority::parse(Some(s)),
+        None => Priority::Urgent,
+    };
+    let bytes = tasks::run(prio, request_id, "raw_image", move |cancel| {
+        let limit = max_long_side
+            .filter(|value| *value > 0)
+            .map(|value| value as usize);
+        let image = raw_preview::decode_linear16(std::path::Path::new(&resolved), limit, cancel)?;
+        raw_preview::encode_linear16(&image)
     })
     .await?;
     Ok(Response::new(bytes))

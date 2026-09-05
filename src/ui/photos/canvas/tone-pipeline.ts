@@ -1,7 +1,7 @@
 /**
  * GPU-accelerated tone pipeline.
  *
- * Renders an `ImageBitmap` (or off-screen canvas) with exposure /
+ * Renders an `ImageBitmap`, linear RGB16 RAW source, or off-screen canvas with exposure /
  * contrast / saturation / blacks / shadows / highlights / whites
  * adjustments applied by a WebGL2 fragment shader, into an internal
  * canvas the main 2D canvas can `drawImage()` from.
@@ -31,8 +31,25 @@ import {
 } from "@domain/edits";
 import type { SharpenSettings } from "@services/effects/effects-store";
 import type { GrainSettings } from "@services/effects/effects-store";
+import type { RawImageSource } from "./raw-source";
 
-export type ToneSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
+export type ToneSource =
+  | ImageBitmap
+  | HTMLCanvasElement
+  | OffscreenCanvas
+  | RawImageSource;
+
+function sourceWidth(source: ToneSource): number {
+  return source.width;
+}
+
+function sourceHeight(source: ToneSource): number {
+  return source.height;
+}
+
+function isRawSource(source: ToneSource): source is RawImageSource {
+  return "kind" in source && source.kind === "raw16";
+}
 
 /** One cached noise field is enough for both grain modes. Red/green hold
  * bell-shaped random values for organic grain; blue holds binary black or
@@ -44,22 +61,19 @@ const GRAIN_TEXTURE_SIZE = 1024;
  * sliders. Tweak these to make the sliders more or less aggressive
  * and to widen / narrow the luminance band each one targets.
  *
- * `amplitude` — maximum signed luminance offset at slider ±100 and
- *   peak weight. The smaller this number, the less the slider does.
- *
- * Region masks themselves are built in the shader as sequential
- * `smoothstep` crossfades. They form a partition of unity: only adjacent
- * regions overlap and their weights always sum to one. That prevents
- * multiple sliders from stacking into noisy seams at band boundaries.
+ * `amplitude` is the maximum signed offset on the perceptual tone axis at
+ * slider ±100 and peak mask weight. Region masks are smooth, overlapping
+ * bells: blacks and highlights preserve the black/white endpoints while
+ * shadows and highlights cover broad, visually useful ranges.
  */
 const TONE_REGION: Record<
   "blacks" | "shadows" | "highlights" | "whites",
   { amplitude: number }
 > = {
-  blacks: { amplitude: 0.25 },
-  whites: { amplitude: 0.25 },
-  shadows: { amplitude: 0.18 },
-  highlights: { amplitude: 0.18 },
+  blacks: { amplitude: 0.12 },
+  whites: { amplitude: 0.16 },
+  shadows: { amplitude: 0.22 },
+  highlights: { amplitude: 0.22 },
 };
 
 /** GLSL float literal with a decimal point, so the WebGL2 compiler
@@ -134,6 +148,8 @@ export class TonePipeline {
   private program: WebGLProgram | null = null;
   private vao: WebGLVertexArrayObject | null = null;
   private texture: WebGLTexture | null = null;
+  /** RGB16UI texture for linear RAW working data (texture unit 4). */
+  private rawTexture: WebGLTexture | null = null;
   /** 256x2 RGBA LUT for the per-photo edit curve (texture unit 1). */
   private editLutTex: WebGLTexture | null = null;
   /** 256x2 RGBA LUT for the global post-process curve (texture unit 2). */
@@ -183,6 +199,8 @@ export class TonePipeline {
     editGrainAmount: WebGLUniformLocation | null;
     editGrainFine: WebGLUniformLocation | null;
     sourceSize: WebGLUniformLocation | null;
+    rawSource: WebGLUniformLocation | null;
+    rawTexture: WebGLUniformLocation | null;
   } = {
     temperature: null,
     tint: null,
@@ -220,6 +238,8 @@ export class TonePipeline {
     editGrainAmount: null,
     editGrainFine: null,
     sourceSize: null,
+    rawSource: null,
+    rawTexture: null,
   };
   private failed = false;
 
@@ -287,10 +307,12 @@ export class TonePipeline {
       this.uploadedPostCurve = opts.postCurve!;
     }
     const c = toneCoefficients(tone);
-    const sx = srcRect.sx / bm.width;
-    const sy = srcRect.sy / bm.height;
-    const sw = srcRect.sw / bm.width;
-    const sh = srcRect.sh / bm.height;
+    const width = sourceWidth(bm);
+    const height = sourceHeight(bm);
+    const sx = srcRect.sx / width;
+    const sy = srcRect.sy / height;
+    const sw = srcRect.sw / width;
+    const sh = srcRect.sh / height;
     gl.viewport(0, 0, outW, outH);
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
@@ -370,9 +392,12 @@ export class TonePipeline {
     gl.uniform1f(this.uniforms.editGrainSize, editGrain?.size ?? 25);
     gl.uniform1f(this.uniforms.editGrainAmount, editGrain?.amount ?? 0);
     gl.uniform1f(this.uniforms.editGrainFine, editGrain?.fine ?? 0);
-    gl.uniform2f(this.uniforms.sourceSize, bm.width, bm.height);
+    gl.uniform2f(this.uniforms.sourceSize, width, height);
+    gl.uniform1i(this.uniforms.rawSource, isRawSource(bm) ? 1 : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.rawTexture);
     gl.uniform1i(this.uniforms.editLut!, 1);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.editLutTex);
@@ -407,12 +432,14 @@ export class TonePipeline {
     if (!gl) return;
     if (this.program) gl.deleteProgram(this.program);
     if (this.texture) gl.deleteTexture(this.texture);
+    if (this.rawTexture) gl.deleteTexture(this.rawTexture);
     if (this.editLutTex) gl.deleteTexture(this.editLutTex);
     if (this.postLutTex) gl.deleteTexture(this.postLutTex);
     if (this.grainTex) gl.deleteTexture(this.grainTex);
     if (this.vao) gl.deleteVertexArray(this.vao);
     this.program = null;
     this.texture = null;
+    this.rawTexture = null;
     this.editLutTex = null;
     this.postLutTex = null;
     this.grainTex = null;
@@ -443,6 +470,23 @@ export class TonePipeline {
 
   private uploadTexture(bm: ToneSource): void {
     const gl = this.gl!;
+    if (isRawSource(bm)) {
+      gl.bindTexture(gl.TEXTURE_2D, this.rawTexture);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGB16UI,
+        bm.width,
+        bm.height,
+        0,
+        gl.RGB_INTEGER,
+        gl.UNSIGNED_SHORT,
+        bm.data,
+      );
+      this.uploadedBitmap = bm;
+      return;
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texImage2D(
@@ -507,7 +551,10 @@ export class TonePipeline {
     const aW = glslFloat(TONE_REGION.whites.amplitude);
     const fsSource = `#version 300 es
       precision highp float;
+      precision highp usampler2D;
       uniform sampler2D u_tex;
+      uniform usampler2D u_rawTex;
+      uniform int u_rawSource;
       uniform sampler2D u_editLut;
       uniform sampler2D u_postLut;
       uniform sampler2D u_grainTexture;
@@ -547,6 +594,40 @@ export class TonePipeline {
 
       const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
       const float GRAIN_TEX_SIZE = ${glslFloat(GRAIN_TEXTURE_SIZE)};
+
+      float linearToSrgbTone(float c) {
+        if (c <= 0.0031308) return c * 12.92;
+        return 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
+      }
+
+      float srgbToLinearTone(float c) {
+        if (c <= 0.04045) return c / 12.92;
+        return pow((c + 0.055) / 1.055, 2.4);
+      }
+
+      vec3 linearToSrgb(vec3 c) {
+        vec3 low = c * 12.92;
+        vec3 high = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+        return mix(high, low, step(c, vec3(0.0031308)));
+      }
+
+      vec3 rawTexel(ivec2 p) {
+        ivec2 size = ivec2(u_sourceSize);
+        ivec2 q = clamp(p, ivec2(0), size - ivec2(1));
+        return vec3(texelFetch(u_rawTex, q, 0).rgb) / 65535.0;
+      }
+
+      vec3 sampleSource(vec2 uv) {
+        if (u_rawSource == 1) {
+          vec2 p = clamp(uv, vec2(0.0), vec2(1.0)) * u_sourceSize - 0.5;
+          ivec2 p0 = ivec2(floor(p));
+          vec2 f = fract(p);
+          vec3 a = mix(rawTexel(p0), rawTexel(p0 + ivec2(1, 0)), f.x);
+          vec3 b = mix(rawTexel(p0 + ivec2(0, 1)), rawTexel(p0 + ivec2(1, 1)), f.x);
+          return mix(a, b, f.y);
+        }
+        return texture(u_tex, uv).rgb;
+      }
 
       // Organic grain is sampled in normalised image space. Only the
       // aspect ratio enters the coordinate calculation, so replacing an
@@ -627,15 +708,15 @@ export class TonePipeline {
       // ring sampled at the same lod, we get a smooth halo without
       // visible kernel grid artefacts.
       vec3 unsharpDetail(float radius, float threshold) {
-        vec3 src = texture(u_tex, v_uv).rgb;
+        vec3 src = sampleSource(v_uv);
         float lod = max(log2(max(radius, 0.5)) + 0.5, 0.0);
         vec2 r = u_sharpenStep * radius;
         vec3 blurred =
-            textureLod(u_tex, v_uv, lod).rgb * 0.5
-          + textureLod(u_tex, v_uv + vec2( r.x,  r.y), lod).rgb * 0.125
-          + textureLod(u_tex, v_uv + vec2(-r.x,  r.y), lod).rgb * 0.125
-          + textureLod(u_tex, v_uv + vec2( r.x, -r.y), lod).rgb * 0.125
-          + textureLod(u_tex, v_uv + vec2(-r.x, -r.y), lod).rgb * 0.125;
+            sampleSource(v_uv) * 0.5
+          + sampleSource(v_uv + vec2( r.x,  r.y)) * 0.125
+          + sampleSource(v_uv + vec2(-r.x,  r.y)) * 0.125
+          + sampleSource(v_uv + vec2( r.x, -r.y)) * 0.125
+          + sampleSource(v_uv + vec2(-r.x, -r.y)) * 0.125;
         vec3 detail = src - blurred;
         // Threshold gate on luma magnitude. 'threshold' is the
         // 0..50 slider value (interpreted as 0..50 in an 0–255
@@ -775,7 +856,7 @@ export class TonePipeline {
       }
 
       void main() {
-       vec4 src = texture(u_tex, v_uv);
+       vec4 src = vec4(sampleSource(v_uv), 1.0);
 
        vec3 col = src.rgb * u_exposure;
 
@@ -794,10 +875,8 @@ export class TonePipeline {
         // proportionally, highlights warm/cool naturally — and the
         // operation is fully reversible.
         //
-        // We do this in sRGB rather than linear because the source
-        // bitmap is already gamma-encoded (JPEG, or RAW that was
-        // developed to sRGB upstream) and the slider feel is what
-        // matters here, not colorimetric accuracy.
+        // RAW is adjusted in its linear working space; JPEG is necessarily
+        // adjusted in its already gamma-encoded display space.
         //
         // Gain magnitudes: temperature ±0.30 at the extremes
         // (R goes x1.3 / x0.7 at ±100), tint ±0.20 on green with a
@@ -812,30 +891,46 @@ export class TonePipeline {
         col.b *= 1.0 - tintGain * 0.5;
         col = max(col, vec3(0.0));
 
-        float L = clamp(dot(col, LUMA), 0.0, 1.0);
+        float regionalAmount = abs(u_blacks) + abs(u_shadows)
+          + abs(u_highlights) + abs(u_whites);
+        if (regionalAmount > 1e-6) {
+          float workingLuma = max(dot(col, LUMA), 0.0);
+          // Region selection must happen in perceptual brightness. Applying
+          // these boundaries directly to linear RAW values made a nominal
+          // "shadow" value of 0.4 land around 67% display brightness.
+          float toneLuma = u_rawSource == 1
+            ? linearToSrgbTone(workingLuma)
+            : workingLuma;
+          float bandLuma = clamp(toneLuma, 0.0, 1.0);
 
-        // Sequential crossfades make a smooth partition of unity. Adjacent
-        // tonal regions overlap broadly, but every region reaches exactly
-        // zero outside its safety range. This prevents distant-range spill
-        // and prevents overlapping controls from over-amplifying noise.
-        float blackToShadow = smoothstep(0.06, 0.30, L);
-        float shadowToHighlight = smoothstep(0.38, 0.62, L);
-        float highlightToWhite = smoothstep(0.70, 0.94, L);
-        float wBlacks = 1.0 - blackToShadow;
-        float wShadows = blackToShadow * (1.0 - shadowToHighlight);
-        float wHighlights = blackToShadow
-          * shadowToHighlight
-          * (1.0 - highlightToWhite);
-        float wWhites = blackToShadow
-          * shadowToHighlight
-          * highlightToWhite;
+          // Blacks is a toe adjustment, not a black-level offset: its mask is
+          // exactly zero at black, rises through the darkest texture, then
+          // fades before the midtones. Highlights spans a much broader upper
+          // range than before and is anchored at white to avoid point shifts.
+          float wBlacks = smoothstep(0.0, 0.07, bandLuma)
+            * (1.0 - smoothstep(0.20, 0.40, bandLuma));
+          float wShadows = smoothstep(0.015, 0.16, bandLuma)
+            * (1.0 - smoothstep(0.48, 0.70, bandLuma));
+          float wHighlights = smoothstep(0.30, 0.52, bandLuma)
+            * (1.0 - smoothstep(0.88, 1.0, bandLuma));
+          float wWhites = smoothstep(0.64, 0.90, bandLuma);
 
-        float offset =
-            u_blacks     * ${aB} * wBlacks
-          + u_shadows    * ${aS} * wShadows
-          + u_highlights * ${aH} * wHighlights
-          + u_whites     * ${aW} * wWhites;
-        col += vec3(offset);
+          float toneOffset =
+              u_blacks     * ${aB} * wBlacks
+            + u_shadows    * ${aS} * wShadows
+            + u_highlights * ${aH} * wHighlights
+            + u_whites     * ${aW} * wWhites;
+          float targetToneLuma = max(toneLuma + toneOffset, 0.0);
+          float targetWorkingLuma = u_rawSource == 1
+            ? srgbToLinearTone(targetToneLuma)
+            : targetToneLuma;
+          // Scale luminance instead of adding gray. This preserves hue and
+          // saturation, and—together with the anchored masks—keeps true black
+          // at black while revealing or suppressing nearby dark detail.
+          if (workingLuma > 1e-6) {
+            col *= targetWorkingLuma / workingLuma;
+          }
+        }
 
         col = (col - 0.5) * u_contrast + 0.5;
 
@@ -910,7 +1005,11 @@ export class TonePipeline {
           );
         }
 
-        outColor = vec4(clamp(col, 0.0, 1.0), src.a);
+        vec3 display = clamp(col, 0.0, 1.0);
+        // JPEG/ImageBitmap sources are already sRGB. RAW16 sources are the
+        // linear working image and must be encoded only at the display edge.
+        if (u_rawSource == 1) display = linearToSrgb(display);
+        outColor = vec4(display, src.a);
       }
     `;
     const vs = this.compile(gl.VERTEX_SHADER, vsSource);
@@ -1022,11 +1121,14 @@ export class TonePipeline {
       "u_editGrainFine"
     );
     this.uniforms.sourceSize = gl.getUniformLocation(program, "u_sourceSize");
+    this.uniforms.rawSource = gl.getUniformLocation(program, "u_rawSource");
+    this.uniforms.rawTexture = gl.getUniformLocation(program, "u_rawTex");
 
     // Wire the source sampler to texture unit 0 once and for all.
     const uTex = gl.getUniformLocation(program, "u_tex");
     gl.useProgram(program);
     if (uTex) gl.uniform1i(uTex, 0);
+    if (this.uniforms.rawTexture) gl.uniform1i(this.uniforms.rawTexture, 4);
 
     // Fullscreen quad as two triangles in clip space.
     const vao = gl.createVertexArray();
@@ -1060,6 +1162,17 @@ export class TonePipeline {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     this.texture = tex;
+
+    const rawTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, rawTex);
+    // Integer textures cannot be linearly filtered. RAW sampling performs
+    // its own bilinear interpolation in the shader so the source remains
+    // lossless while fitting and zooming still look smooth.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.rawTexture = rawTex;
 
     // LUT textures (256x2 RGBA). Linear filtering on x interpolates
     // between adjacent LUT entries so we get smooth curves; nearest

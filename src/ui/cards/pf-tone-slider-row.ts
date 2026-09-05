@@ -1,7 +1,8 @@
 /**
  * `pf-tone-slider-row` — single labelled slider for a tone adjustment
- * (Exposure, Contrast, etc.). Emits `change` with the new value (-100..100)
- * and `reset` when the value chip is double-clicked.
+ * (Exposure, Contrast, etc.). Emits `change` with the control value and
+ * `reset` when the value chip is double-clicked. Most controls use -100..100;
+ * RAW cards can provide photographic units such as EV or Kelvin.
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
@@ -46,6 +47,21 @@ export class PfToneSliderRow extends LitElement {
   @property({ type: Number })
   value = 0;
 
+  @property({ type: Number })
+  min = -100;
+
+  @property({ type: Number })
+  max = 100;
+
+  @property({ type: Number })
+  step = 1;
+
+  @property({ type: Number, attribute: "reset-value" })
+  resetValue = 0;
+
+  @property({ type: String, attribute: "value-display" })
+  valueDisplay = "";
+
   private onChange = (e: CustomEvent<number>) => {
     e.stopPropagation();
     this.dispatchEvent(
@@ -58,7 +74,7 @@ export class PfToneSliderRow extends LitElement {
   };
 
   private onReset = () => {
-    if (this.value === 0) return;
+    if (this.value === this.resetValue) return;
     this.dispatchEvent(
       new CustomEvent("reset", { bubbles: true, composed: true })
     );
@@ -73,15 +89,15 @@ export class PfToneSliderRow extends LitElement {
         title="Double-click to reset"
         @dblclick=${this.onReset}
       >
-        ${v > 0 ? `+${v}` : v}
+        ${this.valueDisplay || (v > 0 ? `+${v}` : v)}
       </span>
       <pf-slider
-        min="-100"
-        max="100"
-        step="1"
+        .min=${this.min}
+        .max=${this.max}
+        .step=${this.step}
         .value=${v}
         .label=${this.label}
-        fill-from="0"
+        .fillFrom=${this.resetValue}
         @change=${this.onChange}
       ></pf-slider>
     `;

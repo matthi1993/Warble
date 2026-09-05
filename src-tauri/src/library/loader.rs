@@ -275,8 +275,13 @@ fn scan_media_roots(repo: &LibraryRepository, state: &AppState) -> LibraryCatalo
     let bindings = state.device_storage.bindings_for(&library_id);
     for root in roots {
         match bindings.get(&root.id) {
-            Some(path) if path.is_dir() => {
-                if catalog.rehydrate_root(&root.id, &root.name, path).is_err() {
+            Some(path) => {
+                if let Err(error) = catalog.rehydrate_root(&root.id, &root.name, path) {
+                    eprintln!(
+                        "failed to scan media root {} at {}: {error}",
+                        root.id,
+                        path.display()
+                    );
                     catalog.add_unavailable_root(&root.id, &root.name);
                 }
             }

@@ -17,6 +17,7 @@ import {
   DYNAMIC_RANGE_KEYS,
   defaultTone,
   isDynamicRangeZero,
+  toneControlSpec,
   type ToneEdit,
 } from "@domain/edits";
 import "@ui/cards/pf-card";
@@ -71,6 +72,9 @@ export class PfDynamicRangeCard extends LitElement {
   @property({ type: Boolean })
   open = false;
 
+  @property({ type: Boolean })
+  raw = false;
+
   private onToggle = (e: CustomEvent<{ open: boolean }>) => {
     e.stopPropagation();
     this.dispatchEvent(
@@ -84,9 +88,10 @@ export class PfDynamicRangeCard extends LitElement {
 
   private onSliderChange = (key: keyof ToneEdit) => (e: CustomEvent<number>) => {
     e.stopPropagation();
+    const spec = toneControlSpec(key, this.raw);
     this.dispatchEvent(
       new CustomEvent<{ key: keyof ToneEdit; value: number }>("tone-change", {
-        detail: { key, value: e.detail },
+        detail: { key, value: spec.toModel(e.detail) },
         bubbles: true,
         composed: true,
       })
@@ -130,14 +135,22 @@ export class PfDynamicRangeCard extends LitElement {
           <pf-icon name="rotate-ccw"></pf-icon>
         </button>
         ${DYNAMIC_RANGE_KEYS.map(
-          (key) => html`
+          (key) => {
+            const spec = toneControlSpec(key, this.raw);
+            return html`
             <pf-tone-slider-row
               .label=${TONE_LABELS[key]}
-              .value=${this.tone[key]}
+              .value=${spec.toControl(this.tone[key])}
+              .min=${spec.min}
+              .max=${spec.max}
+              .step=${spec.step}
+              .resetValue=${spec.resetValue}
+              .valueDisplay=${spec.displayValue(this.tone[key])}
               @change=${this.onSliderChange(key)}
               @reset=${this.onSliderReset(key)}
             ></pf-tone-slider-row>
-          `
+          `;
+          }
         )}
       </pf-card>
     `;

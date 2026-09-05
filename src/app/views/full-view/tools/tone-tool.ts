@@ -23,6 +23,7 @@ import {
   getPhotoEdit,
   setPhotoTone,
 } from "@services/edits/edits-store";
+import { classifyFormat } from "@domain/photo";
 import "../pf-basic-card";
 import "../pf-dynamic-range-card";
 import { EditTool, type ToolHost } from "./edit-tool";
@@ -124,9 +125,11 @@ export class ToneTool extends EditTool {
   }
 
   renderCard(host: ToolHost): TemplateResult {
+    const raw = classifyFormat(host.editTarget?.split(".").pop() ?? "") === "raw";
     return html`
       <pf-basic-card
         .tone=${this.tone}
+        .raw=${raw}
         ?open=${this.cardOpen}
         @toggle=${(e: CustomEvent<{ open: boolean }>) => {
           this.cardOpen = e.detail.open;
@@ -143,6 +146,7 @@ export class ToneTool extends EditTool {
       ></pf-basic-card>
       <pf-dynamic-range-card
         .tone=${this.tone}
+        .raw=${raw}
         ?open=${this.dynamicRangeCardOpen}
         @toggle=${(e: CustomEvent<{ open: boolean }>) => {
           this.dynamicRangeCardOpen = e.detail.open;

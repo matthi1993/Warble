@@ -26,9 +26,26 @@ use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
 
+use crate::tasks::CancelToken;
+
 pub const RAW_EXTENSIONS: &[&str] = &[
     "raf", "raw", "arw", "cr2", "cr3", "nef", "dng", "orf", "rw2",
 ];
+
+/// Binary payload used by the frontend's high-bit-depth RAW path.
+/// The pixels are linear RGB16 (little-endian, three channels per pixel).
+pub const RAW16_MAGIC: &[u8; 8] = b"WRAW16\0\0";
+pub const RAW16_VERSION: u32 = 1;
+
+/// A demosaiced, linear 16-bit RGB image. `imagepipe::output_16bit` keeps
+/// the pipeline linear (the gamma operation is skipped when the 16-bit
+/// output is requested), so this is suitable as a working texture rather
+/// than as a display JPEG.
+pub struct Linear16Image {
+    pub width: usize,
+    pub height: usize,
+    pub data: Vec<u16>,
+}
 
 /// Quality of the intermediate JPEG we hand to the rest of the pipeline.
 /// Chosen to be visually lossless against the demosaiced 8-bit source.
@@ -46,6 +63,16 @@ pub struct RawPreview {
 }
 
 pub fn extract_preview(path: &Path) -> Result<RawPreview, String> {
+    extract_preview_sized(path, None)
+}
+
+/// Decode a display-ready RAW preview, optionally bounding both output
+/// dimensions. `imagepipe` uses this limit to reduce the demosaic workload,
+/// rather than developing the full sensor and shrinking it afterwards.
+pub fn extract_preview_sized(
+    path: &Path,
+    max_long_side: Option<usize>,
+) -> Result<RawPreview, String> {
     // 1. Parse the RAW container with rawler (broad camera support).
     let r = rawler::decode_file(path).map_err(|e| format!("RAW decode failed: {e}"))?;
 
@@ -56,6 +83,10 @@ pub fn extract_preview(path: &Path) -> Result<RawPreview, String> {
     // 3. Run the imagepipe pipeline.
     let mut pipeline = imagepipe::Pipeline::new_from_source(imagepipe::ImageSource::Raw(bridged))
         .map_err(|e| format!("RAW pipeline init failed: {e}"))?;
+    if let Some(limit) = max_long_side {
+        pipeline.globals.settings.maxwidth = limit;
+        pipeline.globals.settings.maxheight = limit;
+    }
     let decoded = pipeline
         .output_8bit(None)
         .map_err(|e| format!("RAW pipeline output failed: {e}"))?;
@@ -72,6 +103,87 @@ pub fn extract_preview(path: &Path) -> Result<RawPreview, String> {
         jpeg_bytes: out,
         orientation: super::exif::IDENTITY,
     })
+}
+
+/// Decode a RAW file to a linear 16-bit RGB buffer. When `max_long_side` is
+/// set, imagepipe performs the reduction before demosaic, which keeps the
+/// interactive preview affordable while preserving the same working format.
+pub fn decode_linear16(
+    path: &Path,
+    max_long_side: Option<usize>,
+    cancel: &CancelToken,
+) -> Result<Linear16Image, String> {
+    cancel.check()?;
+    let r = rawler::decode_file(path).map_err(|e| format!("RAW decode failed: {e}"))?;
+    cancel.check()?;
+    let bridged = bridge_to_rawloader(r)?;
+    let mut pipeline = imagepipe::Pipeline::new_from_source(imagepipe::ImageSource::Raw(bridged))
+        .map_err(|e| format!("RAW pipeline init failed: {e}"))?;
+
+    if let Some(limit) = max_long_side {
+        pipeline.globals.settings.maxwidth = limit;
+        pipeline.globals.settings.maxheight = limit;
+    }
+
+    let decoded = pipeline
+        .output_16bit(None)
+        .map_err(|e| format!("RAW 16-bit pipeline output failed: {e}"))?;
+    cancel.check()?;
+
+    Ok(Linear16Image {
+        width: decoded.width,
+        height: decoded.height,
+        data: decoded.data,
+    })
+}
+
+/// Pack a linear RGB16 image for a binary Tauri response. Keeping the header
+/// in the same payload avoids a second IPC request for dimensions and makes
+/// the response transferable as one ArrayBuffer on the frontend.
+pub fn encode_linear16(image: &Linear16Image) -> Result<Vec<u8>, String> {
+    let pixel_count = image
+        .width
+        .checked_mul(image.height)
+        .ok_or_else(|| "RAW image dimensions overflow".to_string())?;
+    let expected_samples = pixel_count
+        .checked_mul(3)
+        .ok_or_else(|| "RAW image sample count overflow".to_string())?;
+    if image.data.len() != expected_samples {
+        return Err("RAW 16-bit buffer has unexpected length".to_string());
+    }
+
+    let width = u32::try_from(image.width).map_err(|_| "RAW image is too wide".to_string())?;
+    let height = u32::try_from(image.height).map_err(|_| "RAW image is too tall".to_string())?;
+    let data_bytes = expected_samples
+        .checked_mul(2)
+        .ok_or_else(|| "RAW image byte count overflow".to_string())?;
+    let header_bytes = 8 + 4 + 4 + 4 + 4;
+    let mut out = Vec::with_capacity(header_bytes + data_bytes);
+    out.extend_from_slice(RAW16_MAGIC);
+    out.extend_from_slice(&RAW16_VERSION.to_le_bytes());
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
+
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: every `u16` consists of exactly two initialized bytes, the
+        // slice borrows `image.data` for this copy only, and little-endian is
+        // the payload's specified byte order.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                image.data.as_ptr().cast::<u8>(),
+                image.data.len() * std::mem::size_of::<u16>(),
+            )
+        };
+        out.extend_from_slice(bytes);
+    }
+
+    #[cfg(target_endian = "big")]
+    for sample in &image.data {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    Ok(out)
 }
 
 /// Convert a `rawler::RawImage` into the older `rawloader::RawImage`
@@ -153,7 +265,10 @@ fn bridge_to_rawloader(r: rawler::rawimage::RawImage) -> Result<rawloader::RawIm
 }
 
 fn extract_xyz_to_cam(
-    color_matrix: &std::collections::HashMap<rawler::imgop::xyz::Illuminant, rawler::imgop::xyz::FlatColorMatrix>,
+    color_matrix: &std::collections::HashMap<
+        rawler::imgop::xyz::Illuminant,
+        rawler::imgop::xyz::FlatColorMatrix,
+    >,
 ) -> [[f32; 3]; 4] {
     let mut out = [[0.0_f32; 3]; 4];
     let found = color_matrix

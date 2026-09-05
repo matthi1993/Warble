@@ -134,7 +134,10 @@ fn render_from_raw(
     library_key: &str,
     _cancel: &CancelToken,
 ) -> Result<Vec<u8>, String> {
-    let preview = raw_preview::extract_preview(path)?;
+    // Use a 2x source so portrait thumbnails can still reach the requested
+    // width after the aspect-preserving resize, without demosaicing the full
+    // sensor just to produce a 320px JPEG.
+    let preview = raw_preview::extract_preview_sized(path, Some((TARGET_WIDTH * 2) as usize))?;
     // The RAW preview's EXIF tags belong to the original RAW file,
     // not the demosaiced output we just produced. Parse them once
     // from the RAW bytes via `read_full_metadata` so the cache row

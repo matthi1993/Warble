@@ -261,7 +261,16 @@ pub fn bind_media_root(
         &root_path,
         bookmark.as_deref(),
     )?;
-    crate::library::rehydrate_media_roots(repo.as_ref(), &state);
+    state
+        .catalog
+        .lock()
+        .map_err(|error| error.to_string())?
+        .rehydrate_root(&media_root.id, &media_root.name, &root_path)
+        .map_err(|error| {
+            format!(
+                "Folder access was granted, but the complete network folder could not be scanned. Open the folder in Files and try Reconnect again: {error}"
+            )
+        })?;
     list_imported_folders(state)
 }
 
