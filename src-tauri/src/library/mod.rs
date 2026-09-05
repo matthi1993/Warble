@@ -7,7 +7,7 @@ mod repository;
 
 pub use catalog::LibraryCatalog;
 pub use folder::Folder;
-pub use photo::Photo;
+pub use photo::{is_photo_extension, parse_variant, Photo};
 pub use portable_path::split_portable_key;
 pub use repository::LibraryRepository;
 

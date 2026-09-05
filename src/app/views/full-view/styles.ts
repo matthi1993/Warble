@@ -10,10 +10,8 @@
  * that `pf-full-view` fills the entire window. The layout inside is
  * identical to windowed mode — same flex column (toolbar →
  * stage-row → bottombar), same edit panel on the right. The only
- * difference is that all chrome (toolbar, bottombar, nav, hint,
- * edit rail/panel) fades out when the cursor is idle, and
- * reappears when the cursor approaches a screen edge or hovers
- * over a chrome element.
+ * difference is that all chrome overlays the image and one image click
+ * toggles every control together.
  */
 import { css } from "lit";
 
@@ -81,15 +79,7 @@ export const fullViewStyles = css`
     position: absolute;
     inset: 0;
   }
-  /* Fade out all chrome when idle in fullscreen. */
-  :host([fullscreen][idle]) .toolbar-wrap,
-  :host([fullscreen][idle]) .bottombar-wrap,
-  :host([fullscreen][idle]) .nav,
-  :host([fullscreen][idle]) .hint {
-    opacity: 0;
-    pointer-events: none;
-  }
-  /* Touch fullscreen uses explicit taps rather than cursor idleness. */
+  /* Fullscreen chrome uses explicit image clicks/taps, on every platform. */
   :host([fullscreen][controls-hidden]) .toolbar-wrap,
   :host([fullscreen][controls-hidden]) .bottombar-wrap,
   :host([fullscreen][controls-hidden]) .nav,
@@ -99,9 +89,6 @@ export const fullViewStyles = css`
   :host([fullscreen][controls-hidden]) .fv-rating-overlay {
     opacity: 0;
     pointer-events: none;
-  }
-  :host([fullscreen][idle]) {
-    cursor: none;
   }
   .toolbar {
     display: flex;
@@ -135,7 +122,7 @@ export const fullViewStyles = css`
   }
   /* Symmetric placeholder bar at the bottom — same vertical footprint
      as the toolbar so the stage's centre lines up with the viewport's
-     centre. When the toolbar fades on idle, this bar fades with it. */
+     centre. */
   .bottombar {
     display: flex;
     align-items: center;
@@ -403,8 +390,8 @@ export const fullViewStyles = css`
   :host(:not([edit-panel-open])) pf-edit-side-panel {
     display: none;
   }
-  /* In fullscreen, float over the stage. Hidden by default,
-     only revealed when the cursor approaches the right edge. */
+  /* In fullscreen, float over the stage and follow the same visibility
+     state as the header, footer, navigation, and overlays. */
   :host([fullscreen]) .edit-side-rail,
   :host([fullscreen]) pf-edit-side-panel {
     position: absolute;
@@ -414,9 +401,9 @@ export const fullViewStyles = css`
     z-index: 9;
     background: color-mix(in srgb, var(--pf-surface) 92%, transparent);
     backdrop-filter: blur(8px);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateX(8px);
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
     transition: opacity 200ms ease, transform 200ms ease;
   }
   /* Offset below toolbar / above bottombar when visible. */
@@ -438,12 +425,17 @@ export const fullViewStyles = css`
     left: auto;
     width: 280px;
   }
-  /* Reveal when rightReveal host attribute is set. */
-  :host([fullscreen][right-reveal]) .edit-side-rail,
-  :host([fullscreen][right-reveal]) pf-edit-side-panel {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateX(0);
+  .edit-footer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pf-space-2);
+    width: 100%;
+    min-width: 0;
+  }
+  .edit-footer-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--pf-space-2);
   }
   /* Footer buttons inside the slotted side-panel footer. */
   .footer-btn {
@@ -456,6 +448,8 @@ export const fullViewStyles = css`
     font-weight: 600;
     cursor: pointer;
     display: inline-flex;
+    justify-content: center;
+    min-width: 0;
     align-items: center;
     gap: 6px;
     transition: background var(--pf-transition);
@@ -479,6 +473,22 @@ export const fullViewStyles = css`
   }
   .footer-btn pf-icon {
     font-size: 0.95rem;
+    flex: 0 0 auto;
+  }
+  .footer-btn span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .footer-btn.danger:not(:disabled) {
+    color: var(--pf-danger, #d14a4a);
+    background: color-mix(in srgb, var(--pf-danger, #d14a4a) 10%, var(--pf-surface));
+    border-color: color-mix(in srgb, var(--pf-danger, #d14a4a) 45%, var(--pf-border));
+  }
+  .footer-btn.danger:not(:disabled):hover {
+    color: var(--pf-danger, #e05252);
+    background: color-mix(in srgb, var(--pf-danger, #d14a4a) 18%, var(--pf-surface));
+    border-color: var(--pf-danger, #d14a4a);
   }
 
   /* iPad/touch refinements: retain the visual design while meeting Apple's
@@ -511,12 +521,6 @@ export const fullViewStyles = css`
     .edit-side-rail {
       flex-basis: 44px;
       width: 44px;
-    }
-    :host([fullscreen]:not([controls-hidden])) .edit-side-rail,
-    :host([fullscreen]:not([controls-hidden])) pf-edit-side-panel {
-      opacity: 1;
-      pointer-events: auto;
-      transform: translateX(0);
     }
     :host([fullscreen]) .edit-side-rail {
       width: 44px;

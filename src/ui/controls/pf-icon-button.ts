@@ -28,6 +28,24 @@ export class PfIconButton extends LitElement {
       background: var(--pf-surface-hover);
       color: var(--pf-accent-hover);
     }
+    :host([danger]) button {
+      color: var(--pf-danger, #d14a4a);
+      background: color-mix(in srgb, var(--pf-danger, #d14a4a) 10%, transparent);
+      border-color: color-mix(in srgb, var(--pf-danger, #d14a4a) 32%, transparent);
+    }
+    :host([danger]) button:hover {
+      color: var(--pf-danger, #e05252);
+      background: color-mix(in srgb, var(--pf-danger, #d14a4a) 18%, transparent);
+      border-color: var(--pf-danger, #d14a4a);
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+    button:disabled:hover {
+      background: transparent;
+      color: var(--pf-text-muted);
+    }
     button:focus-visible {
       outline: 2px solid var(--pf-accent);
       outline-offset: 2px;
@@ -49,8 +67,19 @@ export class PfIconButton extends LitElement {
   @property({ type: String })
   label = "";
 
+  @property({ type: Boolean })
+  disabled = false;
+
+  @property({ type: Boolean, reflect: true })
+  danger = false;
+
   render() {
-    return html`<button type="button" aria-label=${this.label} title=${this.label}>
+    return html`<button
+      type="button"
+      aria-label=${this.label}
+      title=${this.label}
+      ?disabled=${this.disabled}
+    >
       <pf-icon name=${this.icon}></pf-icon>
     </button>`;
   }

@@ -6,6 +6,8 @@ struct PickFoldersArgs: Decodable { let multiple: Bool }
 struct ResolveBookmarkArgs: Decodable { let bookmark: String }
 struct ReplaceLibraryArgs: Decodable { let source: String; let destination: String }
 struct ExportLibraryArgs: Decodable { let source: String }
+struct TrashFilesArgs: Decodable { let paths: [String] }
+struct OpenInArgs: Decodable { let path: String }
 
 final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
   private var pending: Invoke?
@@ -147,6 +149,56 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
       } catch {
         invoke.reject("The library was saved, but its permission could not be renewed: \(error.localizedDescription)")
       }
+    }
+  }
+
+  @objc func trashFiles(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(TrashFilesArgs.self)
+    DispatchQueue.global(qos: .userInitiated).async {
+      for path in args.paths {
+        let url = URL(fileURLWithPath: path)
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var operationError: Error?
+        coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &coordinationError) { target in
+          do {
+            try FileManager.default.removeItem(at: target)
+          } catch {
+            operationError = error
+          }
+        }
+        if let error = coordinationError ?? operationError as NSError? {
+          invoke.reject(error.localizedDescription)
+          return
+        }
+      }
+      invoke.resolve(["success": true])
+    }
+  }
+
+  @objc func openIn(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(OpenInArgs.self)
+    DispatchQueue.main.async {
+      guard let presenter = self.manager.viewController else {
+        invoke.reject("The Open In sheet could not be presented")
+        return
+      }
+      let url = URL(fileURLWithPath: args.path)
+      let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+      if let popover = controller.popoverPresentationController {
+        popover.sourceView = presenter.view
+        popover.sourceRect = CGRect(
+          x: presenter.view.bounds.midX,
+          y: presenter.view.bounds.midY,
+          width: 1,
+          height: 1
+        )
+        popover.permittedArrowDirections = []
+      }
+      controller.completionWithItemsHandler = { _, _, _, _ in
+        invoke.resolve(["success": true])
+      }
+      presenter.present(controller, animated: true)
     }
   }
 

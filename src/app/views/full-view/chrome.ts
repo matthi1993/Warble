@@ -44,6 +44,10 @@ export interface ToolbarOptions {
   onToggleMenu: (which: FullViewMenu) => void;
   onSetFormat: (f: PhotoFormat) => void;
   onSetVariant: (key: string) => void;
+  onDeletePhoto: () => void;
+  onOpenIn: () => void;
+  deletingPhoto: boolean;
+  openingIn: boolean;
   onToggleFullscreen: () => void;
   onClose: () => void;
 }
@@ -112,6 +116,19 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
                 : null}
             </span>`
           : null}
+        <pf-icon-button
+          icon="share"
+          label=${opts.openingIn ? "Opening…" : "Open In…"}
+          ?disabled=${opts.openingIn}
+          @click=${opts.onOpenIn}
+        ></pf-icon-button>
+        <pf-icon-button
+          icon="trash"
+          danger
+          label=${opts.deletingPhoto ? "Moving photo to Bin…" : "Delete photo and all variants (Delete)"}
+          ?disabled=${opts.deletingPhoto}
+          @click=${opts.onDeletePhoto}
+        ></pf-icon-button>
       </div>
       <div class="toolbar-right">
         <pf-icon-button

@@ -20,6 +20,11 @@ struct LibraryResponse {
     selection: Option<FolderGrant>,
 }
 
+#[derive(Deserialize)]
+struct ActionResponse {
+    success: bool,
+}
+
 struct FolderAccess<R: Runtime>(PluginHandle<R>);
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
@@ -93,6 +98,30 @@ pub fn replace_library<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
+pub fn trash_files<R: Runtime>(app: &AppHandle<R>, paths: &[String]) -> Result<(), String> {
+    let response = app
+        .state::<FolderAccess<R>>()
+        .0
+        .run_mobile_plugin::<ActionResponse>("trashFiles", PathsPayload { paths })
+        .map_err(|e| e.to_string())?;
+    response
+        .success
+        .then_some(())
+        .ok_or_else(|| "photo was not deleted".to_string())
+}
+
+pub fn open_in<R: Runtime>(app: &AppHandle<R>, path: &str) -> Result<(), String> {
+    let response = app
+        .state::<FolderAccess<R>>()
+        .0
+        .run_mobile_plugin::<ActionResponse>("openIn", PathPayload { path })
+        .map_err(|e| e.to_string())?;
+    response
+        .success
+        .then_some(())
+        .ok_or_else(|| "photo was not opened".to_string())
+}
+
 #[derive(Serialize)]
 struct PickPayload {
     multiple: bool,
@@ -115,4 +144,14 @@ struct ReplacePayload<'a> {
 #[derive(Serialize)]
 struct ExportPayload<'a> {
     source: &'a str,
+}
+
+#[derive(Serialize)]
+struct PathsPayload<'a> {
+    paths: &'a [String],
+}
+
+#[derive(Serialize)]
+struct PathPayload<'a> {
+    path: &'a str,
 }

@@ -5,6 +5,8 @@ fn main() {
         "exportLibrary",
         "resolveBookmark",
         "replaceLibrary",
+        "trashFiles",
+        "openIn",
     ])
     .ios_path("ios")
     .build();

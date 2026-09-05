@@ -1137,6 +1137,51 @@ export class WarbleApp extends LitElement {
     }
   }
 
+  private async onPhotoCatalogChanged(
+    e: CustomEvent<{
+      kind: "save" | "variant-delete" | "photo-delete";
+      photoPath: string;
+      memberPaths: string[];
+      previousIndex: number;
+    }>,
+  ) {
+    const { kind, photoPath, memberPaths, previousIndex } = e.detail;
+    if (!this.selectedFolderId) return;
+    try {
+      this.imports = await invoke<Folder[]>("refresh_folder", {
+        folderPath: this.selectedFolderId,
+      });
+      this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+        folderPath: this.selectedFolderId,
+        recursive: this.includeSubfolders,
+      });
+      if (kind === "photo-delete") {
+        if (this.photos.length === 0) {
+          this.selectedPhoto = null;
+          this.fullViewIndex = null;
+        } else {
+          const idx = Math.min(previousIndex, this.photos.length - 1);
+          this.selectedPhoto = this.photos[idx];
+          if (this.fullViewIndex !== null) this.fullViewIndex = idx;
+        }
+      } else {
+        const oldMembers = new Set(memberPaths);
+        const idx = this.photos.findIndex(
+          (photo) =>
+            photo.path === photoPath ||
+            photo.files?.some((file) => oldMembers.has(file.path)),
+        );
+        if (idx >= 0) {
+          this.selectedPhoto = this.photos[idx];
+          if (this.fullViewIndex !== null) this.fullViewIndex = idx;
+        }
+      }
+      this.startBackgroundWork();
+    } catch (error) {
+      console.error("Failed to refresh after changing photo files", error);
+    }
+  }
+
   private onPhotoContextMenu(
     e: CustomEvent<{ path: string; filename: string; x: number; y: number }>
   ) {
@@ -1247,6 +1292,10 @@ export class WarbleApp extends LitElement {
   }
 
   private onFullViewClose = () => {
+    const fullView = this.renderRoot.querySelector("pf-full-view") as
+      | import("./full-view").PfFullView
+      | null;
+    fullView?.prepareToLeave();
     this.fullViewIndex = null;
   };
 
@@ -1472,13 +1521,14 @@ export class WarbleApp extends LitElement {
       </aside>
 
       ${this.fullViewIndex !== null
-        ? html`<pf-full-view
+          ? html`<pf-full-view
             .photos=${this.photos}
             .index=${this.fullViewIndex}
             ?fullscreen=${this.windowFullscreen}
             .editPanelOpenWindowed=${this.editPanelOpen}
             @full-view-navigate=${this.onFullViewNavigate}
             @full-view-close=${this.onFullViewClose}
+            @photo-catalog-changed=${this.onPhotoCatalogChanged}
             @edit-panel-open-changed=${this.onEditPanelOpenChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`

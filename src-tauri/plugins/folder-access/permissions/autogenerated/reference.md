@@ -36,6 +36,32 @@ Denies the exportLibrary command without any pre-configured scope.
 <tr>
 <td>
 
+`folder-access:allow-openIn`
+
+</td>
+<td>
+
+Enables the openIn command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`folder-access:deny-openIn`
+
+</td>
+<td>
+
+Denies the openIn command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `folder-access:allow-pickFolders`
 
 </td>
@@ -133,6 +159,32 @@ Enables the resolveBookmark command without any pre-configured scope.
 <td>
 
 Denies the resolveBookmark command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`folder-access:allow-trashFiles`
+
+</td>
+<td>
+
+Enables the trashFiles command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`folder-access:deny-trashFiles`
+
+</td>
+<td>
+
+Denies the trashFiles command without any pre-configured scope.
 
 </td>
 </tr>

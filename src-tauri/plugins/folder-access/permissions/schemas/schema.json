@@ -307,6 +307,18 @@
           "markdownDescription": "Denies the exportLibrary command without any pre-configured scope."
         },
         {
+          "description": "Enables the openIn command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-openIn",
+          "markdownDescription": "Enables the openIn command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the openIn command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-openIn",
+          "markdownDescription": "Denies the openIn command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pickFolders command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pickFolders",
@@ -353,6 +365,18 @@
           "type": "string",
           "const": "deny-resolveBookmark",
           "markdownDescription": "Denies the resolveBookmark command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the trashFiles command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-trashFiles",
+          "markdownDescription": "Enables the trashFiles command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the trashFiles command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-trashFiles",
+          "markdownDescription": "Denies the trashFiles command without any pre-configured scope."
         }
       ]
     }

@@ -1974,6 +1974,93 @@ export class PfImageCanvas extends LitElement {
     this.draw();
   }
 
+  /** Render the complete edited image as a JPEG for a saved variant.
+   * This deliberately renders the source/crop dimensions instead of
+   * serialising the viewport canvas, so zoom, pan, and panel borders never
+   * become part of the saved file. */
+  async exportJpeg(): Promise<Uint8Array> {
+    const path = this.path;
+    if (!path) throw new Error("no photo is loaded");
+
+    const ext = path.split(".").pop() ?? "";
+    let source: ToneSource;
+    let sourceWidth: number;
+    let sourceHeight: number;
+
+    if (classifyFormat(ext) === "raw") {
+      const raw = await loadRawImage(path, { priority: "urgent" });
+      source = raw;
+      sourceWidth = raw.width;
+      sourceHeight = raw.height;
+    } else {
+      const bitmap = await loadFullImage(path, { priority: "urgent" });
+      const rotation = this.previewOriginal ? 0 : this.normalizedRotation();
+      if (rotation !== 0) {
+        const rotated = this.buildRotatedCache(bitmap, rotation);
+        if (!rotated) throw new Error("could not rotate image for export");
+        source = rotated.canvas;
+        sourceWidth = rotated.width;
+        sourceHeight = rotated.height;
+      } else {
+        source = bitmap;
+        sourceWidth = bitmap.width;
+        sourceHeight = bitmap.height;
+      }
+    }
+
+    if (this.path !== path) throw new Error("photo changed during export");
+
+    const edit = this.previewOriginal ? null : getPhotoEdit(path);
+    const crop = this.previewOriginal ? null : this.savedCrop;
+    const sx = crop ? clamp(crop.x, 0, 1) * sourceWidth : 0;
+    const sy = crop ? clamp(crop.y, 0, 1) * sourceHeight : 0;
+    const sw = crop
+      ? Math.max(1, clamp(crop.width, 0, 1) * sourceWidth)
+      : sourceWidth;
+    const sh = crop
+      ? Math.max(1, clamp(crop.height, 0, 1) * sourceHeight)
+      : sourceHeight;
+    const outW = Math.max(1, Math.round(sw));
+    const outH = Math.max(1, Math.round(sh));
+    const editColor = edit?.color && !isColorZero(edit.color)
+      ? edit.color
+      : null;
+    const editCurve = edit?.curve && !isCurveZero(edit.curve)
+      ? edit.curve
+      : null;
+    const rendered = this.tonePipeline.render(
+      source,
+      edit?.tone ?? defaultTone(),
+      { sx, sy, sw, sh },
+      outW,
+      outH,
+      {
+        curve: editCurve,
+        editColor,
+        sharpen: this.previewOriginal ? null : this.savedSharpen,
+        editGrain: this.previewOriginal ? null : this.savedGrain,
+      },
+    );
+    if (!rendered) throw new Error("could not render edited image");
+
+    // TonePipeline's WebGL canvas does not preserve its drawing buffer, so
+    // copy the rendered pixels to a normal 2D canvas before encoding.
+    const output = document.createElement("canvas");
+    output.width = outW;
+    output.height = outH;
+    const outputContext = output.getContext("2d");
+    if (!outputContext) throw new Error("could not create export canvas");
+    outputContext.drawImage(rendered, 0, 0, outW, outH);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      output.toBlob(
+        (value) => (value ? resolve(value) : reject(new Error("JPEG encoding failed"))),
+        "image/jpeg",
+        0.95,
+      );
+    });
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
   // --- Crop mode ---------------------------------------------------------
 
   /**

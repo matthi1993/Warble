@@ -1,17 +1,11 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { Photo } from "@domain/photo";
+import { fileForSelection } from "@domain/photo";
 import {
-  availableFormats,
-  availableVariants,
-  fileForSelection,
-  primarySelection,
-  type PhotoFormat,
-} from "@domain/photo";
-import {
-  getVariantOverride,
   subscribeVariantOverrides,
 } from "./variant-store";
+import { currentSelection } from "./views/full-view/variant-selector";
 import "../ui/controls/pf-icon-button";
 import "../ui/photos/pf-image-canvas";
 
@@ -198,27 +192,8 @@ export class PfDetailPanel extends LitElement {
     this.unsubscribeStore = null;
   }
 
-  private currentSelection(
-    photo: Photo
-  ): { format: PhotoFormat; variant: string } | null {
-    const formats = availableFormats(photo);
-    if (formats.length === 0) return null;
-    const primary = primarySelection(photo);
-    const stored = getVariantOverride(photo.path);
-    const format = stored?.format ?? primary?.format ?? formats[0];
-    const variants = availableVariants(photo, format);
-    if (variants.length === 0) return null;
-    const requested =
-      (stored && stored.format === format ? stored.variant : null) ??
-      (primary && primary.format === format ? primary.variant : null) ??
-      variants[0].key;
-    const final =
-      variants.find((v) => v.key === requested)?.key ?? variants[0].key;
-    return { format, variant: final };
-  }
-
   private currentPath(photo: Photo): string {
-    const sel = this.currentSelection(photo);
+    const sel = currentSelection(photo);
     if (!sel) return photo.path;
     return fileForSelection(photo, sel.format, sel.variant) ?? photo.path;
   }

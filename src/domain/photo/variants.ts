@@ -58,6 +58,10 @@ export interface VariantOption {
 
 function variantLabel(key: string): string {
   if (key === "base") return "Base";
+  if (key.toLowerCase() === "edit") return "Edit";
+  if (/^edit \d+$/i.test(key)) {
+    return `Edit ${key.slice(5)}`;
+  }
   return `Variant ${key}`;
 }
 

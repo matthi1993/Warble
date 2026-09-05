@@ -65,6 +65,12 @@ export function buildShortcuts(): readonly ShortcutDef[] {
       run: (h) => call(h, "cycleFit"),
     },
     {
+      label: "⌫",
+      keys: ["Delete", "Backspace"],
+      description: "Delete photo",
+      run: (h) => call(h, "deletePhoto"),
+    },
+    {
       label: "I",
       keys: ["i", "I"],
       description: "Info panel",

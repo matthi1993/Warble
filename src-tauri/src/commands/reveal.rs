@@ -11,7 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(desktop)]
 use std::process::Command;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
 
@@ -24,6 +24,64 @@ pub async fn reveal_in_file_manager(
     tauri::async_runtime::spawn_blocking(move || reveal(&resolved))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Hand a photo to another application. macOS opens it in its associated
+/// external app; iPadOS presents the system share/open-in sheet.
+#[tauri::command]
+pub async fn open_photo_in_app(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let resolved = state.resolve_library_path(&path)?;
+
+    #[cfg(target_os = "ios")]
+    {
+        return tauri_plugin_folder_access::open_in(&app, &resolved.to_string_lossy());
+    }
+
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        return tauri::async_runtime::spawn_blocking(move || open_external(&resolved))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = (resolved, app);
+        Err("Open In is unavailable on Android".to_string())
+    }
+}
+
+#[cfg(desktop)]
+fn open_external(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("path does not exist: {}", path.display()));
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", ""]);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+
+    let status = command
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to open photo in another app: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("the external application could not open the photo".to_string())
+    }
 }
 
 fn reveal(p: &Path) -> Result<(), String> {
