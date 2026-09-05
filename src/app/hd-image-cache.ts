@@ -21,8 +21,9 @@ import {
   nextRequestId,
   type TaskPriority,
 } from "./task-manager";
+import { getCacheSettings } from "./cache-settings";
 
-const DEFAULT_MAX_ENTRIES = 4;
+const DEFAULT_MAX_ENTRIES = 1;
 
 const cache = new Map<string, ImageBitmap>();
 
@@ -186,7 +187,7 @@ function startLoad(path: string, priority: TaskPriority): PendingEntry {
       // The backend writes the JPEG to its on-disk cache before
       // returning the bytes, so by the time we hold the decoded
       // bitmap the path is also guaranteed to be in the disk cache.
-      markHdCached(path);
+      if (getCacheSettings().hd_image_disk_max_entries > 0) markHdCached(path);
       return bm;
     } finally {
       if (pending.get(path) === entry) {
@@ -353,6 +354,12 @@ interface PrewarmHandle {
 export function prewarmHdImageBytesForFolder(
   paths: readonly string[]
 ): PrewarmHandle {
+  const settings = getCacheSettings();
+  if (!settings.background_hd_previews_enabled || settings.hd_image_disk_max_entries === 0) {
+    hdProgressState = { batchId: 0, total: 0, loaded: 0, failed: 0, inProgress: false };
+    emitHdProgress();
+    return { cancel() {} };
+  }
   let cancelled = false;
   const issuedRequestIds: number[] = [];
   const batchId = nextHdBatchId++;

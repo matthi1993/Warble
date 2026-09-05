@@ -497,6 +497,13 @@ impl LibraryRepository {
         Ok(())
     }
 
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Write a clean, defragmented copy of the live database to `dest`
     /// using SQLite's `VACUUM INTO`. Safe to call while the source DB
     /// is open and being read/written; produces a single self-contained

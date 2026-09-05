@@ -233,6 +233,7 @@ impl TaskPool {
         let running = Arc::new(Mutex::new(HashMap::new()));
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAPACITY)));
 
+        #[cfg(not(target_os = "ios"))]
         let cpus = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -240,14 +241,26 @@ impl TaskPool {
         // Reserve a couple of cores for the foreground (full-image
         // bytes / on-screen thumbnails) so a saturated background
         // pool can never delay them.
+        #[cfg(not(target_os = "ios"))]
         let fg_workers = (cpus / 2).clamp(2, 4);
+        // iPad has a much tighter memory/thermal budget. One foreground
+        // worker still keeps active-photo requests responsive without
+        // allowing several large image decodes to peak at once.
+        #[cfg(target_os = "ios")]
+        let fg_workers = 1;
         // Spawn a generous upper bound of background OS threads at
         // startup so concurrency can be raised at runtime via
         // `set_bg_concurrency` without having to spawn more. Idle
         // threads just sleep on the bg condvar (cheap), so it's fine
         // to park more than we'll typically use.
+        #[cfg(not(target_os = "ios"))]
         let bg_thread_capacity = (cpus * 2).max(8).min(16);
+        #[cfg(target_os = "ios")]
+        let bg_thread_capacity = 2;
+        #[cfg(not(target_os = "ios"))]
         let default_bg_concurrency = cpus.saturating_sub(1).max(2).min(bg_thread_capacity);
+        #[cfg(target_os = "ios")]
+        let default_bg_concurrency = 1;
 
         let pool = Arc::new(Self {
             state,

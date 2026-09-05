@@ -16,11 +16,6 @@ struct PickResponse {
 }
 
 #[derive(Deserialize)]
-struct ResolveResponse {
-    path: String,
-}
-
-#[derive(Deserialize)]
 struct LibraryResponse {
     selection: Option<FolderGrant>,
 }
@@ -52,11 +47,13 @@ pub fn pick_folders<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-pub fn resolve_bookmark<R: Runtime>(app: &AppHandle<R>, bookmark: &str) -> Result<String, String> {
+pub fn resolve_bookmark<R: Runtime>(
+    app: &AppHandle<R>,
+    bookmark: &str,
+) -> Result<FolderGrant, String> {
     app.state::<FolderAccess<R>>()
         .0
-        .run_mobile_plugin::<ResolveResponse>("resolveBookmark", BookmarkPayload { bookmark })
-        .map(|response| response.path)
+        .run_mobile_plugin::<FolderGrant>("resolveBookmark", BookmarkPayload { bookmark })
         .map_err(|e| e.to_string())
 }
 
@@ -83,10 +80,10 @@ pub fn replace_library<R: Runtime>(
     app: &AppHandle<R>,
     source: &str,
     destination: &str,
-) -> Result<(), String> {
+) -> Result<FolderGrant, String> {
     app.state::<FolderAccess<R>>()
         .0
-        .run_mobile_plugin::<()>(
+        .run_mobile_plugin::<FolderGrant>(
             "replaceLibrary",
             ReplacePayload {
                 source,

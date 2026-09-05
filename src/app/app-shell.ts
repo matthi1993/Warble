@@ -3,6 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
 import type { Photo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
@@ -38,6 +39,8 @@ import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
 import { beginAppBusy, subscribeAppBusy } from "./app-busy";
+import { getCacheSettings, subscribeCacheSettings } from "./cache-settings";
+import "./pf-cache-settings";
 
 function findFolderByPath(roots: Folder[], path: string): Folder | null {
   for (const r of roots) {
@@ -227,11 +230,15 @@ export class WarbleApp extends LitElement {
       white-space: nowrap;
     }
     .library-actions {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: var(--pf-space-2);
     }
     .library-actions pf-button {
-      flex: 1;
+      min-width: 0;
+    }
+    .library-actions pf-button:first-child {
+      grid-column: 1 / -1;
     }
     .app-busy-overlay {
       position: fixed;
@@ -276,6 +283,12 @@ export class WarbleApp extends LitElement {
       overflow-y: auto;
       padding: var(--pf-space-2);
     }
+    .sidebar-settings {
+      flex: 0 0 auto;
+      padding: var(--pf-space-2);
+      border-top: 1px solid var(--pf-border);
+    }
+    .sidebar-settings pf-button { width: 100%; }
     .empty {
       color: var(--pf-text-subtle);
       font-size: var(--pf-text-sm);
@@ -508,6 +521,7 @@ export class WarbleApp extends LitElement {
   private unsubscribeHdProgress: (() => void) | null = null;
   private unsubscribeCacheCleared: UnlistenFn | null = null;
   private unsubscribeAppBusy: (() => void) | null = null;
+  private unsubscribeCacheSettings: (() => void) | null = null;
 
   /** Active HD-image disk-cache prewarm for the currently selected
    * folder. Replaced (and the previous one cancelled) every time the
@@ -534,6 +548,7 @@ export class WarbleApp extends LitElement {
    this.unsubscribeAppBusy = subscribeAppBusy((label) => {
      this.busyLabel = label;
    });
+   this.unsubscribeCacheSettings = subscribeCacheSettings(() => this.startBackgroundWork());
    this.unlistenLibraryReload = await listen("library-reloaded", () => {
      void this.reloadLibraryWithSpinner();
    });
@@ -610,7 +625,7 @@ export class WarbleApp extends LitElement {
                 folderPath: this.selectedFolderId,
                 recursive: true,
               });
-              startThumbnailBatch(this.photos.map((p) => p.path));
+              this.startBackgroundWork();
             } catch (err) {
               console.error("Failed to refresh photos with subfolders", err);
             }
@@ -648,6 +663,8 @@ export class WarbleApp extends LitElement {
     this.unsubscribeCacheCleared = null;
     this.unsubscribeAppBusy?.();
     this.unsubscribeAppBusy = null;
+    this.unsubscribeCacheSettings?.();
+    this.unsubscribeCacheSettings = null;
     this.hdPrewarmHandle?.cancel();
     this.hdPrewarmHandle = null;
     clearThumbnailBatch();
@@ -673,6 +690,21 @@ export class WarbleApp extends LitElement {
     );
   }
 
+  /** Start only the folder-wide work enabled on this device. */
+  private startBackgroundWork(): void {
+    clearThumbnailBatch();
+    this.hdPrewarmHandle?.cancel();
+    this.hdPrewarmHandle = null;
+    this.hdPrewarmedBatchId = 0;
+    if (this.photos.length === 0) return;
+    const settings = getCacheSettings();
+    const paths = this.photos.map((photo) => photo.path);
+    const thumbnailBatch = startThumbnailBatch(paths);
+    if (thumbnailBatch === 0 && settings.background_hd_previews_enabled) {
+      this.hdPrewarmHandle = prewarmHdImageBytesForFolder(paths);
+    }
+  }
+
   private refreshAfterThumbnailCacheClear(): void {
     dropAllThumbnailState();
     // Force every thumbnail card to forget its current image and
@@ -689,7 +721,7 @@ export class WarbleApp extends LitElement {
         (card as HTMLElement & { reload?: () => void }).reload?.();
       });
     if (this.photos.length > 0) {
-      startThumbnailBatch(this.photos.map((p) => p.path));
+      this.startBackgroundWork();
     }
   }
 
@@ -906,6 +938,10 @@ export class WarbleApp extends LitElement {
       }
     } catch (err) {
       console.error("Failed to import media root", err);
+      void message(`Failed to add folders: ${err}`, {
+        title: "Add Folders",
+        kind: "error",
+      });
     } finally {
       endBusy();
     }
@@ -939,6 +975,10 @@ export class WarbleApp extends LitElement {
       }
     } catch (err) {
       console.error("Failed to reconnect media root", err);
+      void message(`Failed to reconnect folder: ${err}`, {
+        title: "Reconnect Folder",
+        kind: "error",
+      });
     } finally {
       endBusy();
     }
@@ -964,6 +1004,27 @@ export class WarbleApp extends LitElement {
       });
     } catch (err) {
       console.error("Failed to open library", err);
+      void message(`Failed to open library: ${err}`, {
+        title: "Open Library",
+        kind: "error",
+      });
+    } finally {
+      endBusy();
+    }
+  }
+
+  private async saveLibrary() {
+    const endBusy = beginAppBusy("Saving library…");
+    try {
+      await this.flushLibraryWrites();
+      await invoke("save_open_library");
+      await this.loadLibraryPath();
+    } catch (err) {
+      console.error("Failed to save library", err);
+      void message(`Failed to save library: ${err}`, {
+        title: "Save Library",
+        kind: "error",
+      });
     } finally {
       endBusy();
     }
@@ -977,6 +1038,10 @@ export class WarbleApp extends LitElement {
       if (path) this.libraryPath = path;
     } catch (err) {
       console.error("Failed to save library", err);
+      void message(`Failed to save library: ${err}`, {
+        title: "Save Library As",
+        kind: "error",
+      });
     } finally {
       endBusy();
     }
@@ -1003,7 +1068,7 @@ export class WarbleApp extends LitElement {
             folderPath: path,
             recursive: this.includeSubfolders,
           });
-          startThumbnailBatch(this.photos.map((p) => p.path));
+          this.startBackgroundWork();
         } catch (err) {
           console.error("Failed to refresh active folder", err);
         }
@@ -1047,7 +1112,7 @@ export class WarbleApp extends LitElement {
     // background jobs don't keep running once the user has moved on.
     this.hdPrewarmHandle?.cancel();
     this.hdPrewarmHandle = null;
-    startThumbnailBatch(this.photos.map((p) => p.path));
+    this.startBackgroundWork();
     void invoke("set_last_folder", { path }).catch((err) =>
       console.error("Failed to persist last folder", err)
     );
@@ -1193,6 +1258,10 @@ export class WarbleApp extends LitElement {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
 
+  private openCacheSettings = () => {
+    void (this.renderRoot.querySelector("pf-cache-settings") as import("./pf-cache-settings").PfCacheSettings | null)?.open();
+  };
+
   private toggleIncludeSubfolders = async () => {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
@@ -1208,7 +1277,7 @@ export class WarbleApp extends LitElement {
         this.hdPrewarmHandle?.cancel();
         this.hdPrewarmHandle = null;
         this.hdPrewarmedBatchId = 0;
-        startThumbnailBatch(this.photos.map((p) => p.path));
+        this.startBackgroundWork();
       } catch (err) {
         console.error("Failed to toggle subfolder inclusion", err);
       }
@@ -1345,6 +1414,7 @@ export class WarbleApp extends LitElement {
             : null}
           <div class="library-actions">
             <pf-button @click=${this.openLibrary}>Open Library</pf-button>
+            <pf-button @click=${this.saveLibrary}>Save</pf-button>
             <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
           </div>
         </div>
@@ -1360,6 +1430,12 @@ export class WarbleApp extends LitElement {
                   ></pf-folder-tree-item>
                 `
               )}
+        </div>
+        <div class="sidebar-settings">
+          <pf-button @click=${this.openCacheSettings}>
+            <pf-icon name="settings"></pf-icon>
+            Performance & Caches
+          </pf-button>
         </div>
       </aside>
 
@@ -1468,6 +1544,7 @@ export class WarbleApp extends LitElement {
                                 : null}
                               <div class="library-actions">
                                 <pf-button @click=${this.openLibrary}>Open Library</pf-button>
+                                <pf-button @click=${this.saveLibrary}>Save</pf-button>
                                 <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
                               </div>
                             </div>
@@ -1484,6 +1561,12 @@ export class WarbleApp extends LitElement {
                                     `
                                   )}
                             </div>
+                            <div class="sidebar-settings">
+                              <pf-button @click=${this.openCacheSettings}>
+                                <pf-icon name="settings"></pf-icon>
+                                Performance & Caches
+                              </pf-button>
+                            </div>
                           </aside>
                         `}
                   </div>
@@ -1497,6 +1580,7 @@ export class WarbleApp extends LitElement {
       ${this.renderContextMenu()}
       ${this.renderFolderContextMenu()}
       <pf-debug-overlay></pf-debug-overlay>
+      <pf-cache-settings></pf-cache-settings>
       ${this.busyLabel
         ? html`
             <div class="app-busy-overlay" aria-hidden="false">
@@ -1681,7 +1765,7 @@ export class WarbleApp extends LitElement {
     // missing or invalidated since last time is what the user
     // actually wants to see refilled. `maybeStartHdPrewarm` re-fires
     // HD prewarm once thumbnails settle.
-    startThumbnailBatch(this.photos.map((p) => p.path));
+    this.startBackgroundWork();
   };
 }
 

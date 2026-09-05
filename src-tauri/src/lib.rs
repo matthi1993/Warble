@@ -58,6 +58,7 @@ pub fn run() {
             commands::clear_hd_image_cache,
             commands::clear_full_image_memory_cache,
             commands::set_background_pool_workers,
+            commands::set_cache_settings,
             commands::get_cache_disk_usage,
             commands::get_task_stats,
             commands::cancel_all_tasks,

@@ -96,7 +96,17 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
         invoke.reject("Folder permission is no longer valid")
         return
       }
-      invoke.resolve(["path": url.path, "stale": stale])
+      let currentBookmark = stale
+        ? try url.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+          )
+        : data
+      invoke.resolve([
+        "path": url.path,
+        "bookmark": currentBookmark.base64EncodedString()
+      ])
     } catch {
       invoke.reject(error.localizedDescription)
     }
@@ -124,7 +134,19 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
     if let error = coordinationError ?? operationError as NSError? {
       invoke.reject(error.localizedDescription)
     } else {
-      invoke.resolve()
+      do {
+        let bookmark = try destination.bookmarkData(
+          options: [],
+          includingResourceValuesForKeys: nil,
+          relativeTo: nil
+        )
+        invoke.resolve([
+          "path": destination.path,
+          "bookmark": bookmark.base64EncodedString()
+        ])
+      } catch {
+        invoke.reject("The library was saved, but its permission could not be renewed: \(error.localizedDescription)")
+      }
     }
   }
 

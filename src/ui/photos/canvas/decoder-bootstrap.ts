@@ -69,6 +69,11 @@ function getDecoderWorker(): Worker {
   );
   decoderWorker.addEventListener("error", (e) => {
     console.error("full-image-worker error", e.message);
+    const error = new Error(e.message || "image decoder worker failed");
+    for (const pending of pendingDecodes.values()) pending.reject(error);
+    pendingDecodes.clear();
+    decoderWorker?.terminate();
+    decoderWorker = null;
   });
   return decoderWorker;
 }

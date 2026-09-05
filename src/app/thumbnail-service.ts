@@ -4,6 +4,7 @@ import {
   nextRequestId,
   type TaskPriority,
 } from "./task-manager";
+import { getCacheSettings } from "./cache-settings";
 
 /**
  * Centralised thumbnail loader. Limits concurrent Rust invocations so that
@@ -24,10 +25,10 @@ import {
  * decodes can never starve a foreground one.
  */
 
-const MAX_CONCURRENT = Math.min(
-  8,
-  Math.max(4, navigator.hardwareConcurrency ?? 4)
-);
+const TOUCH_DEVICE = (navigator.maxTouchPoints ?? 0) > 1;
+const MAX_CONCURRENT = TOUCH_DEVICE
+  ? 2
+  : Math.min(8, Math.max(4, navigator.hardwareConcurrency ?? 4));
 
 const CACHE_LIMIT = 500;
 
@@ -251,6 +252,12 @@ export function startThumbnailBatch(paths: string[]): number {
   // jobs stop tying up the worker pool.
   for (const h of activeBatchHandles) h.cancel();
   activeBatchHandles = [];
+
+  if (!getCacheSettings().background_thumbnails_enabled) {
+    progressState = { batchId: 0, total: 0, loaded: 0, failed: 0, inProgress: false };
+    emitProgress();
+    return 0;
+  }
 
   const batchId = nextBatchId++;
   progressState = {

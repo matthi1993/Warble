@@ -101,10 +101,11 @@ fn import_folder_inner(
         if root.starts_with(&existing_path) {
             if root == existing_path {
                 if let Some(bookmark) = bookmark.as_deref() {
-                    state.device_storage.set_root_bookmark(
+                    state.device_storage.set_root_grant(
                         &library_id,
                         existing_id,
-                        bookmark,
+                        &existing_path,
+                        Some(bookmark),
                     )?;
                 }
             }
@@ -126,14 +127,12 @@ fn import_folder_inner(
         .iter()
         .find(|entry| !bindings.contains_key(&entry.id) && entry.name == name)
     {
-        state
-            .device_storage
-            .set_root_binding(&library_id, &existing.id, &root)?;
-        if let Some(bookmark) = bookmark.as_deref() {
-            state
-                .device_storage
-                .set_root_bookmark(&library_id, &existing.id, bookmark)?;
-        }
+        state.device_storage.set_root_grant(
+            &library_id,
+            &existing.id,
+            &root,
+            bookmark.as_deref(),
+        )?;
         crate::library::rehydrate_media_roots(repo.as_ref(), state);
         return state
             .catalog
@@ -177,14 +176,12 @@ fn import_folder_inner(
 
     if rewrites.is_empty() {
         repo.add_media_root(&root_id, &name)?;
-        state
-            .device_storage
-            .set_root_binding(&library_id, &root_id, &root)?;
-        if let Some(bookmark) = bookmark.as_deref() {
-            state
-                .device_storage
-                .set_root_bookmark(&library_id, &root_id, bookmark)?;
-        }
+        state.device_storage.set_root_grant(
+            &library_id,
+            &root_id,
+            &root,
+            bookmark.as_deref(),
+        )?;
     } else {
         repo.consolidate_media_roots(&root_id, &name, &rewrites)?;
         let old_ids: Vec<String> = rewrites.iter().map(|(id, _)| id.clone()).collect();
@@ -258,14 +255,12 @@ pub fn bind_media_root(
     )?;
     // Verify that this folder is at least readable before remembering access.
     std::fs::read_dir(&root_path).map_err(|e| e.to_string())?;
-    state
-        .device_storage
-        .set_root_binding(&library_id, &media_root.id, &root_path)?;
-    if let Some(bookmark) = bookmark {
-        state
-            .device_storage
-            .set_root_bookmark(&library_id, &media_root.id, &bookmark)?;
-    }
+    state.device_storage.set_root_grant(
+        &library_id,
+        &media_root.id,
+        &root_path,
+        bookmark.as_deref(),
+    )?;
     crate::library::rehydrate_media_roots(repo.as_ref(), &state);
     list_imported_folders(state)
 }

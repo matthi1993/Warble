@@ -65,8 +65,8 @@ pub fn init_cache_dir(dir: PathBuf) {
     let _ = DISK_CACHE.set(DiskCache::new(dir, "jpg"));
 }
 
-/// Update the maximum number of cached HD JPEG files. `0` disables
-/// eviction. Triggers an immediate sweep so the new limit is applied
+/// Update the maximum number of cached HD JPEG files. `0` disables and
+/// clears the cache. Triggers an immediate sweep so the new limit is applied
 /// even if no further entries are written.
 pub fn set_disk_cache_max_entries(max: usize) {
     if let Some(c) = DISK_CACHE.get() {

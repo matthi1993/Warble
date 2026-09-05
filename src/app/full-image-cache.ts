@@ -45,7 +45,7 @@ import {
 } from "./task-manager";
 
 /** Fallback used until the persisted setting is loaded from the backend. */
-const DEFAULT_MAX_ENTRIES = 4;
+const DEFAULT_MAX_ENTRIES = 1;
 
 /** Insertion order = LRU order. Most-recently-used at the tail. */
 const cache = new Map<string, ImageBitmap>();

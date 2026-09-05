@@ -19,10 +19,9 @@ pub fn set_thumbnail_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(&repo, |s| s.thumbnail_disk_max_entries = max);
+        .update(&state.device_storage, |s| s.thumbnail_disk_max_entries = max);
     thumbnails::set_disk_cache_max_entries(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -34,10 +33,9 @@ pub fn set_hd_image_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(&repo, |s| s.hd_image_disk_max_entries = max);
+        .update(&state.device_storage, |s| s.hd_image_disk_max_entries = max);
     hd_image::set_disk_cache_max_entries(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -49,10 +47,9 @@ pub fn set_full_image_memory_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(&repo, |s| s.full_image_memory_max_entries = max);
+        .update(&state.device_storage, |s| s.full_image_memory_max_entries = max);
     full_image::set_memory_cache_capacity(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -64,10 +61,9 @@ pub fn set_full_image_bitmap_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let repo = state.repository()?;
     let snapshot = state
         .settings
-        .update(&repo, |s| s.full_image_bitmap_max_entries = max);
+        .update(&state.device_storage, |s| s.full_image_bitmap_max_entries = max.max(1));
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
 }
@@ -96,13 +92,35 @@ pub fn set_background_pool_workers(
     state: State<'_, AppState>,
     workers: usize,
 ) -> Result<CacheSettings, String> {
-    let repo = state.repository()?;
     let cap = tasks::pool().bg_thread_capacity().max(1);
     let clamped = workers.clamp(1, cap);
     let snapshot = state
         .settings
-        .update(&repo, |s| s.background_pool_workers = clamped);
+        .update(&state.device_storage, |s| s.background_pool_workers = clamped);
     tasks::pool().set_bg_concurrency(clamped);
+    let _ = app.emit("cache-settings-changed", snapshot);
+    Ok(snapshot)
+}
+
+/// Apply the settings sheet in one device-local write. This is also used on
+/// iPad, where there is no native macOS application menu.
+#[tauri::command]
+pub fn set_cache_settings(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    mut settings: CacheSettings,
+) -> Result<CacheSettings, String> {
+    settings.full_image_bitmap_max_entries = settings.full_image_bitmap_max_entries.max(1);
+    settings.background_pool_workers = settings
+        .background_pool_workers
+        .clamp(1, tasks::pool().bg_thread_capacity().max(1));
+    let snapshot = state.settings.update(&state.device_storage, |current| {
+        *current = settings;
+    });
+    thumbnails::set_disk_cache_max_entries(snapshot.thumbnail_disk_max_entries);
+    hd_image::set_disk_cache_max_entries(snapshot.hd_image_disk_max_entries);
+    full_image::set_memory_cache_capacity(snapshot.full_image_memory_max_entries);
+    tasks::pool().set_bg_concurrency(snapshot.background_pool_workers);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
 }

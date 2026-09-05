@@ -28,6 +28,7 @@ import {
   subscribeVariantOverrides,
 } from "@app/variant-store";
 import { prefetchHdImages } from "@app/hd-image-cache";
+import { getCacheSettings, subscribeCacheSettings } from "@app/cache-settings";
 import { applyRatingShortcut } from "@services/rating/rating-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import {
@@ -141,6 +142,10 @@ export class PfFullView extends LitElement {
   private unsubscribeStore: (() => void) | null = null;
   private unsubscribeEdits: (() => void) | null = null;
   private unsubscribePostProcess: (() => void) | null = null;
+  private unsubscribeCacheSettings: (() => void) | null = null;
+
+  @state()
+  private fullResolutionEnabled = getCacheSettings().full_resolution_enabled;
 
   @property({ type: Boolean, reflect: true })
   idle = false;
@@ -296,6 +301,10 @@ export class PfFullView extends LitElement {
     this.unsubscribePostProcess = subscribePostProcess(() => {
       this.requestUpdate();
     });
+    this.unsubscribeCacheSettings = subscribeCacheSettings((settings) => {
+      this.fullResolutionEnabled = settings.full_resolution_enabled;
+      if (settings.background_hd_previews_enabled) this.schedulePrefetch();
+    });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
     void this.hydrateViewState();
@@ -320,6 +329,8 @@ export class PfFullView extends LitElement {
     this.unsubscribeEdits = null;
     this.unsubscribePostProcess?.();
     this.unsubscribePostProcess = null;
+    this.unsubscribeCacheSettings?.();
+    this.unsubscribeCacheSettings = null;
     this.idleController.dispose();
   }
 
@@ -384,6 +395,7 @@ export class PfFullView extends LitElement {
    * so forward scrolling — the common case — wins by one slot.
    */
   private schedulePrefetch() {
+    if (!getCacheSettings().background_hd_previews_enabled) return;
     const total = this.photos.length;
     if (total === 0) return;
     const i = this.index;
@@ -910,7 +922,7 @@ export class PfFullView extends LitElement {
             ?horizonMode=${horizonMode}
             .previewOriginal=${this.previewOriginal}
             .editing=${this.editMode}
-            .enableFullRes=${true}
+            .enableFullRes=${this.fullResolutionEnabled}
             background=${this.bgCss(this.bg)}
             @crop-change=${this.onCanvasCropChange}
             @orientation-flip=${this.onCanvasOrientationFlip}

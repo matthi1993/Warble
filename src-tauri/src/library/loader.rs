@@ -136,10 +136,7 @@ fn quarantine_path(path: &Path) -> PathBuf {
 }
 
 fn clear_remembered_library(state: &AppState) {
-    if let Err(error) = state.device_storage.set_last_library_path(None) {
-        eprintln!("failed to clear invalid last-library path: {error}");
-    }
-    if let Err(error) = state.device_storage.set_library_bookmark(None) {
+    if let Err(error) = state.device_storage.set_library_source(None, None, None) {
         eprintln!("failed to clear invalid last-library bookmark: {error}");
     }
 }
@@ -189,6 +186,18 @@ fn restore_last_library(state: &AppState, db_path: &std::path::Path) {
         clear_remembered_library(state);
         return;
     }
+    match crate::commands::file_fingerprint(&source) {
+        Ok(fingerprint) => {
+            if let Err(error) = state.device_storage.set_library_source(
+                Some(&source),
+                None,
+                Some(fingerprint),
+            ) {
+                eprintln!("failed to remember restored library fingerprint: {error}");
+            }
+        }
+        Err(error) => eprintln!("failed to fingerprint restored library: {error}"),
+    }
     eprintln!("restored last library from {}", source.display());
 }
 
@@ -218,8 +227,11 @@ pub fn init_hd_image_cache(app: &tauri::App) {
 
 pub fn init_settings_and_caches(app: &tauri::App) {
     let state = app.state::<AppState>();
+    state.settings.load_from(&state.device_storage);
+    // v0.1 briefly stored cache preferences in the portable library. Remove
+    // that legacy row so future saves/exports contain no device tuning.
     if let Ok(repo) = state.repository() {
-        state.settings.load_from(repo.as_ref());
+        let _ = repo.delete_setting("cache_settings");
     }
     let s = state.settings.get();
     thumbnails::set_disk_cache_max_entries(s.thumbnail_disk_max_entries);
@@ -336,11 +348,13 @@ fn persist_legacy_bindings(repo: &LibraryRepository, state: &AppState, library_i
 pub fn restore_security_scoped_roots(app: &tauri::AppHandle, state: &AppState, library_id: &str) {
     for (root_id, bookmark) in state.device_storage.root_bookmarks_for(library_id) {
         match tauri_plugin_folder_access::resolve_bookmark(app, &bookmark) {
-            Ok(path) => {
-                let _ = state.device_storage.set_root_binding(
+            Ok(grant) => {
+                let _ = state.device_storage.refresh_root_grant(
                     library_id,
                     &root_id,
-                    std::path::Path::new(&path),
+                    &bookmark,
+                    std::path::Path::new(&grant.path),
+                    &grant.bookmark,
                 );
             }
             Err(e) => eprintln!("media root {root_id} needs reconnecting: {e}"),
