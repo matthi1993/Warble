@@ -58,7 +58,13 @@ export class PfCacheSettings extends LitElement {
   async open(): Promise<void> {
     this.visible = true;
     this.error = "";
-    this.draft = { ...(await configureCacheSettings()) };
+    // `configureCacheSettings()` is a one-time startup load. Its promise can
+    // therefore still resolve to the original snapshot after settings have
+    // been saved during this session. Always take the draft from the current
+    // shared snapshot after configuration has completed so reopening the
+    // sheet cannot restore stale selections.
+    await configureCacheSettings();
+    this.draft = { ...getCacheSettings() };
     try { this.usage = await invoke<CacheUsage>("get_cache_disk_usage"); }
     catch { this.usage = null; }
   }
