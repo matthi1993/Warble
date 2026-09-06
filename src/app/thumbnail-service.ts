@@ -216,8 +216,18 @@ let progressState: ThumbnailBatchProgress = {
 };
 
 let nextBatchId = 1;
-/** Handles for the currently-active batch so it can be cancelled. */
-let activeBatchHandles: ThumbnailHandle[] = [];
+const BATCH_QUEUE_AHEAD = 64;
+
+/** The current batch keeps only a small queue ahead of the visible cards.
+ * This prevents opening a large folder from allocating thousands of promises
+ * and background tasks before the first paint. */
+let activeBatch: {
+  id: number;
+  paths: string[];
+  nextPath: number;
+  pending: number;
+  handles: Set<ThumbnailHandle>;
+} | null = null;
 
 function emitProgress() {
   progressTarget.dispatchEvent(
@@ -250,12 +260,9 @@ export function onThumbnailProgress(
 export function startThumbnailBatch(paths: string[]): number {
   // Cancel any previous batch so its outstanding (queued, not yet running)
   // jobs stop tying up the worker pool.
-  for (const h of activeBatchHandles) h.cancel();
-  activeBatchHandles = [];
+  clearThumbnailBatch();
 
   if (!getCacheSettings().background_thumbnails_enabled) {
-    progressState = { batchId: 0, total: 0, loaded: 0, failed: 0, inProgress: false };
-    emitProgress();
     return 0;
   }
 
@@ -271,36 +278,55 @@ export function startThumbnailBatch(paths: string[]): number {
 
   if (paths.length === 0) return batchId;
 
-  const handles: ThumbnailHandle[] = [];
-  for (const path of paths) {
-    // Folder-wide prefetch is strictly background work — visible
-    // cards and the active photo upgrade priority on their own.
+  activeBatch = {
+    id: batchId,
+    paths,
+    nextPath: 0,
+    pending: 0,
+    handles: new Set(),
+  };
+  queueMoreBatchWork(activeBatch);
+  return batchId;
+}
+
+function queueMoreBatchWork(batch: NonNullable<typeof activeBatch>): void {
+  if (activeBatch !== batch || progressState.batchId !== batch.id) return;
+  while (
+    batch.pending < BATCH_QUEUE_AHEAD &&
+    batch.nextPath < batch.paths.length
+  ) {
+    const path = batch.paths[batch.nextPath++];
+    // Folder-wide prefetch is strictly background work — visible cards and
+    // the active photo upgrade priority on their own.
     const handle = requestThumbnail(path, "background");
-    handles.push(handle);
+    batch.handles.add(handle);
+    batch.pending += 1;
     handle.promise.then(
       () => {
-        if (progressState.batchId !== batchId) return;
+        if (progressState.batchId !== batch.id) return;
         progressState = {
           ...progressState,
           loaded: progressState.loaded + 1,
         };
-        finalizeIfDone(batchId);
+        finalizeIfDone(batch.id);
         emitProgress();
       },
       (err) => {
-        if (progressState.batchId !== batchId) return;
+        if (progressState.batchId !== batch.id) return;
         if (isCancellation(err)) return;
         progressState = {
           ...progressState,
           failed: progressState.failed + 1,
         };
-        finalizeIfDone(batchId);
+        finalizeIfDone(batch.id);
         emitProgress();
       }
-    );
+    ).finally(() => {
+      batch.handles.delete(handle);
+      batch.pending -= 1;
+      queueMoreBatchWork(batch);
+    });
   }
-  activeBatchHandles = handles;
-  return batchId;
 }
 
 function finalizeIfDone(batchId: number) {
@@ -313,8 +339,8 @@ function finalizeIfDone(batchId: number) {
 
 /** Cancel the active batch (if any) and reset progress to idle. */
 export function clearThumbnailBatch() {
-  for (const h of activeBatchHandles) h.cancel();
-  activeBatchHandles = [];
+  for (const h of activeBatch?.handles ?? []) h.cancel();
+  activeBatch = null;
   progressState = {
     batchId: 0,
     total: 0,
@@ -339,8 +365,8 @@ export function dropAllThumbnailState(): void {
     queues[p].length = 0;
   }
   inflight.clear();
-  for (const h of activeBatchHandles) h.cancel();
-  activeBatchHandles = [];
+  for (const h of activeBatch?.handles ?? []) h.cancel();
+  activeBatch = null;
   progressState = {
     batchId: 0,
     total: 0,

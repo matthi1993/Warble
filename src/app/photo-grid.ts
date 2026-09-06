@@ -27,17 +27,7 @@ const COLUMNS_STORAGE_KEY = "pf-grid-columns";
 const MIN_COLUMNS = 1;
 const MAX_COLUMNS = 8;
 const DEFAULT_COLUMNS = 6;
-const RAW_EXTENSIONS = new Set([
-  "raf",
-  "raw",
-  "arw",
-  "cr2",
-  "cr3",
-  "nef",
-  "dng",
-  "orf",
-  "rw2",
-]);
+const GROUP_PAGE_SIZE = 48;
 
 interface PhotoDayGroup {
   date: string | null;
@@ -296,6 +286,25 @@ export class PfPhotoGrid extends LitElement {
       font-size: var(--pf-text-sm);
       text-align: center;
     }
+    .group-load-more {
+      display: flex;
+      justify-content: center;
+      padding: var(--pf-space-2) 0 var(--pf-space-4);
+    }
+    .group-load-more button {
+      padding: 4px 8px;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-sm);
+      background: var(--pf-surface);
+      color: var(--pf-text-muted);
+      font: inherit;
+      font-size: var(--pf-text-xs);
+      cursor: pointer;
+    }
+    .group-load-more button:hover {
+      border-color: var(--pf-accent);
+      color: var(--pf-accent-hover);
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(var(--pf-grid-cols, 6), 1fr);
@@ -361,6 +370,9 @@ export class PfPhotoGrid extends LitElement {
   @property({ type: Boolean })
   includeSubfolders = false;
 
+  @property({ type: Boolean })
+  filterMetadataLoading = false;
+
   /** When the full image view is open the grid is hidden behind the
    * overlay; suppress the sticky size header so it doesn't peek
    * through (e.g. while the overlay is fading in). */
@@ -399,9 +411,6 @@ export class PfPhotoGrid extends LitElement {
   @state()
   private endDate = "";
 
-  @state()
-  private rawOnly = false;
-
   /** Date groups are expanded by default; this set contains only the
    *  groups the user explicitly collapsed. */
   @state()
@@ -412,6 +421,11 @@ export class PfPhotoGrid extends LitElement {
   private ratingsTick = 0;
 
   private unsubscribeRatings: (() => void) | null = null;
+  private moreObserver: IntersectionObserver | null = null;
+  private renderedPhotoSet = "";
+
+  @state()
+  private visibleCountByDay = new Map<string, number>();
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -424,6 +438,8 @@ export class PfPhotoGrid extends LitElement {
     super.disconnectedCallback();
     this.unsubscribeRatings?.();
     this.unsubscribeRatings = null;
+    this.moreObserver?.disconnect();
+    this.moreObserver = null;
   }
 
   /** Bring the currently selected card into view. Called from the
@@ -445,8 +461,13 @@ export class PfPhotoGrid extends LitElement {
   private selectionFromClick = false;
 
   protected updated(changed: Map<string, unknown>): void {
-    if (changed.has("photos") && !changed.has("collapsedDays")) {
-      this.collapsedDays = new Set();
+    if (changed.has("photos")) {
+      const photoSet = this.photos.map((photo) => photo.path).join("\u0000");
+      if (photoSet !== this.renderedPhotoSet) {
+        this.renderedPhotoSet = photoSet;
+        this.collapsedDays = new Set();
+        this.resetVisiblePhotoPages();
+      }
     }
     // When the full-view overlay closes the grid becomes visible
     // again; scroll the selected photo into view so the user
@@ -468,6 +489,7 @@ export class PfPhotoGrid extends LitElement {
       }
       this.selectionFromClick = false;
     }
+    this.observeLoadMoreControls();
   }
 
   protected firstUpdated(): void {
@@ -525,9 +547,6 @@ export class PfPhotoGrid extends LitElement {
       if (this.endDate && (p.filterInfo?.dateTaken ?? "") > this.endDate) {
         return false;
       }
-      if (this.rawOnly && !this.isRawPhoto(p)) {
-        return false;
-      }
       return true;
     });
   }
@@ -541,20 +560,13 @@ export class PfPhotoGrid extends LitElement {
       this.minFocalLength !== null ||
       this.maxFocalLength !== null ||
       this.startDate !== "" ||
-      this.endDate !== "" ||
-      this.rawOnly
+      this.endDate !== ""
     );
   }
 
-  private isRawPhoto(photo: Photo): boolean {
-    return (photo.extensions ?? []).some((extension) =>
-      RAW_EXTENSIONS.has(extension.toLowerCase())
-    );
-  }
-
-  private get dayGroups(): PhotoDayGroup[] {
+  private getDayGroups(photos: Photo[]): PhotoDayGroup[] {
     const groups = new Map<string, Photo[]>();
-    for (const photo of this.filteredPhotos) {
+    for (const photo of photos) {
       const date = photo.filterInfo?.dateTaken ?? null;
       const key = date ?? "undated";
       const group = groups.get(key);
@@ -572,7 +584,7 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private get expandedPhotos(): Photo[] {
-    return this.dayGroups.flatMap((group) => {
+    return this.getDayGroups(this.filteredPhotos).flatMap((group) => {
       const key = group.date ?? "undated";
       return this.collapsedDays.has(key) ? [] : group.photos;
     });
@@ -653,8 +665,13 @@ export class PfPhotoGrid extends LitElement {
         composed: true,
       })
     );
-    const card = cards[idx];
-    card?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    this.ensurePhotoIsRendered(next.path);
+    requestAnimationFrame(() => {
+      const card = this.renderRoot.querySelector(
+        `pf-thumbnail-card[data-path="${CSS.escape(next.path)}"]`
+      ) as HTMLElement | null;
+      card?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
     return true;
   }
 
@@ -685,6 +702,7 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private setMinStars(n: number) {
+    this.resetVisiblePhotoPages();
     this.minStars = this.minStars === n ? 0 : n;
   }
 
@@ -692,19 +710,32 @@ export class PfPhotoGrid extends LitElement {
     const next = new Set(this.activeLabels);
     if (next.has(label)) next.delete(label);
     else next.add(label);
+    this.resetVisiblePhotoPages();
     this.activeLabels = next;
+  }
+
+  private setTextFilter(
+    filter: "camera" | "lens",
+    event: Event
+  ): void {
+    this.resetVisiblePhotoPages();
+    const value = (event.target as HTMLInputElement).value;
+    if (filter === "camera") this.cameraFilter = value;
+    else this.lensFilter = value;
   }
 
   private setFocalLength(bound: "min" | "max", event: Event): void {
     const raw = (event.target as HTMLInputElement).value;
     const value = raw === "" ? null : Number(raw);
     const next = Number.isFinite(value) && value !== null && value >= 0 ? value : null;
+    this.resetVisiblePhotoPages();
     if (bound === "min") this.minFocalLength = next;
     else this.maxFocalLength = next;
   }
 
   private setDate(bound: "start" | "end", event: Event): void {
     const value = (event.target as HTMLInputElement).value;
+    this.resetVisiblePhotoPages();
     if (bound === "start") this.startDate = value;
     else this.endDate = value;
   }
@@ -727,6 +758,7 @@ export class PfPhotoGrid extends LitElement {
   };
 
   private clearFilters = () => {
+    this.resetVisiblePhotoPages();
     this.minStars = 0;
     this.activeLabels = new Set();
     this.cameraFilter = "";
@@ -735,8 +767,58 @@ export class PfPhotoGrid extends LitElement {
     this.maxFocalLength = null;
     this.startDate = "";
     this.endDate = "";
-    this.rawOnly = false;
   };
+
+  private visiblePhotoCount(day: string, total: number): number {
+    return Math.min(this.visibleCountByDay.get(day) ?? GROUP_PAGE_SIZE, total);
+  }
+
+  private showMoreForDay(day: string): void {
+    const current = this.visibleCountByDay.get(day) ?? GROUP_PAGE_SIZE;
+    this.visibleCountByDay = new Map(this.visibleCountByDay).set(
+      day,
+      current + GROUP_PAGE_SIZE
+    );
+  }
+
+  private resetVisiblePhotoPages(): void {
+    this.visibleCountByDay = new Map();
+  }
+
+  private ensurePhotoIsRendered(path: string): void {
+    for (const group of this.getDayGroups(this.filteredPhotos)) {
+      const index = group.photos.findIndex((photo) => photo.path === path);
+      if (index < 0) continue;
+      const day = group.date ?? "undated";
+      const current = this.visiblePhotoCount(day, group.photos.length);
+      if (index >= current) {
+        this.visibleCountByDay = new Map(this.visibleCountByDay).set(
+          day,
+          index + GROUP_PAGE_SIZE
+        );
+      }
+      return;
+    }
+  }
+
+  private observeLoadMoreControls(): void {
+    this.moreObserver?.disconnect();
+    const root = this.renderRoot.querySelector(".grid-scroll");
+    if (!root) return;
+    this.moreObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const day = (entry.target as HTMLElement).dataset.day;
+          if (day) this.showMoreForDay(day);
+        }
+      },
+      { root, rootMargin: "400px 0px" }
+    );
+    this.renderRoot
+      .querySelectorAll<HTMLElement>(".group-load-more")
+      .forEach((control) => this.moreObserver?.observe(control));
+  }
 
   private renderPhotoCards(photos: Photo[]): TemplateResult {
     return html`<div
@@ -768,9 +850,9 @@ export class PfPhotoGrid extends LitElement {
     const sliderValue = MIN_COLUMNS + MAX_COLUMNS - this.columns;
     const visible = this.filteredPhotos;
     const filtersActive = this.filtersActive;
-    const metadataLoading = this.photos.some((photo) => photo.filterInfo === undefined);
+    const metadataLoading = this.filterMetadataLoading;
     const focalBounds = this.focalBounds;
-    const groups = this.dayGroups;
+    const groups = this.getDayGroups(visible);
     return html`
       <div class="grid-header">
         <div class="header-row">
@@ -815,8 +897,7 @@ export class PfPhotoGrid extends LitElement {
                 placeholder="Camera"
                 aria-label="Camera"
                 .value=${this.cameraFilter}
-                ?disabled=${metadataLoading || this.cameraOptions.length === 0}
-                @input=${(e: Event) => (this.cameraFilter = (e.target as HTMLInputElement).value)}
+                @input=${(e: Event) => this.setTextFilter("camera", e)}
               />
             </label>
             <label class="filter-control">
@@ -826,8 +907,7 @@ export class PfPhotoGrid extends LitElement {
                 placeholder="Lens"
                 aria-label="Lens"
                 .value=${this.lensFilter}
-                ?disabled=${metadataLoading || this.lensOptions.length === 0}
-                @input=${(e: Event) => (this.lensFilter = (e.target as HTMLInputElement).value)}
+                @input=${(e: Event) => this.setTextFilter("lens", e)}
               />
             </label>
             <div class="focal-range">
@@ -839,7 +919,6 @@ export class PfPhotoGrid extends LitElement {
                   step="0.1"
                   placeholder=${focalBounds ? `From ${focalBounds.min}` : "Min"}
                   .value=${this.minFocalLength?.toString() ?? ""}
-                  ?disabled=${metadataLoading || focalBounds === null}
                   aria-label="Minimum focal length"
                   @input=${(e: Event) => this.setFocalLength("min", e)}
                 />
@@ -849,7 +928,6 @@ export class PfPhotoGrid extends LitElement {
                   step="0.1"
                   placeholder=${focalBounds ? `To ${focalBounds.max}` : "Max"}
                   .value=${this.maxFocalLength?.toString() ?? ""}
-                  ?disabled=${metadataLoading || focalBounds === null}
                   aria-label="Maximum focal length"
                   @input=${(e: Event) => this.setFocalLength("max", e)}
                 />
@@ -861,14 +939,12 @@ export class PfPhotoGrid extends LitElement {
                 <input
                   type="date"
                   .value=${this.startDate}
-                  ?disabled=${metadataLoading}
                   aria-label="Start date"
                   @change=${(e: Event) => this.setDate("start", e)}
                 />
                 <input
                   type="date"
                   .value=${this.endDate}
-                  ?disabled=${metadataLoading}
                   aria-label="End date"
                   @change=${(e: Event) => this.setDate("end", e)}
                 />
@@ -876,10 +952,6 @@ export class PfPhotoGrid extends LitElement {
             </div>
           </div>
           <div class="filter-options">
-            <label class="subfolder-toggle" title="Show only photos with a RAW file in their photo group">
-              <input type="checkbox" .checked=${this.rawOnly} @change=${(e: Event) => (this.rawOnly = (e.target as HTMLInputElement).checked)} />
-              RAW only
-            </label>
           <span class="filter-group">
             <span class="label">Stars</span>
             <span class="stars-filter" role="radiogroup" aria-label="Filter by minimum rating">
@@ -947,7 +1019,23 @@ export class PfPhotoGrid extends LitElement {
                   <span class="day-chevron" aria-hidden="true">⌄</span>
                 </button>
                 ${expanded
-                  ? html`<div id=${`day-${key}`}>${this.renderPhotoCards(group.photos)}</div>`
+                  ? html`<div id=${`day-${key}`}>
+                      ${this.renderPhotoCards(
+                        group.photos.slice(
+                          0,
+                          this.visiblePhotoCount(key, group.photos.length)
+                        )
+                      )}
+                      ${this.visiblePhotoCount(key, group.photos.length) <
+                      group.photos.length
+                        ? html`<div class="group-load-more" data-day=${key}>
+                            <button
+                              type="button"
+                              @click=${() => this.showMoreForDay(key)}
+                            >Show more photos</button>
+                          </div>`
+                        : null}
+                    </div>`
                   : null}
               </section>`;
             })}

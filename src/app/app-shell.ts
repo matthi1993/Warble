@@ -60,6 +60,8 @@ interface PhotoFilterInfoResult extends PhotoFilterInfo {
   path: string;
 }
 
+const FILTER_METADATA_BATCH_SIZE = 250;
+
 function isIPad(): boolean {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent ?? "";
   return /iPad/i.test(ua) ||
@@ -628,6 +630,14 @@ export class WarbleApp extends LitElement {
 
   /** Invalidates filter metadata requests when the active photo set changes. */
   private filterMetadataRequest = 0;
+  private filterMetadataTimer: number | null = null;
+  private filterInfoByPath = new Map<string, PhotoFilterInfo>();
+
+  @state()
+  private filterMetadataLoading = false;
+
+  private backgroundWorkRequest = 0;
+  private backgroundWorkTimer: number | null = null;
 
   /** Suppresses the persistence side-effect during the initial restore
    * pass so we don't immediately write back what we just read. */
@@ -747,32 +757,72 @@ export class WarbleApp extends LitElement {
   private unlistenLibraryReload: UnlistenFn | null = null;
 
   private setPhotos(photos: Photo[]): void {
-    this.photos = photos;
-    void this.loadPhotoFilterInfo(photos);
+    const request = ++this.filterMetadataRequest;
+    if (this.filterMetadataTimer !== null) {
+      window.clearTimeout(this.filterMetadataTimer);
+      this.filterMetadataTimer = null;
+    }
+    // Reuse metadata that was already prepared while the user was in another
+    // folder. This makes a return visit immediately filterable; the background
+    // pass below then fills only the entries not already in memory.
+    this.photos = photos.map((photo) => {
+      const filterInfo = photo.filterInfo ?? this.filterInfoByPath.get(photo.path);
+      return filterInfo ? { ...photo, filterInfo } : photo;
+    });
+    const unprepared = photos.filter(
+      (photo) => !this.filterInfoByPath.has(photo.path)
+    );
+    this.filterMetadataLoading = unprepared.length > 0;
+    if (!this.filterMetadataLoading) return;
+    // Let the folder header and its first page paint before serialising a
+    // large metadata request. Background thumbnail work is scheduled after
+    // this pass, so prepared filter values arrive without delaying navigation.
+    this.filterMetadataTimer = window.setTimeout(() => {
+      this.filterMetadataTimer = null;
+      void this.loadPhotoFilterInfo(unprepared, request);
+    }, 0);
   }
 
-  private async loadPhotoFilterInfo(photos: Photo[]): Promise<void> {
-    const request = ++this.filterMetadataRequest;
-    if (photos.length === 0) return;
+  private async loadPhotoFilterInfo(
+    photos: Photo[],
+    request: number
+  ): Promise<void> {
     try {
-      const info = await invoke<PhotoFilterInfoResult[]>("get_photo_filter_metadata", {
-        photoPaths: photos.map((photo) => photo.path),
-      });
-      if (request !== this.filterMetadataRequest) return;
-      const byPath = new Map(info.map((item) => [item.path, item]));
-      const enriched = this.photos.map((photo) => ({
-        ...photo,
-        filterInfo: byPath.get(photo.path) ?? photo.filterInfo,
-      }));
-      this.photos = enriched;
-      const selectedPath = this.selectedPhoto?.path;
-      if (selectedPath) {
-        this.selectedPhoto = enriched.find((photo) => photo.path === selectedPath) ?? this.selectedPhoto;
+      for (let start = 0; start < photos.length; start += FILTER_METADATA_BATCH_SIZE) {
+        if (request !== this.filterMetadataRequest) return;
+        const batch = photos.slice(start, start + FILTER_METADATA_BATCH_SIZE);
+        const info = await invoke<PhotoFilterInfoResult[]>("get_photo_filter_metadata", {
+          photoPaths: batch.map((photo) => photo.path),
+        });
+        if (request !== this.filterMetadataRequest) return;
+        for (const item of info) this.filterInfoByPath.set(item.path, item);
+
+        const enriched = this.photos.map((photo) => {
+          const filterInfo = this.filterInfoByPath.get(photo.path);
+          return filterInfo && photo.filterInfo !== filterInfo
+            ? { ...photo, filterInfo }
+            : photo;
+        });
+        this.photos = enriched;
+        const selectedPath = this.selectedPhoto?.path;
+        if (selectedPath) {
+          this.selectedPhoto =
+            enriched.find((photo) => photo.path === selectedPath) ?? this.selectedPhoto;
+        }
+        // Yield between batches: filtering and scrolling stay responsive while
+        // a cold library's EXIF cache is populated.
+        if (start + FILTER_METADATA_BATCH_SIZE < photos.length) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        }
       }
     } catch (err) {
       // Metadata is an enhancement; thumbnails and the rest of the grid
       // remain usable when a file provider temporarily refuses a read.
       console.warn("Failed to load photo filter metadata", err);
+    } finally {
+      if (request === this.filterMetadataRequest) {
+        this.filterMetadataLoading = false;
+      }
     }
   }
 
@@ -793,6 +843,12 @@ export class WarbleApp extends LitElement {
     this.unsubscribeCacheSettings = null;
     this.hdPrewarmHandle?.cancel();
     this.hdPrewarmHandle = null;
+    if (this.filterMetadataTimer !== null) {
+      window.clearTimeout(this.filterMetadataTimer);
+    }
+    if (this.backgroundWorkTimer !== null) {
+      window.clearTimeout(this.backgroundWorkTimer);
+    }
     clearThumbnailBatch();
   }
 
@@ -822,13 +878,20 @@ export class WarbleApp extends LitElement {
     this.hdPrewarmHandle?.cancel();
     this.hdPrewarmHandle = null;
     this.hdPrewarmedBatchId = 0;
-    if (this.photos.length === 0) return;
-    const settings = getCacheSettings();
-    const paths = this.photos.map((photo) => photo.path);
-    const thumbnailBatch = startThumbnailBatch(paths);
-    if (thumbnailBatch === 0 && settings.background_hd_previews_enabled) {
-      this.hdPrewarmHandle = prewarmHdImageBytesForFolder(paths);
+    const request = ++this.backgroundWorkRequest;
+    if (this.backgroundWorkTimer !== null) {
+      window.clearTimeout(this.backgroundWorkTimer);
     }
+    this.backgroundWorkTimer = window.setTimeout(() => {
+      this.backgroundWorkTimer = null;
+      if (request !== this.backgroundWorkRequest || this.photos.length === 0) return;
+      const settings = getCacheSettings();
+      const paths = this.photos.map((photo) => photo.path);
+      const thumbnailBatch = startThumbnailBatch(paths);
+      if (thumbnailBatch === 0 && settings.background_hd_previews_enabled) {
+        this.hdPrewarmHandle = prewarmHdImageBytesForFolder(paths);
+      }
+    }, 0);
   }
 
   private refreshAfterThumbnailCacheClear(): void {
@@ -1694,6 +1757,7 @@ export class WarbleApp extends LitElement {
               .selectedPath=${this.selectedPhoto?.path ?? null}
               .folderName=${this.selectedFolderName ?? ""}
               .includeSubfolders=${this.includeSubfolders}
+              .filterMetadataLoading=${this.filterMetadataLoading}
               ?full-view-open=${this.fullViewIndex !== null}
             ></pf-photo-grid>`}
       </main>
