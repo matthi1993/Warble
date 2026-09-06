@@ -35,7 +35,7 @@ const TARGET_WIDTH: u32 = 320;
 const JPEG_QUALITY: u8 = 80;
 /// Bumped when the pipeline changes in a way that invalidates existing
 /// on-disk cache entries (e.g. EXIF-orientation rotation added).
-const PIPELINE_VERSION: u32 = 2;
+const PIPELINE_VERSION: u32 = 5;
 
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
@@ -47,8 +47,8 @@ pub fn init_cache_dir(dir: PathBuf) {
     let _ = DISK_CACHE.set(DiskCache::new(dir, "jpg"));
 }
 
-/// Update the maximum number of cached thumbnail files. `0` disables
-/// eviction. Triggers an immediate sweep so the new limit is applied even
+/// Update the maximum number of cached thumbnail files. `0` disables and
+/// clears the cache. Triggers an immediate sweep so the new limit is applied even
 /// if no further thumbnails are written.
 pub fn set_disk_cache_max_entries(max: usize) {
     if let Some(c) = DISK_CACHE.get() {
@@ -80,7 +80,7 @@ pub fn cache_disk_usage() -> Option<(u64, usize)> {
 /// `cancel` is checked between the major steps (cache lookup, source
 /// read, decode, resize) so a cancelled request frees the worker
 /// promptly.
-pub fn render(path: &str, cancel: &CancelToken) -> Result<String, String> {
+pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<String, String> {
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
@@ -102,9 +102,9 @@ pub fn render(path: &str, cancel: &CancelToken) -> Result<String, String> {
     cancel.check()?;
     let ext = lowercase_extension(p);
     let jpeg_bytes = if raw_preview::is_raw_extension(&ext) {
-        render_from_raw(p, cancel)?
+        render_from_raw(p, library_key, cancel)?
     } else if JPEG_EXTENSIONS.iter().any(|e| *e == ext) {
-        render_from_jpeg_file(p, cancel)?
+        render_from_jpeg_file(p, library_key, cancel)?
     } else {
         render_via_image_crate(p, IDENTITY)?
     };
@@ -115,25 +115,38 @@ pub fn render(path: &str, cancel: &CancelToken) -> Result<String, String> {
     Ok(B64.encode(&jpeg_bytes))
 }
 
-fn render_from_jpeg_file(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
+fn render_from_jpeg_file(
+    path: &Path,
+    library_key: &str,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>, String> {
     let raw = fs::read(path).map_err(|e| e.to_string())?;
     cancel.check()?;
     // First-touch EXIF parse populates the SQLite metadata cache so
     // the detail panel (and any subsequent HD/full re-render) skips
     // its own parse.
-    let orient = exif_cache::orientation_or_warm(path, &raw);
+    let orient = exif_cache::orientation_or_warm(library_key, path, &raw);
     render_from_jpeg_bytes(&raw, orient).or_else(|_| render_via_image_crate(path, orient))
 }
 
-fn render_from_raw(path: &Path, _cancel: &CancelToken) -> Result<Vec<u8>, String> {
-    let preview = raw_preview::extract_preview(path)?;
+fn render_from_raw(
+    path: &Path,
+    library_key: &str,
+    _cancel: &CancelToken,
+) -> Result<Vec<u8>, String> {
+    // Use a 2x source so portrait thumbnails can still reach the requested
+    // width after the aspect-preserving resize, without demosaicing the full
+    // sensor just to produce a 320px JPEG.
+    let preview = raw_preview::extract_preview_sized(path, Some((TARGET_WIDTH * 2) as usize))?;
     // The RAW preview's EXIF tags belong to the original RAW file,
-    // not the embedded JPEG. Parse them once from the RAW bytes via
-    // `read_full_metadata` so the cache row is populated; we already
-    // have orientation from `extract_preview`.
-    if exif_cache::get(path).is_none() {
-        if let Some((_, metadata)) = exif::read_full_metadata(path) {
-            exif_cache::warm_with(path, preview.orientation, &metadata);
+    // not the demosaiced output we just produced. Parse them once
+    // from the RAW bytes via `read_full_metadata` so the cache row
+    // is populated with the *real* orientation tag (which the info
+    // panel surfaces) \u2014 not `preview.orientation`, which is now
+    // always `IDENTITY` since `imagepipe` pre-rotates the pixels.
+    if exif_cache::get(library_key, path).is_none() {
+        if let Some((orient, metadata)) = exif::read_full_metadata(path) {
+            exif_cache::warm_with(library_key, path, orient, &metadata);
         }
     }
 

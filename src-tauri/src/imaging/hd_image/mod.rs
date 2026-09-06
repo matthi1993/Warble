@@ -42,9 +42,20 @@ use crate::tasks::CancelToken;
 const LONG_SIDE_PX: u32 = 1920;
 const JPEG_QUALITY: u8 = 90;
 /// Bumped when the pipeline changes in a way that invalidates existing
-/// on-disk cache entries. v2: switched to DCT-scaled JPEG decode for
-/// JPEG / RAW-preview sources.
-const PIPELINE_VERSION: u32 = 2;
+/// on-disk cache entries.
+///   v2: switched to DCT-scaled JPEG decode for JPEG / RAW-preview sources.
+///   v3: RAW sources now go through `imagepipe` demosaic instead of the
+///       embedded JPEG preview — cached v2 bytes for RAW paths still
+///       contain the stale preview, so they must be evicted.
+///   v4: RAW decoder switched to a `rawler` → `imagepipe` bridge so
+///       modern bodies (e.g. Fujifilm X100VI / X-Trans) actually
+///       decode; cached v3 bytes either don't exist (the v3 attempt
+///       errored for unsupported cameras) or were produced by a
+///       different color pipeline.
+///   v5: Bridge now pulls the color matrix from rawler's
+///       `color_matrix` HashMap (the deprecated `xyz_to_cam` field is
+///       all zeros in 0.7.2), fixing all-black RAW output.
+const PIPELINE_VERSION: u32 = 5;
 
 static DISK_CACHE: OnceLock<DiskCache> = OnceLock::new();
 
@@ -54,8 +65,8 @@ pub fn init_cache_dir(dir: PathBuf) {
     let _ = DISK_CACHE.set(DiskCache::new(dir, "jpg"));
 }
 
-/// Update the maximum number of cached HD JPEG files. `0` disables
-/// eviction. Triggers an immediate sweep so the new limit is applied
+/// Update the maximum number of cached HD JPEG files. `0` disables and
+/// clears the cache. Triggers an immediate sweep so the new limit is applied
 /// even if no further entries are written.
 pub fn set_disk_cache_max_entries(max: usize) {
     if let Some(c) = DISK_CACHE.get() {
@@ -91,7 +102,7 @@ const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 /// decode, orientation transform, resize/encode) so a cancelled
 /// request frees the worker thread promptly instead of running to
 /// completion and discarding the result.
-pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
+pub fn load_bytes(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
@@ -111,7 +122,7 @@ pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     }
 
     cancel.check()?;
-    let jpeg_bytes = render(p, cancel)?;
+    let jpeg_bytes = render(p, library_key, cancel)?;
 
     if let (Some(c), Some(k)) = (cache, cache_key) {
         c.put(&k, &jpeg_bytes);
@@ -119,16 +130,14 @@ pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     Ok(jpeg_bytes)
 }
 
-fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
+fn render(path: &Path, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let ext = lowercase_extension(path);
 
     if raw_preview::is_raw_extension(&ext) {
-        let preview = raw_preview::extract_preview(path)?;
+        let preview = raw_preview::extract_preview_sized(path, Some(LONG_SIDE_PX as usize))?;
         cancel.check()?;
         // Embedded RAW previews are JPEG — same fast path applies.
-        if let Ok(out) =
-            render_jpeg_fast(&preview.jpeg_bytes, preview.orientation, cancel)
-        {
+        if let Ok(out) = render_jpeg_fast(&preview.jpeg_bytes, preview.orientation, cancel) {
             return Ok(out);
         }
         // Decoder rejected the format (rare CMYK previews, ...). Fall
@@ -139,7 +148,7 @@ fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     if JPEG_EXTENSIONS.iter().any(|e| *e == ext) {
         let raw = fs::read(path).map_err(|e| e.to_string())?;
         cancel.check()?;
-        let orient = exif_cache::orientation_or_warm(path, &raw);
+        let orient = exif_cache::orientation_or_warm(library_key, path, &raw);
         return match render_jpeg_fast(&raw, orient, cancel) {
             Ok(out) => Ok(out),
             Err(_) => render_jpeg_slow(&raw, orient, cancel),
@@ -149,7 +158,7 @@ fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     // PNG / TIFF / WebP / ... — no DCT scaling available; full decode.
     let raw = fs::read(path).map_err(|e| e.to_string())?;
     cancel.check()?;
-    let orient = exif_cache::orientation_or_warm(path, &raw);
+    let orient = exif_cache::orientation_or_warm(library_key, path, &raw);
     let img = ImageReader::new(Cursor::new(&raw))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
@@ -168,11 +177,7 @@ fn render(path: &Path, cancel: &CancelToken) -> Result<Vec<u8>, String> {
 /// Fast path: DCT-scaled JPEG decode + SIMD resize. Aims for a decoded
 /// buffer ~2× the target long side so the SIMD resize still has good
 /// quality input — `jpeg-decoder` rounds to the nearest 1/2/4/8 ratio.
-fn render_jpeg_fast(
-    bytes: &[u8],
-    orient: u32,
-    cancel: &CancelToken,
-) -> Result<Vec<u8>, String> {
+fn render_jpeg_fast(bytes: &[u8], orient: u32, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     // The fast-path helper takes a `min_width` and aims for ~2× that.
     // We need the *long side* of the (post-orientation) result to be
     // at least `LONG_SIDE_PX`, so for portrait sources we have to
@@ -210,11 +215,7 @@ fn render_jpeg_fast(
 
 /// Slow path used when the fast path bails (unsupported pixel
 /// format, header parse error, …). Decodes through `image`.
-fn render_jpeg_slow(
-    bytes: &[u8],
-    orient: u32,
-    cancel: &CancelToken,
-) -> Result<Vec<u8>, String> {
+fn render_jpeg_slow(bytes: &[u8], orient: u32, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let img = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg)
         .decode()
         .map_err(|e| format!("Decode failed: {e}"))?;

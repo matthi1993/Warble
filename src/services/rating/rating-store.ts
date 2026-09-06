@@ -1,47 +1,16 @@
 /**
- * Per-photo star rating (0..=5) and color label store. Mirrors
- * `variant-store` but persists into the `photo_ratings` SQLite
- * table. The original file on disk is never modified.
+ * Per-photo star rating (0..=5) and color label store. Persists into
+ * the `photo_ratings` SQLite table via Tauri IPC. The original file on
+ * disk is never modified.
  */
 import { invoke } from "@tauri-apps/api/core";
-
-export type ColorLabel =
-  | "green"
-  | "blue"
-  | "yellow"
-  | "red"
-  | "";
-
-export const COLOR_LABELS: readonly Exclude<ColorLabel, "">[] = [
-  "green",
-  "blue",
-  "yellow",
-  "red",
-] as const;
-
-/** Hex color for each label. Picked to read well over both light
- *  thumbnails and the dark full-view background. */
-export const LABEL_COLORS: Record<Exclude<ColorLabel, "">, string> = {
-  green: "#22c55e",
-  blue: "#3b82f6",
-  yellow: "#eab308",
-  red: "#ef4444",
-};
-
-export const LABEL_DISPLAY_NAMES: Record<Exclude<ColorLabel, "">, string> = {
-  green: "Select",
-  blue: "Select 2",
-  yellow: "Raw archive",
-  red: "Archive",
-};
-
-export interface PhotoRating {
-  rating: number;
-  label: ColorLabel;
-  /** Unix epoch seconds at which the rating was last changed. `0`
-   * for legacy rows that pre-date the timestamp column. */
-  ratedAt: number;
-}
+import {
+  type ColorLabel,
+  type PhotoRating,
+  clampRating,
+  sanitizeLabel,
+} from "@domain/rating";
+import { KEY_TO_LABEL } from "@domain/rating/shortcuts";
 
 interface PersistedRow {
   path: string;
@@ -54,20 +23,6 @@ const ratings = new Map<string, PhotoRating>();
 const listeners = new Set<(path: string) => void>();
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
-
-function sanitizeLabel(s: string): ColorLabel {
-  return s === "green" ||
-    s === "blue" ||
-    s === "yellow" ||
-    s === "red"
-    ? s
-    : "";
-}
-
-function clampRating(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(5, Math.round(n)));
-}
 
 export function loadPhotoRatings(): Promise<void> {
   if (loaded) return Promise.resolve();
@@ -92,6 +47,15 @@ export function loadPhotoRatings(): Promise<void> {
       loaded = true;
     });
   return loadPromise;
+}
+
+/** Drop all in-memory ratings and re-fetch from the backend. Used
+ *  after a library hot-swap. */
+export function reloadPhotoRatings(): Promise<void> {
+  ratings.clear();
+  loaded = false;
+  loadPromise = null;
+  return loadPhotoRatings();
 }
 
 export function getPhotoRating(path: string): PhotoRating {
@@ -151,31 +115,6 @@ export function toggleLabel(path: string, label: ColorLabel): void {
   const cur = ratings.get(path)?.label ?? "";
   setPhotoLabel(path, cur === label ? "" : label);
 }
-
-/**
- * Map keyboard shortcut keys (`0`..`5` for stars, `6`..`9` for color
- * labels) to their actions. Used by both the grid (in `app-shell`)
- * and full view (in `full-view`) so the bindings stay in lockstep.
- */
-const KEY_TO_LABEL: Record<string, Exclude<ColorLabel, "">> = {
-  "6": "green",
-  "7": "blue",
-  "8": "yellow",
-  "9": "red",
-};
-
-export const RATING_LABEL_KEYS: ReadonlySet<string> = new Set([
-  "0",
-  "1",
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
-]);
 
 /** Apply the rating-or-label keyboard shortcut for `path`. Star keys
  * (`0`–`5`) set the rating to that exact value (idempotent: pressing

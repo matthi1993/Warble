@@ -3,10 +3,13 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use super::folder::Folder;
 use super::photo::{is_photo_extension, parse_variant, viewable_rank, Photo, PhotoFile};
+use super::portable_path::{make_portable_key, split_portable_key};
 
 #[derive(Default)]
 pub struct LibraryCatalog {
@@ -17,30 +20,98 @@ pub struct LibraryCatalog {
 impl LibraryCatalog {
     /// Walk `root` recursively, register every photo found, and return the
     /// folder tree.
-    pub fn import_root(&mut self, root: &Path) -> Result<Folder, String> {
-        let folder = scan_tree(root, &mut self.photos)?;
+    pub fn import_root(
+        &mut self,
+        root_id: &str,
+        name: &str,
+        root: &Path,
+    ) -> Result<Folder, String> {
+        // Commit the scan atomically. A failed remote read must not leave a
+        // plausible-looking but incomplete set of photos in the catalog.
+        let mut scanned_photos = HashMap::new();
+        let mut folder = scan_tree(root, root, root_id, &mut scanned_photos)?;
+        folder.name = name.to_string();
+        remove_photos_under_root(&mut self.photos, root_id);
+        self.photos.extend(scanned_photos);
+        self.roots.retain(|existing| existing.id != root_id);
         self.roots.push(folder.clone());
         Ok(folder)
     }
 
     /// Re-hydrate a previously imported root without recording it twice.
-    pub fn rehydrate_root(&mut self, root: &Path) -> Result<(), String> {
-        let folder = scan_tree(root, &mut self.photos)?;
+    pub fn rehydrate_root(&mut self, root_id: &str, name: &str, root: &Path) -> Result<(), String> {
+        let mut scanned_photos = HashMap::new();
+        let mut folder = scan_tree(root, root, root_id, &mut scanned_photos)?;
+        folder.name = name.to_string();
+        remove_photos_under_root(&mut self.photos, root_id);
+        self.photos.extend(scanned_photos);
+        self.roots.retain(|existing| existing.id != root_id);
         self.roots.push(folder);
         Ok(())
+    }
+
+    pub fn add_unavailable_root(&mut self, root_id: &str, name: &str) {
+        self.roots.push(Folder {
+            id: root_id.to_string(),
+            path: root_id.to_string(),
+            name: name.to_string(),
+            children: Vec::new(),
+            available: false,
+        });
     }
 
     pub fn roots(&self) -> Vec<Folder> {
         self.roots.clone()
     }
 
-    /// Return all photos directly inside `folder`, with sidecar files
-    /// (same stem, different extension) merged into a single entry.
-    pub fn photos_in_folder(&self, folder: &Path) -> Vec<Photo> {
+    /// Re-scan one folder subtree while leaving every other imported folder
+    /// untouched. `root` is this device's physical binding for the portable
+    /// root UUID contained in `folder_key`.
+    pub fn refresh_folder(&mut self, folder_key: &str, root: &Path) -> Result<(), String> {
+        let (root_id, relative) = split_portable_key(folder_key)?;
+        let physical_folder = root.join(relative);
+
+        let existing_name = find_folder(&self.roots, folder_key)
+            .map(|folder| folder.name.clone())
+            .ok_or_else(|| "folder is not present in the library".to_string())?;
+
+        // Scan into a temporary map first. If reading the folder fails, the
+        // currently displayed catalog remains intact.
+        let mut refreshed_photos = HashMap::new();
+        let mut refreshed = scan_tree(&physical_folder, root, root_id, &mut refreshed_photos)?;
+        // Root display names are persisted and may intentionally differ from
+        // the physical directory name.
+        if folder_key == root_id {
+            refreshed.name = existing_name;
+        }
+
+        let prefix = format!("{}/", folder_key.trim_end_matches('/'));
+        self.photos.retain(|path, _| !path.starts_with(&prefix));
+        self.photos.extend(refreshed_photos);
+
+        let mut replacement = Some(refreshed);
+        if !replace_folder(&mut self.roots, folder_key, &mut replacement) {
+            return Err("folder disappeared while it was being refreshed".to_string());
+        }
+        Ok(())
+    }
+
+    /// Like `photos_in_folder` but also includes photos in any nested
+    /// subfolder when `recursive` is true.
+    pub fn photos_in_folder_filtered(&self, folder: &Path, recursive: bool) -> Vec<Photo> {
         let mut groups: HashMap<String, Vec<&Photo>> = HashMap::new();
         for photo in self.photos.values() {
             let entry_path = Path::new(&photo.path);
-            if entry_path.parent() != Some(folder) {
+            let parent = match entry_path.parent() {
+                Some(p) => p,
+                None => continue,
+            };
+            let in_scope = if recursive {
+                parent == folder || parent.starts_with(folder)
+            } else {
+                parent == folder
+            };
+            if !in_scope {
                 continue;
             }
             let stem = entry_path
@@ -48,11 +119,14 @@ impl LibraryCatalog {
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
             let (base_stem, _variant) = parse_variant(stem);
-            let key = if base_stem.is_empty() {
+            let stem_key = if base_stem.is_empty() {
                 photo.filename.to_ascii_lowercase()
             } else {
                 base_stem.to_ascii_lowercase()
             };
+            // Scope the sidecar group key by parent path so identically-named
+            // files in different subfolders don't collapse into one entry.
+            let key = format!("{}|{}", parent.to_string_lossy(), stem_key);
             groups.entry(key).or_default().push(photo);
         }
 
@@ -60,6 +134,38 @@ impl LibraryCatalog {
         result.sort_by(|a, b| a.filename.cmp(&b.filename));
         result
     }
+}
+
+fn remove_photos_under_root(photos: &mut HashMap<String, Photo>, root_id: &str) {
+    let prefix = format!("{root_id}/");
+    photos.retain(|path, _| path != root_id && !path.starts_with(&prefix));
+}
+
+fn find_folder<'a>(folders: &'a [Folder], id: &str) -> Option<&'a Folder> {
+    for folder in folders {
+        if folder.id == id {
+            return Some(folder);
+        }
+        if let Some(found) = find_folder(&folder.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn replace_folder(folders: &mut [Folder], id: &str, replacement: &mut Option<Folder>) -> bool {
+    for folder in folders {
+        if folder.id == id {
+            *folder = replacement
+                .take()
+                .expect("replacement is consumed only once");
+            return true;
+        }
+        if replace_folder(&mut folder.children, id, replacement) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Pick the primary file from a sidecar/variant group (preferring base
@@ -126,11 +232,21 @@ fn lowercase_extension(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder, String> {
-    let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
+fn scan_tree(
+    path: &Path,
+    root: &Path,
+    root_id: &str,
+    photos: &mut HashMap<String, Photo>,
+) -> Result<Folder, String> {
+    // iOS file providers (including SMB shares exposed through Files) may
+    // briefly return EIO/ESTALE-like failures while they materialise a remote
+    // directory. Reading and collecting the whole directory in one retryable
+    // operation prevents a transient iterator error from producing a
+    // permanently incomplete tree.
+    let entries = read_directory_with_retry(path)?;
     let mut children = Vec::new();
 
-    for entry in entries.flatten() {
+    for entry in entries {
         let entry_path = entry.path();
         // Skip dotfiles / hidden directories (e.g. `.DS_Store`, `.thumbs`).
         let is_hidden = entry
@@ -141,12 +257,18 @@ fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder,
         if is_hidden {
             continue;
         }
-        if entry_path.is_dir() {
-            if let Ok(child) = scan_tree(&entry_path, photos) {
-                children.push(child);
-            }
-        } else if entry_path.is_file() {
-            if let Some(photo) = photo_from_path(&entry_path) {
+        // Path::is_dir/is_file turn metadata errors into `false`, which used
+        // to make remote files and complete subtrees disappear silently.
+        let metadata = retry_io(
+            || fs::metadata(&entry_path),
+            || format!("could not read metadata for {}", entry_path.display()),
+        )?;
+        if metadata.is_dir() {
+            let child = scan_tree(&entry_path, root, root_id, photos)
+                .map_err(|error| format!("could not scan {}: {error}", entry_path.display()))?;
+            children.push(child);
+        } else if metadata.is_file() {
+            if let Some(photo) = photo_from_path(&entry_path, root, root_id) {
                 photos.insert(photo.path.clone(), photo);
             }
         }
@@ -159,17 +281,54 @@ fn scan_tree(path: &Path, photos: &mut HashMap<String, Photo>) -> Result<Folder,
         .and_then(|n| n.to_str())
         .unwrap_or_else(|| path.to_str().unwrap_or_default())
         .to_string();
-    let id = path.to_string_lossy().into_owned();
+    let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+    let id = make_portable_key(root_id, relative)?;
 
     Ok(Folder {
+        path: id.clone(),
         id,
-        path: path.to_path_buf(),
         name,
         children,
+        available: true,
     })
 }
 
-fn photo_from_path(entry_path: &Path) -> Option<Photo> {
+const IO_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(1_000),
+];
+
+/// Retry filesystem operations that can fail transiently while an iOS file
+/// provider fetches SMB directory metadata. The first attempt is immediate;
+/// delays are only paid after a failure.
+fn retry_io<T>(
+    mut operation: impl FnMut() -> io::Result<T>,
+    context: impl Fn() -> String,
+) -> Result<T, String> {
+    let mut last_error = None;
+    for attempt in 0..=IO_RETRY_DELAYS.len() {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = Some(error),
+        }
+        if let Some(delay) = IO_RETRY_DELAYS.get(attempt) {
+            std::thread::sleep(*delay);
+        }
+    }
+    let error = last_error.expect("retry loop always performs at least one operation");
+    Err(format!("{}: {error}", context()))
+}
+
+fn read_directory_with_retry(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    retry_io(
+        || fs::read_dir(path)?.collect::<io::Result<Vec<_>>>(),
+        || format!("could not read directory {}", path.display()),
+    )
+}
+
+fn photo_from_path(entry_path: &Path, root: &Path, root_id: &str) -> Option<Photo> {
     let ext = entry_path
         .extension()
         .and_then(|e| e.to_str())?
@@ -182,11 +341,69 @@ fn photo_from_path(entry_path: &Path) -> Option<Photo> {
         .and_then(|n| n.to_str())
         .unwrap_or_default()
         .to_string();
-    let path = entry_path.to_string_lossy().into_owned();
+    let relative = entry_path.strip_prefix(root).ok()?;
+    let path = make_portable_key(root_id, relative).ok()?;
     Some(Photo {
         path,
         filename,
         extensions: vec![ext],
         files: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refreshes_only_the_requested_folder_subtree() {
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-refresh-{root_id}"));
+        let first = root.join("First");
+        let second = root.join("Second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("old.jpg"), []).unwrap();
+        fs::write(second.join("untouched.jpg"), []).unwrap();
+
+        let mut catalog = LibraryCatalog::default();
+        catalog.import_root(&root_id, "Photos", &root).unwrap();
+
+        fs::remove_file(first.join("old.jpg")).unwrap();
+        fs::write(first.join("new.jpg"), []).unwrap();
+        catalog
+            .refresh_folder(&format!("{root_id}/First"), &root)
+            .unwrap();
+
+        assert!(!catalog
+            .photos
+            .contains_key(&format!("{root_id}/First/old.jpg")));
+        assert!(catalog
+            .photos
+            .contains_key(&format!("{root_id}/First/new.jpg")));
+        assert!(catalog
+            .photos
+            .contains_key(&format!("{root_id}/Second/untouched.jpg")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_silently_accept_a_partial_directory_scan() {
+        use std::os::unix::fs::symlink;
+
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-partial-scan-{root_id}"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("visible.jpg"), []).unwrap();
+        symlink(root.join("missing.jpg"), root.join("remote-placeholder.jpg")).unwrap();
+
+        let mut catalog = LibraryCatalog::default();
+        let error = catalog.import_root(&root_id, "Photos", &root).unwrap_err();
+        assert!(error.contains("remote-placeholder.jpg"));
+        assert!(catalog.photos.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

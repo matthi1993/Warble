@@ -37,4 +37,7 @@ coverage
 *.sln
 *.sw?
 
-./ui/
+/ui/
+/src-tauri/gen/
+
+tmp/

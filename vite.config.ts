@@ -11,6 +11,7 @@ export default defineConfig(async () => ({
       "@ui": fileURLToPath(new URL("./src/ui", import.meta.url)),
       "@app": fileURLToPath(new URL("./src/app", import.meta.url)),
       "@domain": fileURLToPath(new URL("./src/domain", import.meta.url)),
+      "@services": fileURLToPath(new URL("./src/services", import.meta.url)),
     },
   },
 

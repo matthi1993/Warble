@@ -1,15 +1,17 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { Photo } from "./types";
+import type { Photo } from "@domain/photo";
 import {
   COLOR_LABELS,
   LABEL_COLORS,
   LABEL_DISPLAY_NAMES,
+  type ColorLabel,
+} from "@domain/rating";
+import {
   getPhotoRating,
   subscribePhotoRatings,
-  type ColorLabel,
-} from "./rating-store";
+} from "@services/rating/rating-store";
 import "../ui/photos/pf-thumbnail-card";
 import "../ui/controls/pf-slider";
 
@@ -41,12 +43,14 @@ function readStoredColumns(): number {
 export class PfPhotoGrid extends LitElement {
   static styles = css`
     :host {
-      display: block;
+      display: flex;
+      flex-direction: column;
       position: relative;
+      height: 100%;
+      min-height: 0;
     }
     .grid-header {
-      position: sticky;
-      top: 0;
+      flex: 0 0 auto;
       z-index: 5;
       display: flex;
       flex-direction: column;
@@ -55,6 +59,11 @@ export class PfPhotoGrid extends LitElement {
       margin-bottom: var(--pf-space-3);
       background: var(--pf-bg);
       border-bottom: 1px solid var(--pf-border);
+    }
+    .grid-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
     }
     :host([full-view-open]) .grid-header {
       display: none;
@@ -220,6 +229,64 @@ export class PfPhotoGrid extends LitElement {
     this.unsubscribeRatings?.();
     this.unsubscribeRatings = null;
   }
+
+  /** Bring the currently selected card into view. Called from the
+   *  app-shell when the user leaves the full image view (e.g. by
+   *  pressing "g") so the grid lands on the photo they were just
+   *  looking at, plus internally on first render and whenever the
+   *  selection changes from outside the grid. */
+  scrollSelectionIntoView(): void {
+    if (!this.selectedPath) return;
+    const card = this.renderRoot.querySelector(
+      `pf-thumbnail-card[data-path="${CSS.escape(this.selectedPath)}"]`
+    ) as HTMLElement | null;
+    card?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  /** Whether the last selection change originated from a click
+   *  inside the grid. Set by onClick so updated() knows to skip
+   *  scrollSelectionIntoView (the card is already on screen). */
+  private selectionFromClick = false;
+
+  protected updated(changed: Map<string, unknown>): void {
+    // When the full-view overlay closes the grid becomes visible
+    // again; scroll the selected photo into view so the user
+    // doesn't lose their place in a long folder.
+    if (
+      changed.has("fullViewOpen") &&
+      changed.get("fullViewOpen") === true &&
+      !this.fullViewOpen
+    ) {
+      requestAnimationFrame(() => this.scrollSelectionIntoView());
+    } else if (changed.has("selectedPath") && this.selectedPath) {
+      // The selection moved (e.g. arrow keys propagated from the
+      // shell) — keep the focused card on screen. Skip when the
+      // change came from a direct click (the card is already
+      // visible and centering it would cause a jump that makes
+      // double-click impossible).
+      if (!this.selectionFromClick) {
+        requestAnimationFrame(() => this.scrollSelectionIntoView());
+      }
+      this.selectionFromClick = false;
+    }
+  }
+
+  protected firstUpdated(): void {
+    if (this.selectedPath) {
+      requestAnimationFrame(() => this.scrollSelectionIntoView());
+    }
+    this.addEventListener('click', this.onGridClick);
+  }
+
+  private onGridClick = (e: Event) => {
+    // A click inside the grid (on a thumbnail card) selects that
+    // photo. Set the flag so updated() skips scrollIntoView — the
+    // clicked card is already visible and centering it would jump,
+    // making double-click impossible.
+    if (e.target instanceof HTMLElement && e.target.closest('pf-thumbnail-card')) {
+      this.selectionFromClick = true;
+    }
+  };
 
   private get filteredPhotos(): Photo[] {
     // Keep a reactive dependency on `ratingsTick` so Lit re-renders
@@ -408,28 +475,31 @@ export class PfPhotoGrid extends LitElement {
           </button>
         </div>
       </div>
-      ${visible.length === 0 && filtersActive
-        ? html`<div class="empty-filter">
-            No photos match the current filters.
-          </div>`
-        : html`<div
-            class="grid"
-            style=${`--pf-grid-cols: ${this.columns}`}
-          >
-            ${repeat(
-              visible,
-              (p) => p.path,
-              (p) => html`
-                <pf-thumbnail-card
-                  .path=${p.path}
-                  .filename=${p.filename}
-                  .extensions=${p.extensions ?? []}
-                  .variantCount=${variantCount(p)}
-                  ?selected=${this.selectedPath === p.path}
-                ></pf-thumbnail-card>
-              `
-            )}
-          </div>`}
+      <div class="grid-scroll">
+        ${visible.length === 0 && filtersActive
+          ? html`<div class="empty-filter">
+              No photos match the current filters.
+            </div>`
+          : html`<div
+              class="grid"
+              style=${`--pf-grid-cols: ${this.columns}`}
+            >
+              ${repeat(
+                visible,
+                (p) => p.path,
+                (p) => html`
+                  <pf-thumbnail-card
+                    data-path=${p.path}
+                    .path=${p.path}
+                    .filename=${p.filename}
+                    .extensions=${p.extensions ?? []}
+                    .variantCount=${variantCount(p)}
+                    ?selected=${this.selectedPath === p.path}
+                  ></pf-thumbnail-card>
+                `
+              )}
+            </div>`}
+      </div>
     `;
   }
 }

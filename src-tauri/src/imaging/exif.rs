@@ -427,4 +427,3 @@ fn gps(exif: &Exif) -> (Option<f64>, Option<f64>, Option<String>) {
         });
     (lat, lon, alt)
 }
-

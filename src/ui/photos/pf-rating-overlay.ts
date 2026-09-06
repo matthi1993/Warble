@@ -13,13 +13,15 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
-  getPhotoRating,
   LABEL_COLORS,
   LABEL_DISPLAY_NAMES,
+  type PhotoRating,
+} from "@domain/rating";
+import {
+  getPhotoRating,
   setPhotoStars,
   subscribePhotoRatings,
-  type PhotoRating,
-} from "../../app/rating-store";
+} from "@services/rating/rating-store";
 
 @customElement("pf-rating-overlay")
 export class PfRatingOverlay extends LitElement {
@@ -63,7 +65,25 @@ export class PfRatingOverlay extends LitElement {
       opacity: 0;
     }
     :host(:hover) .stars.idle,
-    .stars.idle:focus-within {
+    .stars.idle:focus-within,
+    :host([forceVisible]) .stars.idle,
+    :host([flashing]) .stars.idle {
+      opacity: 1;
+    }
+    /* In fullscreen we hide both badges by default and let the
+       host force them visible (when chrome is on screen) or flash
+       them for a second when the value changes. */
+    :host([fullscreen]) .stars,
+    :host([fullscreen]) .label {
+      opacity: 0;
+      transition: opacity 180ms ease-out;
+    }
+    :host([fullscreen][forceVisible]) .stars,
+    :host([fullscreen][forceVisible]) .label,
+    :host([fullscreen][flashing]) .stars,
+    :host([fullscreen][flashing]) .label,
+    :host([fullscreen]:hover) .stars,
+    :host([fullscreen]:hover) .label {
       opacity: 1;
     }
     .stars button {
@@ -87,6 +107,23 @@ export class PfRatingOverlay extends LitElement {
   @property({ type: String })
   path = "";
 
+  /** When true, force the stars (and label) to be visible even on
+   *  an unrated photo. Used by the full-view shell while its
+   *  chrome (header/footer) is showing in fullscreen — so the
+   *  overlay sits alongside the rest of the UI rather than hiding
+   *  unless the cursor is exactly over the canvas. */
+  @property({ type: Boolean, reflect: true })
+  forceVisible = false;
+
+  /** When true, the overlay is being shown in the fullscreen view.
+   *  Both the stars and the colour label hide by default in that
+   *  mode — they only appear while `forceVisible` is on (chrome
+   *  showing) or `flashing` (recently changed). */
+  @property({ type: Boolean, reflect: true })
+  fullscreen = false;
+
+  private flashTimer: number | null = null;
+
   @state()
   private value: PhotoRating = { rating: 0, label: "", ratedAt: 0 };
 
@@ -97,7 +134,11 @@ export class PfRatingOverlay extends LitElement {
     this.value = getPhotoRating(this.path);
     this.unsubscribe = subscribePhotoRatings((p) => {
       if (p === this.path || p === "") {
-        this.value = getPhotoRating(this.path);
+        const next = getPhotoRating(this.path);
+        const changed =
+          next.rating !== this.value.rating || next.label !== this.value.label;
+        this.value = next;
+        if (changed) this.startFlash();
       }
     });
   }
@@ -106,6 +147,22 @@ export class PfRatingOverlay extends LitElement {
     super.disconnectedCallback();
     this.unsubscribe?.();
     this.unsubscribe = null;
+    if (this.flashTimer !== null) {
+      clearTimeout(this.flashTimer);
+      this.flashTimer = null;
+    }
+  }
+
+  /** Briefly reveal the badges (rating + label) for 1s, then hide
+   *  them again. Used to surface user actions in fullscreen where
+   *  the overlay would otherwise stay invisible. */
+  private startFlash(): void {
+    this.toggleAttribute("flashing", true);
+    if (this.flashTimer !== null) clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
+      this.toggleAttribute("flashing", false);
+      this.flashTimer = null;
+    }, 1000);
   }
 
   willUpdate(changed: Map<string, unknown>): void {

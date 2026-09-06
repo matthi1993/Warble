@@ -1,5 +1,5 @@
 /**
- * Helpers for handling photos that have multiple files sharing the same stem.
+ * Pure helpers for photos that have multiple files sharing the same stem.
  *
  * Two orthogonal axes:
  *   - **Format** — `jpg` vs `raw` (other extensions are ignored by the toggle).
@@ -58,13 +58,17 @@ export interface VariantOption {
 
 function variantLabel(key: string): string {
   if (key === "base") return "Base";
+  if (key.toLowerCase() === "edit") return "Edit";
+  if (/^edit \d+$/i.test(key)) {
+    return `Edit ${key.slice(5)}`;
+  }
   return `Variant ${key}`;
 }
 
 /** Variants available for the given format, with `base` first. */
 export function availableVariants(
   photo: Photo,
-  format: PhotoFormat
+  format: PhotoFormat,
 ): VariantOption[] {
   const keys = new Set<string>();
   for (const f of filesOf(photo)) {
@@ -83,7 +87,7 @@ export function availableVariants(
 export function fileForSelection(
   photo: Photo,
   format: PhotoFormat,
-  variantKey: string
+  variantKey: string,
 ): string | null {
   for (const f of filesOf(photo)) {
     if (classifyFormat(f.extension) === format && f.variant === variantKey) {
@@ -99,7 +103,7 @@ export function fileForSelection(
  * when the primary file isn't a known format.
  */
 export function primarySelection(
-  photo: Photo
+  photo: Photo,
 ): { format: PhotoFormat; variant: string } | null {
   for (const f of filesOf(photo)) {
     if (f.path === photo.path) {
@@ -114,4 +118,3 @@ export function primarySelection(
   if (variants.length === 0) return null;
   return { format: fmt, variant: variants[0].key };
 }
-

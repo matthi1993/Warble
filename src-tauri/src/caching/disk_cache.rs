@@ -26,7 +26,7 @@ const PUTS_PER_SWEEP: usize = 64;
 pub struct DiskCache {
     root: PathBuf,
     file_extension: &'static str,
-    /// 0 means "unbounded" (no eviction).
+    /// 0 means disabled (no reads or writes).
     max_entries: Mutex<usize>,
     puts_since_sweep: AtomicUsize,
 }
@@ -34,7 +34,7 @@ pub struct DiskCache {
 impl DiskCache {
     /// Create a cache rooted at `root`. Stored entries get the file
     /// extension `file_extension` (e.g. `"jpg"`, `"bin"`). The cache is
-    /// unbounded until `set_max_entries` is called.
+    /// disabled until `set_max_entries` is called with a positive value.
     pub fn new(root: PathBuf, file_extension: &'static str) -> Self {
         Self {
             root,
@@ -44,11 +44,15 @@ impl DiskCache {
         }
     }
 
-    /// Update the count limit. `0` disables eviction. Triggers an immediate
+    /// Update the count limit. `0` disables and clears the cache. Triggers an immediate
     /// sweep so the new limit is enforced even if no further puts happen.
     pub fn set_max_entries(&self, max: usize) {
         if let Ok(mut guard) = self.max_entries.lock() {
             *guard = max;
+        }
+        if max == 0 {
+            self.clear();
+            return;
         }
         self.enforce_limit();
     }
@@ -101,12 +105,18 @@ impl DiskCache {
     }
 
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+        if self.max_entries() == 0 {
+            return None;
+        }
         // Reading the file updates its atime on macOS APFS, which is
         // what `enforce_limit` uses as the recency signal for the LRU.
         fs::read(self.path_for(key)).ok()
     }
 
     pub fn put(&self, key: &CacheKey, bytes: &[u8]) {
+        if self.max_entries() == 0 {
+            return;
+        }
         let target = self.path_for(key);
         let Some(parent) = target.parent() else { return };
         if fs::create_dir_all(parent).is_err() {
@@ -157,7 +167,7 @@ impl DiskCache {
     }
 
     /// Walk every cache file, drop the oldest (by mtime) until the entry
-    /// count is at or below `max_entries`. No-op when unbounded.
+    /// count is at or below `max_entries`.
     pub fn enforce_limit(&self) {
         let cap = self.max_entries();
         if cap == 0 {

@@ -8,24 +8,32 @@
 //! external edit invalidates the row automatically.
 
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use super::exif::{self, ExifMetadata, IDENTITY};
 use crate::library::LibraryRepository;
 
-static REPO: OnceLock<Arc<LibraryRepository>> = OnceLock::new();
+static REPO: std::sync::OnceLock<std::sync::Mutex<Option<Arc<LibraryRepository>>>> =
+    std::sync::OnceLock::new();
 
-/// Wire up the cache. Subsequent calls are ignored.
+fn repo_slot() -> &'static std::sync::Mutex<Option<Arc<LibraryRepository>>> {
+    REPO.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Wire up the cache. Replaces any previous repository (used by
+/// the library hot-swap flow).
 pub fn init(repo: Arc<LibraryRepository>) {
-    let _ = REPO.set(repo);
+    let slot = repo_slot();
+    if let Ok(mut guard) = slot.lock() {
+        *guard = Some(repo);
+    }
 }
 
 /// Return cached `(orientation, metadata)` for `path` if the row's
 /// fingerprint still matches the file on disk.
-pub fn get(path: &Path) -> Option<(u32, ExifMetadata)> {
-    let repo = REPO.get()?;
-    let key = path.to_str()?;
+pub fn get(key: &str, path: &Path) -> Option<(u32, ExifMetadata)> {
+    let repo = repo_slot().lock().ok()?.clone()?;
     let (mtime, size) = file_fingerprint(path)?;
     let (cached_mtime, cached_size, orientation, metadata_json) =
         repo.get_photo_exif(key).ok().flatten()?;
@@ -39,13 +47,13 @@ pub fn get(path: &Path) -> Option<(u32, ExifMetadata)> {
 /// Get cached metadata, computing + persisting it on miss. The
 /// returned struct matches [`exif::read_metadata`] semantics: empty
 /// fields when EXIF is absent or unreadable.
-pub fn get_or_compute(path: &Path) -> ExifMetadata {
-    if let Some((_, metadata)) = get(path) {
+pub fn get_or_compute(key: &str, path: &Path) -> ExifMetadata {
+    if let Some((_, metadata)) = get(key, path) {
         return metadata;
     }
     match exif::read_full_metadata(path) {
         Some((orientation, metadata)) => {
-            store(path, orientation, &metadata);
+            store(key, path, orientation, &metadata);
             metadata
         }
         None => ExifMetadata::default(),
@@ -57,13 +65,13 @@ pub fn get_or_compute(path: &Path) -> ExifMetadata {
 /// cache from those same bytes — every imaging pipeline already has
 /// the source bytes in memory at this point, so populating EXIF is
 /// effectively free.
-pub fn orientation_or_warm(path: &Path, bytes: &[u8]) -> u32 {
-    if let Some((orient, _)) = get(path) {
+pub fn orientation_or_warm(key: &str, path: &Path, bytes: &[u8]) -> u32 {
+    if let Some((orient, _)) = get(key, path) {
         return orient;
     }
     match exif::read_full_metadata_from_bytes(bytes) {
         Some((orient, metadata)) => {
-            store(path, orient, &metadata);
+            store(key, path, orient, &metadata);
             orient
         }
         None => IDENTITY,
@@ -72,13 +80,14 @@ pub fn orientation_or_warm(path: &Path, bytes: &[u8]) -> u32 {
 
 /// Variant for callers that already parsed EXIF themselves (e.g. the
 /// RAW preview pipeline) and just want to populate the cache.
-pub fn warm_with(path: &Path, orientation: u32, metadata: &ExifMetadata) {
-    store(path, orientation, metadata);
+pub fn warm_with(key: &str, path: &Path, orientation: u32, metadata: &ExifMetadata) {
+    store(key, path, orientation, metadata);
 }
 
-fn store(path: &Path, orientation: u32, metadata: &ExifMetadata) {
-    let Some(repo) = REPO.get() else { return };
-    let Some(key) = path.to_str() else { return };
+fn store(key: &str, path: &Path, orientation: u32, metadata: &ExifMetadata) {
+    let Some(repo) = (|| repo_slot().lock().ok()?.clone())() else {
+        return;
+    };
     let Some((mtime, size)) = file_fingerprint(path) else {
         return;
     };

@@ -50,12 +50,13 @@ pub fn parse_variant(stem: &str) -> (String, String) {
 
 /// File extensions accepted when scanning a folder for photos.
 pub const PHOTO_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "tiff", "raf", "raw", "arw", "cr2", "cr3", "nef",
+    "jpg", "jpeg", "png", "tif", "tiff", "raf", "raw", "arw", "cr2", "cr3", "nef",
+    "dng", "orf", "rw2",
 ];
 
 /// Extensions the viewer can natively render, in preference order. Used to
 /// pick a primary file when a JPEG/RAW pair shares a stem.
-const VIEWABLE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tiff"];
+const VIEWABLE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff"];
 
 pub fn is_photo_extension(ext: &str) -> bool {
     PHOTO_EXTENSIONS.iter().any(|e| *e == ext)

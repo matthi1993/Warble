@@ -1,24 +1,22 @@
 mod app_state;
 mod caching;
 mod commands;
+mod device_storage;
 mod imaging;
 mod library;
+#[cfg(desktop)]
 mod menu;
 mod settings;
 mod tasks;
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use tauri::Manager;
-
 use app_state::AppState;
-use imaging::{exif_cache, full_image, hd_image, thumbnails};
-use library::LibraryRepository;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(tauri_plugin_folder_access::init());
+    let builder = builder
         .manage(AppState::default())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -27,21 +25,28 @@ pub fn run() {
             // Spin up the priority task pool early so worker threads
             // are warm before the first image request.
             let _ = tasks::pool();
-            init_thumbnail_cache(app);
-            init_hd_image_cache(app);
-            init_library_repository(app);
-            init_settings_and_caches(app);
-            init_menu(app);
+            library::init_thumbnail_cache(app);
+            library::init_hd_image_cache(app);
+            library::init_library_repository(app);
+            library::init_settings_and_caches(app);
+            library::init_menu(app);
             Ok(())
-        })
-        .on_menu_event(|app, event| menu::handle_event(app, event))
+        });
+    #[cfg(desktop)]
+    let builder = builder.on_menu_event(|app, event| menu::handle_event(app, event));
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::select_folders_dialog,
             commands::import_folder,
+            commands::bind_media_root,
             commands::list_imported_folders,
+            commands::refresh_imported_folders,
+            commands::refresh_folder,
+            commands::remove_imported_folder,
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,
+            commands::get_raw_image_bytes,
             commands::get_hd_image_bytes,
             commands::cancel_image_request,
             commands::get_exif_metadata,
@@ -54,129 +59,39 @@ pub fn run() {
             commands::clear_hd_image_cache,
             commands::clear_full_image_memory_cache,
             commands::set_background_pool_workers,
+            commands::set_cache_settings,
             commands::get_cache_disk_usage,
             commands::get_task_stats,
             commands::cancel_all_tasks,
             commands::reveal_in_file_manager,
+            commands::open_photo_in_app,
             commands::get_photo_variants,
             commands::set_photo_variant,
+            commands::save_photo_variant,
+            commands::trash_photo_variant,
+            commands::trash_photo_group,
             commands::get_last_folder,
             commands::set_last_folder,
             commands::get_view_state,
             commands::set_view_state,
             commands::get_app_view,
             commands::set_app_view,
+            commands::get_post_process_presets,
+            commands::set_post_process_presets,
+            commands::get_photo_effects,
+            commands::set_photo_effects,
             commands::get_photo_edits,
             commands::set_photo_edit,
             commands::clear_photo_edit,
             commands::get_photo_ratings,
             commands::set_photo_rating,
+            commands::get_open_library_path,
+            commands::select_library_dialog,
+            commands::save_library,
+            commands::save_library_as,
+            commands::save_open_library,
+            commands::load_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-fn init_thumbnail_cache(app: &tauri::App) {
-    if let Ok(mut dir) = app.path().app_cache_dir() {
-        dir.push("thumbnails");
-        let _ = std::fs::create_dir_all(&dir);
-        thumbnails::init_cache_dir(dir);
-    }
-}
-
-fn init_hd_image_cache(app: &tauri::App) {
-    if let Ok(mut dir) = app.path().app_cache_dir() {
-        dir.push("hd_images");
-        let _ = std::fs::create_dir_all(&dir);
-        hd_image::init_cache_dir(dir);
-    }
-}
-
-/// Load persisted cache settings (or defaults), then apply them to every
-/// in-memory and on-disk cache before the app processes its first request.
-/// Must run *after* `init_library_repository` because settings live in the
-/// SQLite library DB.
-fn init_settings_and_caches(app: &tauri::App) {
-    let state = app.state::<AppState>();
-    if let Ok(repo) = state.repository() {
-        state.settings.load_from(repo);
-    }
-    let s = state.settings.get();
-    thumbnails::set_disk_cache_max_entries(s.thumbnail_disk_max_entries);
-    hd_image::set_disk_cache_max_entries(s.hd_image_disk_max_entries);
-    full_image::set_memory_cache_capacity(s.full_image_memory_max_entries);
-    tasks::pool().set_bg_concurrency(s.background_pool_workers);
-}
-
-fn init_menu(app: &tauri::App) {
-    match menu::build(app.handle()) {
-        Ok(m) => {
-            if let Err(e) = app.set_menu(m) {
-                eprintln!("failed to install application menu: {e}");
-            }
-        }
-        Err(e) => eprintln!("failed to build application menu: {e}"),
-    }
-}
-
-fn init_library_repository(app: &tauri::App) {
-    // The library DB used to live under the OS-specific app data
-    // directory, but users couldn't find it for backup or migration.
-    // We now keep it next to the user's photos as a single
-    // `~/Pictures/library.warble` file. If an old DB exists in the
-    // previous location, copy it across once so we don't lose the
-    // user's history.
-    let db_path = app
-        .path()
-        .picture_dir()
-        .ok()
-        .map(|mut p| {
-            p.push("library.warble");
-            p
-        })
-        .unwrap_or_else(|| PathBuf::from("./library.warble"));
-    if let Some(parent) = db_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("failed to create library dir at {parent:?}: {e}");
-        }
-    }
-
-    if !db_path.exists() {
-        if let Ok(mut legacy) = app.path().app_data_dir() {
-            legacy.push("warble.db");
-            if legacy.exists() {
-                if let Err(e) = std::fs::copy(&legacy, &db_path) {
-                    eprintln!(
-                        "failed to migrate legacy DB {legacy:?} -> {db_path:?}: {e}"
-                    );
-                }
-            }
-        }
-    }
-
-    let state = app.state::<AppState>();
-    match LibraryRepository::open(&db_path) {
-        Ok(repo) => {
-            let arc = Arc::new(repo);
-            rehydrate_imported_roots(arc.as_ref(), &state);
-            exif_cache::init(Arc::clone(&arc));
-            let _ = state.repository.set(arc);
-        }
-        Err(e) => eprintln!("failed to open library repository at {db_path:?}: {e}"),
-    }
-}
-
-/// Walk every previously imported root from disk so the in-memory catalog is
-/// populated on startup. The DB only stores the root paths; the file listing
-/// is rebuilt fresh each launch.
-fn rehydrate_imported_roots(repo: &LibraryRepository, state: &AppState) {
-    let Ok(paths) = repo.imported_root_paths() else {
-        return;
-    };
-    let Ok(mut catalog) = state.catalog.lock() else {
-        return;
-    };
-    for path in paths {
-        let _ = catalog.rehydrate_root(&PathBuf::from(path));
-    }
 }

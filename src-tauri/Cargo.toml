@@ -24,13 +24,23 @@ kamadak-exif = "0.6"
 base64 = "0.22"
 jpeg-decoder = "0.3"
 fast_image_resize = { version = "5", features = ["image"] }
+rawloader = "0.37"
+imagepipe = "0.5"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["sync"] }
+rawler = "0.7"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri-plugin-folder-access = { path = "plugins/folder-access" }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+trash = "5"
 
 # Even in dev builds, run the imaging crates with full optimisation —
 # debug-built JPEG decode + SIMD resize is an order of magnitude slower
 # than release, which makes a 24 MP HD preview take ~30 s instead of
 # 1–2 s. Our own code stays at the default `opt-level = 0` so it still
 # builds and steps through quickly.
-# [profile.dev.package."*"]
-# opt-level = 3
+[profile.dev.package."*"]
+opt-level = 3

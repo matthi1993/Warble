@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { Folder } from "../../app/types";
+import type { Folder } from "@domain/folder";
 import "../icons/pf-icon";
 
 @customElement("pf-folder-tree-item")
@@ -53,6 +53,16 @@ export class PfFolderTreeItem extends LitElement {
     .row.selected .folder-icon {
       color: var(--pf-accent);
     }
+    .row.unavailable {
+      color: var(--pf-text-subtle);
+    }
+    .row.unavailable .folder-icon {
+      color: var(--pf-danger);
+    }
+    .status {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-danger);
+    }
     .name {
       flex: 1;
       overflow: hidden;
@@ -79,6 +89,10 @@ export class PfFolderTreeItem extends LitElement {
   @state()
   private expanded = false;
 
+  private longPressTimer: number | null = null;
+  private longPressStart: { x: number; y: number } | null = null;
+  private suppressNextClick = false;
+
   connectedCallback(): void {
     super.connectedCallback();
     if (this.isRoot) {
@@ -92,6 +106,20 @@ export class PfFolderTreeItem extends LitElement {
   }
 
   private select() {
+    if (this.suppressNextClick) {
+      this.suppressNextClick = false;
+      return;
+    }
+    if (!this.folder.available) {
+      this.dispatchEvent(
+        new CustomEvent<{ rootId: string }>("root-reconnect", {
+          detail: { rootId: this.folder.id },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
     this.dispatchEvent(
       new CustomEvent<{ id: string; path: string }>("folder-select", {
         detail: { id: this.folder.id, path: this.folder.path },
@@ -101,14 +129,69 @@ export class PfFolderTreeItem extends LitElement {
     );
   }
 
+  private openFolderMenu(clientX: number, clientY: number) {
+    this.dispatchEvent(
+      new CustomEvent("folder-context-menu", {
+        detail: {
+          folderId: this.folder.id,
+          path: this.folder.path,
+          name: this.folder.name,
+          isRoot: this.isRoot,
+          available: this.folder.available,
+          x: clientX,
+          y: clientY,
+        },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    this.openFolderMenu(event.clientX, event.clientY);
+  };
+
+  private onPointerDown = (event: PointerEvent) => {
+    if (event.pointerType === "mouse") return;
+    this.cancelLongPress();
+    this.longPressStart = { x: event.clientX, y: event.clientY };
+    this.longPressTimer = window.setTimeout(() => {
+      this.longPressTimer = null;
+      this.suppressNextClick = true;
+      this.openFolderMenu(event.clientX, event.clientY);
+    }, 550);
+  };
+
+  private onPointerMove = (event: PointerEvent) => {
+    const start = this.longPressStart;
+    if (!start) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) {
+      this.cancelLongPress();
+    }
+  };
+
+  private cancelLongPress = () => {
+    if (this.longPressTimer !== null) window.clearTimeout(this.longPressTimer);
+    this.longPressTimer = null;
+    this.longPressStart = null;
+  };
+
   render() {
     const hasChildren = this.folder.children.length > 0;
     const isSelected = this.selectedId === this.folder.id;
     const label = this.folder.name;
     return html`
       <div
-        class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""}"
+        class="row ${isSelected ? "selected" : ""} ${this.isRoot ? "root" : ""} ${this.folder.available ? "" : "unavailable"}"
         @click=${this.select}
+        @contextmenu=${this.onContextMenu}
+        @pointerdown=${this.onPointerDown}
+        @pointermove=${this.onPointerMove}
+        @pointerup=${this.cancelLongPress}
+        @pointercancel=${this.cancelLongPress}
+        @pointerleave=${this.cancelLongPress}
       >
         ${hasChildren
           ? html`<span class="chevron" @click=${this.toggle}>
@@ -117,6 +200,7 @@ export class PfFolderTreeItem extends LitElement {
           : html`<span class="chevron placeholder">·</span>`}
         <pf-icon class="folder-icon" name="folder"></pf-icon>
         <span class="name" title=${this.folder.path}>${label}</span>
+        ${this.folder.available ? null : html`<span class="status">Reconnect</span>`}
       </div>
       ${this.expanded && hasChildren
         ? html`<div class="children">

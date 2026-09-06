@@ -44,6 +44,10 @@ pub struct CropEdit {
 #[serde(rename_all = "camelCase")]
 pub struct ToneEdit {
     #[serde(default)]
+    pub temperature: f32,
+    #[serde(default)]
+    pub tint: f32,
+    #[serde(default)]
     pub exposure: f32,
     #[serde(default)]
     pub contrast: f32,
@@ -72,10 +76,23 @@ pub struct PhotoEdits {
     pub crop: Option<CropEdit>,
     #[serde(default)]
     pub tone: Option<ToneEdit>,
+    /// Per-photo tone curve. The frontend owns the shape (control
+    /// points per channel); Rust stores it as an opaque JSON blob so
+    /// we don't have to mirror the schema in two places.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<serde_json::Value>,
+    /// Per-photo per-hue HSL adjustments. Stored as an opaque JSON
+    /// blob for the same reason as `curve` — the frontend owns the
+    /// schema and Rust just shuttles it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<serde_json::Value>,
 }
 
 impl PhotoEdits {
     pub fn is_empty(&self) -> bool {
-        self.crop.is_none() && self.tone.map_or(true, |t| t.is_zero())
+        self.crop.is_none()
+            && self.tone.map_or(true, |t| t.is_zero())
+            && self.curve.is_none()
+            && self.color.is_none()
     }
 }

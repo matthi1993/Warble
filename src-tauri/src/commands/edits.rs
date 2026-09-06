@@ -18,6 +18,10 @@ pub struct PhotoEditDto {
     pub crop: Option<CropEdit>,
     #[serde(default)]
     pub tone: Option<ToneEdit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -32,6 +36,8 @@ pub fn get_photo_edits(state: State<'_, AppState>) -> Result<Vec<PhotoEditDto>, 
             path,
             crop: edits.crop,
             tone: edits.tone,
+            curve: edits.curve,
+            color: edits.color,
         });
     }
     Ok(out)
@@ -42,10 +48,12 @@ pub fn set_photo_edit(
     path: String,
     crop: Option<CropEdit>,
     tone: Option<ToneEdit>,
+    curve: Option<serde_json::Value>,
+    color: Option<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let repo = state.repository()?;
-    let edits = PhotoEdits { crop, tone };
+    let edits = PhotoEdits { crop, tone, curve, color };
     if edits.is_empty() {
         repo.delete_photo_edit(&path)
     } else {

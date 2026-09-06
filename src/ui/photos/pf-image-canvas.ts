@@ -1,6 +1,6 @@
 /**
  * Canvas-based image viewer with thumbnail-first loading, GPU-accelerated
- * draw, wheel zoom, drag-pan, and double-click 100%↔fit toggle.
+ * draw, wheel/pinch zoom, drag-pan, and double-click 100%↔fit toggle.
  *
  * Loading strategy:
  *   1. Kick off both the cached thumbnail and the full image in parallel.
@@ -23,44 +23,74 @@ import { requestThumbnail, isCancellation } from "../../app/thumbnail-service";
 import {
   getHdImage,
   loadHdImage,
-  setHdImageDecoder,
 } from "../../app/hd-image-cache";
 import {
   getFullImage,
   loadFullImage,
-  setFullImageDecoder,
 } from "../../app/full-image-cache";
 import {
-  getPhotoEdit,
+  getRawImage,
+  loadRawImage,
+} from "../../app/raw-image-cache";
+import {
+  isColorZero,
+  isCurveZero,
   isToneZero,
-  subscribePhotoEdits,
+  defaultTone,
+  type ColorEdit,
   type CropEdit,
+  type CurveEdit,
   type ToneEdit,
-} from "../../app/edit-store";
+} from "@domain/edits";
+import {
+  getPhotoEdit,
+  subscribePhotoEdits,
+} from "@services/edits/edits-store";
+import {
+  getPostProcess,
+  subscribePostProcess,
+  type PostProcessSettings,
+} from "@services/post-process/post-process-store";
+import {
+  getPhotoGrain,
+  getPhotoSharpen,
+  defaultSharpenForFormat,
+  isGrainZero,
+  subscribePhotoEffects,
+  type GrainSettings,
+  type SharpenSettings,
+} from "@services/effects/effects-store";
+import { classifyFormat } from "@domain/photo";
+// Side-effect import: wires the worker-backed decoder into both
+// image caches and exports `decodeBase64Jpeg` for thumbnail decoding.
+import { decodeBase64Jpeg } from "./canvas/decoder-bootstrap";
+import { TonePipeline, type ToneSource } from "./canvas/tone-pipeline";
+import type { RawImageSource } from "./canvas/raw-source";
+import { clamp, enforceAspect } from "./canvas/crop-geometry";
+import type {
+  CropFrame,
+  ImageFit,
+  ImageSizing,
+  ImageSmoothingQuality,
+} from "./canvas/types";
 
-export type ImageFit = "contain" | "proof" | "tight";
-export type ImageSizing = "fit" | "fill" | "hybrid";
+export type {
+  CropFrame,
+  ImageFit,
+  ImageSizing,
+  ImageSmoothingQuality,
+} from "./canvas/types";
 
 /** Time the user must linger on a photo before we kick off a full-
- * resolution decode in addition to the HD preview. Tuned so casual
- * arrow-key scrubbing through a folder never pays for full-res
- * decodes the user won't see. */
-const FULL_IMAGE_DELAY_MS = 250;
+ * resolution decode in addition to the HD preview.  */
+const FULL_IMAGE_DELAY_MS = 1000;
 
-/** How long after the last edit-store push for the active photo we
- * keep showing the HD bitmap. Long enough to absorb a slider drag
- * (60 Hz events back-to-back) without flickering between sources;
- * short enough that a one-off click reverts to full-res quickly. */
-const EDIT_SETTLE_MS = 400;
+/** Responsive, high-bit-depth working source shown while the full sensor
+ * decode continues in the background. */
+const RAW_EDIT_PREVIEW_LONG_SIDE = 2560;
 
-/** Pending crop frame state, exposed via `getCrop()`. */
-export interface CropFrame {
-  /** Normalised (0..1) crop in original-image coordinates. */
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+// Time to wait until editing changes are applied to full res image after slider change
+const EDIT_SETTLE_MS = 1000;
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {
@@ -88,6 +118,14 @@ export class PfImageCanvas extends LitElement {
     }
     :host([fit="proof"]) {
       padding: 48px;
+    }
+    @media (pointer: coarse) {
+      :host([fit="proof"]) {
+        padding: 24px;
+      }
+      :host([fit="tight"]) {
+        padding: 8px;
+      }
     }
     canvas {
       width: 100%;
@@ -132,14 +170,6 @@ export class PfImageCanvas extends LitElement {
     .status.error {
       color: #ff8080;
     }
-    /**
-     * Loading indicator for the full image view. Lives in the bottom-
-     * left corner so the photo it's loading isn't obscured. Uses a
-     * minimal CSS spinner instead of centred text — by the time the
-     * user sees this they almost always already have the HD bitmap
-     * painted, and we just want to flag that a full-resolution decode
-     * is still in flight.
-     */
     .loading-spinner {
       position: absolute;
       left: 12px;
@@ -169,39 +199,22 @@ export class PfImageCanvas extends LitElement {
   sizing: ImageSizing = "fit";
 
   @property({ type: String })
+  smoothingQuality: ImageSmoothingQuality = "high";
+
+  @property({ type: String })
   background = "transparent";
 
-  /**
-   * When `true`, the canvas enters interactive crop mode: zoom/pan are
-   * disabled, the image is forced to fit, and an aspect-locked crop
-   * frame is overlaid. The frame can be dragged (move) or resized via
-   * its 8 handles. The persisted edit, if any, is ignored while in
-   * crop mode so the user can re-frame against the full image.
-   */
   @property({ type: Boolean, reflect: true })
   cropMode = false;
 
-  /**
-   * When `true`, the tone pipeline is pre-warmed (WebGL2 context
-   * created, shader compiled, current bitmap uploaded as a texture)
-   * so the first slider movement is responsive. Without this warm-
-   * up the first drag pays the full GL init + 40 MP texture upload
-   * cost on the same frame and the UI feels stuck for ~200 ms.
-   */
   @property({ type: Boolean, reflect: true })
   editing = false;
 
   /**
-   * When `true`, the canvas opportunistically upgrades from the HD
-   * (1920px) bitmap to the full-resolution decode after the user has
-   * lingered on the photo for {@link FULL_IMAGE_DELAY_MS}. While the
-   * user is actively editing (slider drag, crop nudge) the canvas
-   * reverts to HD so the WebGL tone pipeline stays interactive — the
-   * full-res texture upload alone takes hundreds of ms on a 40 MP
-   * source. Defaults `false`; only the full-screen viewer opts in.
+   * When `true`, the canvas opportunistically upgrades from the HD bitmap to the full-resolution.
    */
   @property({ type: Boolean })
-  enableFullRes = false;
+  enableFullRes = true;
 
   /**
    * Locked aspect ratio (width / height) of the crop frame. `null`
@@ -220,12 +233,6 @@ export class PfImageCanvas extends LitElement {
   @property({ type: Number })
   rotation = 0;
 
-  /**
-   * When `true`, the canvas enters "horizon pick" mode: the user
-   * draws a line across the image and the host receives a
-   * `horizon-line` event with the implied straighten angle. The
-   * crop card uses this to drive the rotation slider.
-   */
   @property({ type: Boolean, reflect: true })
   horizonMode = false;
 
@@ -276,6 +283,9 @@ export class PfImageCanvas extends LitElement {
    */
   private fullBitmap: ImageBitmap | null = null;
   private fullBitmapForPath: string | null = null;
+  /** Linear RGB16 RAW working image: responsive proxy first, full sensor later. */
+  private fullRaw: RawImageSource | null = null;
+  private fullRawForPath: string | null = null;
   /** Pending timer that kicks off the deferred full-res load. */
   private fullLoadTimer: number | null = null;
   /** Abort handle for the deferred full-res load itself. */
@@ -309,6 +319,26 @@ export class PfImageCanvas extends LitElement {
   private dragStartY = 0;
   private dragOffX = 0;
   private dragOffY = 0;
+  /** Active touch contacts. Pointer Events let the same implementation work
+   * with Apple Pencil/mouse input while giving iPad a native-feeling pinch. */
+  private touchPointers = new Map<number, { x: number; y: number }>();
+  private touchStart: { x: number; y: number; time: number } | null = null;
+  private touchGestureHadPinch = false;
+  private pinch:
+    | {
+        distance: number;
+        scale: number;
+        imageCenterX: number;
+        imageCenterY: number;
+        midpointX: number;
+        midpointY: number;
+      }
+    | null = null;
+  private activationTimer: number | null = null;
+  private lastTouchTap: { x: number; y: number; time: number } | null = null;
+  /** WKWebView synthesises a mouse click after a touch. Ignore that duplicate. */
+  private suppressClickUntil = 0;
+  private pointerDragMoved = false;
 
   // --- Crop mode state ---------------------------------------------------
   /** Crop frame in normalised image coordinates (0..1) — the live frame
@@ -332,11 +362,33 @@ export class PfImageCanvas extends LitElement {
    * at draw time as a `ctx.filter` chain on the bitmap. */
   @state()
   private savedTone: ToneEdit | null = null;
+  /** Saved (persisted) tone curve for the current photo. Applied
+   * after the basic tone math by the WebGL pipeline. */
+  @state()
+  private savedCurve: CurveEdit | null = null;
+  /** Saved (persisted) per-photo color (HSL) adjustments. */
+  @state()
+  private savedColor: ColorEdit | null = null;
+  /** Snapshot of the global post-process settings (color + curve).
+   * Updated via {@link subscribePostProcess}; redraws on change. */
+  @state()
+  private postProcess: PostProcessSettings = getPostProcess();
+ /** Effective per-photo sharpening — either the explicitly stored
+  *  value (which may have strength=0 if the user disabled the
+   *  format default) or the format default (some for RAW, none for
+   *  JPG). Never null while {@link path} is set. */
+  @state()
+  private savedSharpen: SharpenSettings | null = null;
+  @state()
+  private savedGrain: GrainSettings | null = null;
   private editsUnsubscribe: (() => void) | null = null;
+  private postProcessUnsubscribe: (() => void) | null = null;
+  private effectsUnsubscribe: (() => void) | null = null;
   /** GPU pipeline for tone (brightness/contrast/saturation) adjustments.
    * Lazy-initialised on first use so photos with no edits never pay for
    * WebGL context creation. */
   private tonePipeline = new TonePipeline();
+
   /** rAF guard: coalesces multiple `scheduleDraw()` calls within a
    * single frame into one paint. Critical for slider drags, which
    * fire ~60 events/s — without this, draws pile up faster than they
@@ -407,6 +459,22 @@ export class PfImageCanvas extends LitElement {
       }
       this.scheduleDraw();
     });
+    // Post-process settings are global (not per-photo), so every
+    // change forces a redraw on every visible canvas — but they're
+    // CPU-cheap (the LUT/colour uniforms just flow through the existing
+    // WebGL program).
+    this.postProcessUnsubscribe = subscribePostProcess((next) => {
+      this.postProcess = next;
+      this.scheduleDraw();
+    });
+    // Per-photo effects (sharpen, grain) live in their own library-backed
+    // store. Slider drags push at the same rate as edit slider drags,
+    // and the WebGL pipeline can absorb them without a re-upload.
+    this.effectsUnsubscribe = subscribePhotoEffects((path) => {
+      if (path && path !== this.path) return;
+      this.refreshSavedEffects();
+      this.scheduleDraw();
+    });
   }
 
   /** Pull the latest persisted crop + tone for the current photo into
@@ -415,12 +483,30 @@ export class PfImageCanvas extends LitElement {
     if (!this.path) {
       this.savedCrop = null;
       this.savedTone = null;
+      this.savedCurve = null;
+      this.savedColor = null;
       return;
     }
     const edit = getPhotoEdit(this.path);
     this.savedCrop = edit?.crop ?? null;
     this.savedTone = edit?.tone ?? null;
+    this.savedCurve = edit?.curve ?? null;
+    this.savedColor = edit?.color ?? null;
+    this.refreshSavedEffects();
   }
+
+  private refreshSavedEffects() {
+   if (!this.path) {
+     this.savedSharpen = null;
+     this.savedGrain = null;
+     return;
+   }
+   const ext = this.path.split(".").pop() ?? "";
+   const fmt = classifyFormat(ext);
+   this.savedSharpen =
+     getPhotoSharpen(this.path) ?? defaultSharpenForFormat(fmt);
+   this.savedGrain = getPhotoGrain(this.path);
+ }
 
   /**
    * Pin the canvas to the HD bitmap for {@link EDIT_SETTLE_MS} so a
@@ -437,21 +523,26 @@ export class PfImageCanvas extends LitElement {
     if (!this.enableFullRes) return;
     const wasActive = this.editingActive;
     if (!wasActive) {
+      const rawActive = this.currentRawSource !== null;
       // Capture the source dims BEFORE flipping the flag so we can
       // adjust user-zoom for the full→HD downsize.
       const prevSrc = this.effectiveSource();
       const prevW = prevSrc?.width ?? 0;
       this.editingActive = true;
-      this.rotatedCache = null;
-      this.tonePipeline.invalidate();
-      if (this.userInteracted && prevW > 0) {
-        const newSrc = this.effectiveSource();
-        const newW = newSrc?.width ?? 0;
-        if (newW > 0 && newW !== prevW) {
-          this.scale = (this.scale * prevW) / newW;
+      // RAW remains on the same RGB16 source while editing. Invalidating it
+      // here forced a multi-megabyte texture upload on the first slider tick.
+      if (!rawActive) {
+        this.rotatedCache = null;
+        this.tonePipeline.invalidate();
+        if (this.userInteracted && prevW > 0) {
+          const newSrc = this.effectiveSource();
+          const newW = newSrc?.width ?? 0;
+          if (newW > 0 && newW !== prevW) {
+            this.scale = (this.scale * prevW) / newW;
+          }
         }
+        this.recomputeFit();
       }
-      this.recomputeFit();
     }
     if (this.editSettleTimer !== null) {
       window.clearTimeout(this.editSettleTimer);
@@ -459,9 +550,15 @@ export class PfImageCanvas extends LitElement {
     this.editSettleTimer = window.setTimeout(() => {
       this.editSettleTimer = null;
       if (!this.editingActive) return;
+      const rawActive = this.currentRawSource !== null;
+      this.editingActive = false;
+      if (rawActive) {
+        // Re-enable the expensive preview effects without re-uploading RAW.
+        this.scheduleDraw();
+        return;
+      }
       const prevSrc = this.effectiveSource();
       const prevW = prevSrc?.width ?? 0;
-      this.editingActive = false;
       this.rotatedCache = null;
       this.tonePipeline.invalidate();
       if (this.userInteracted && prevW > 0) {
@@ -485,6 +582,10 @@ export class PfImageCanvas extends LitElement {
       window.clearTimeout(this.editSettleTimer);
       this.editSettleTimer = null;
     }
+    if (this.activationTimer !== null) {
+      window.clearTimeout(this.activationTimer);
+      this.activationTimer = null;
+    }
     // Full bitmap is owned by `full-image-cache`; do NOT close it here.
     this.thumbBitmap?.close?.();
     this.bitmap = null;
@@ -492,6 +593,10 @@ export class PfImageCanvas extends LitElement {
     this.fullBitmap = null;
     this.editsUnsubscribe?.();
     this.editsUnsubscribe = null;
+    this.postProcessUnsubscribe?.();
+    this.postProcessUnsubscribe = null;
+    this.effectsUnsubscribe?.();
+    this.effectsUnsubscribe = null;
     this.tonePipeline.dispose();
   }
 
@@ -516,6 +621,9 @@ export class PfImageCanvas extends LitElement {
       // attributes, so the canvas resizes on the next frame; a single
       // onResize() pass after layout settles refits and redraws.
       requestAnimationFrame(() => this.onResize());
+    }
+    if (changed.has("smoothingQuality")) {
+      this.scheduleDraw();
     }
     if (changed.has("cropMode")) {
       this.userInteracted = false;
@@ -631,11 +739,67 @@ export class PfImageCanvas extends LitElement {
    * micro-timeout) so the warm-up never delays a paint. */
   private warmupTonePipeline() {
     if (!this.editing) return;
-    const bm = this.bitmap;
-    if (!bm) return;
+    const path = this.path;
+    const ext = path?.split(".").pop() ?? "";
+    if (
+      this.enableFullRes &&
+      path &&
+      classifyFormat(ext) === "raw" &&
+      !this.currentRawSource &&
+      !this.fullLoadAbort
+    ) {
+      // RAW editing should not wait for the normal linger upgrade. Start the
+      // high-bit-depth working image as soon as the edit panel is active;
+      // the HD JPEG remains visible until this source is ready.
+      const rawAc = new AbortController();
+      this.fullLoadAbort = rawAc;
+      this.fullLoading = true;
+      const parent = this.loadAbort;
+      const onParentAbort = () => rawAc.abort();
+      parent?.signal.addEventListener("abort", onParentAbort, {
+        once: true,
+      });
+      void loadRawImage(path, {
+        priority: "urgent",
+        signal: rawAc.signal,
+        maxLongSide: RAW_EDIT_PREVIEW_LONG_SIDE,
+      })
+        .then((raw) => {
+          if (!rawAc.signal.aborted && this.path === path) {
+            this.applyFullRaw(path, raw);
+          }
+        })
+        .catch((err) => {
+          if (!rawAc.signal.aborted) console.warn("RAW editing load failed", err);
+        })
+        .finally(() => {
+          parent?.signal.removeEventListener("abort", onParentAbort);
+          if (this.fullLoadAbort === rawAc) this.fullLoadAbort = null;
+          if (
+            parent &&
+            !parent.signal.aborted &&
+            !rawAc.signal.aborted &&
+            this.path === path
+          ) {
+            // The linger timer may have fired while this proxy owned the RAW
+            // load slot. Re-arm it so full resolution still replaces the
+            // proxy once the interaction-critical decode has completed.
+            this.scheduleFullImageLoad(path, parent);
+          }
+          if (
+            this.path === path &&
+            this.fullLoadTimer === null &&
+            this.fullLoadAbort === null
+          ) {
+            this.fullLoading = false;
+          }
+        });
+    }
+    const source = this.effectiveSource()?.source;
+    if (!source) return;
     const run = () => {
-      if (!this.editing || this.bitmap !== bm) return;
-      this.tonePipeline.warmup(bm);
+      if (!this.editing || this.effectiveSource()?.source !== source) return;
+      this.tonePipeline.warmup(source);
     };
     const ric = (window as unknown as {
       requestIdleCallback?: (cb: () => void) => number;
@@ -664,6 +828,8 @@ export class PfImageCanvas extends LitElement {
       this.thumbForPath = null;
       this.fullBitmap = null;
       this.fullBitmapForPath = null;
+      this.fullRaw = null;
+      this.fullRawForPath = null;
       this.draw();
       return;
     }
@@ -686,6 +852,10 @@ export class PfImageCanvas extends LitElement {
       // Full-res bitmaps are owned by full-image-cache; never close.
       this.fullBitmap = null;
       this.fullBitmapForPath = null;
+    }
+    if (this.fullRawForPath !== path) {
+      this.fullRaw = null;
+      this.fullRawForPath = null;
     }
 
     // Fast path: HD image already in the cross-instance LRU cache.
@@ -778,6 +948,7 @@ export class PfImageCanvas extends LitElement {
   private scheduleFullImageLoad(path: string, parent: AbortController) {
     if (!this.enableFullRes) return;
     if (parent.signal.aborted) return;
+    if (this.fullLoadTimer !== null) return;
 
     this.fullLoading = true;
     this.fullLoadTimer = window.setTimeout(() => {
@@ -786,6 +957,9 @@ export class PfImageCanvas extends LitElement {
         this.fullLoading = false;
         return;
       }
+      // An edit-panel activation may already have started the RAW working
+      // image before the normal linger timer fired.
+      if (this.fullLoadAbort) return;
 
       // Cache hits still go through the linger gate (above) so the
       // user always sees the HD preview first, but the actual swap
@@ -794,6 +968,38 @@ export class PfImageCanvas extends LitElement {
       if (cached) {
         this.applyFullBitmap(path, cached);
         this.fullLoading = false;
+        return;
+      }
+
+      const ext = path.split(".").pop() ?? "";
+      if (classifyFormat(ext) === "raw") {
+        const cachedRaw = getRawImage(`${path}\0${0}`);
+        if (cachedRaw) {
+          this.applyFullRaw(path, cachedRaw);
+          this.fullLoading = false;
+          return;
+        }
+        const fullAc = new AbortController();
+        this.fullLoadAbort = fullAc;
+        const onParentAbort = () => fullAc.abort();
+        parent.signal.addEventListener("abort", onParentAbort, { once: true });
+        void loadRawImage(path, {
+          priority: "urgent",
+          signal: fullAc.signal,
+        })
+          .then((raw) => {
+            if (fullAc.signal.aborted || this.path !== path) return;
+            this.applyFullRaw(path, raw);
+          })
+          .catch((err) => {
+            if (fullAc.signal.aborted) return;
+            console.warn("full-resolution RAW load failed", err);
+          })
+          .finally(() => {
+            parent.signal.removeEventListener("abort", onParentAbort);
+            if (this.fullLoadAbort === fullAc) this.fullLoadAbort = null;
+            if (this.path === path) this.fullLoading = false;
+          });
         return;
       }
 
@@ -837,6 +1043,25 @@ export class PfImageCanvas extends LitElement {
     this.fullBitmapForPath = path;
     // The rotated cache and tone texture are keyed on the underlying
     // source bitmap; swapping in a new one must drop both.
+    this.rotatedCache = null;
+    this.tonePipeline.invalidate();
+    if (this.userInteracted && prevW > 0) {
+      const newSrc = this.effectiveSource();
+      const newW = newSrc?.width ?? 0;
+      if (newW > 0 && newW !== prevW) {
+        this.scale = (this.scale * prevW) / newW;
+      }
+    }
+    this.recomputeFit();
+    this.scheduleDraw();
+  }
+
+  private applyFullRaw(path: string, raw: RawImageSource) {
+    if (this.path !== path) return;
+    const prevSrc = this.effectiveSource();
+    const prevW = prevSrc?.width ?? 0;
+    this.fullRaw = raw;
+    this.fullRawForPath = path;
     this.rotatedCache = null;
     this.tonePipeline.invalidate();
     if (this.userInteracted && prevW > 0) {
@@ -901,6 +1126,11 @@ export class PfImageCanvas extends LitElement {
     return this.bitmap ?? this.thumbBitmap;
   }
 
+  private get currentRawSource(): RawImageSource | null {
+    if (this.fullRaw && this.fullRawForPath === this.path) return this.fullRaw;
+    return null;
+  }
+
   /** Offscreen canvas holding `currentBitmap` rotated by `rotation`,
    * cached so the tone pipeline + 2D draw both see the rotated pixels
    * without re-rotating per frame. Keyed by `(bitmap, rotation)`. */
@@ -920,7 +1150,14 @@ export class PfImageCanvas extends LitElement {
     width: number;
     height: number;
   } | null {
+    const raw = this.currentRawSource;
     const bm = this.currentBitmap;
+    const base: ToneSource | null = raw ?? bm;
+    if (!base) return null;
+    // RAW working images are already in display orientation and are kept as
+    // integer textures. Rotation remains supported for the bitmap path; the
+    // crop tool still works on the same dimensions while a RAW is active.
+    if (raw) return { source: raw, width: raw.width, height: raw.height };
     if (!bm) return null;
     const rot = this.normalizedRotation();
     if (rot === 0) {
@@ -992,11 +1229,13 @@ export class PfImageCanvas extends LitElement {
       ctx = cv.getContext("2d");
     }
     if (!ctx) return null;
-    ctx.save();
-    ctx.translate(w / 2, h / 2);
-    ctx.rotate(rad);
-    ctx.drawImage(bm, -bm.width / 2, -bm.height / 2);
-    ctx.restore();
+   ctx.imageSmoothingEnabled = true;
+   ctx.imageSmoothingQuality = this.smoothingQuality;
+   ctx.save();
+   ctx.translate(w / 2, h / 2);
+   ctx.rotate(rad);
+   ctx.drawImage(bm, -bm.width / 2, -bm.height / 2);
+   ctx.restore();
     return { canvas: cv, width: w, height: h };
   }
 
@@ -1121,13 +1360,52 @@ export class PfImageCanvas extends LitElement {
       const x = cx - drawW / 2;
       const y = cy - drawH / 2;
       ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
+      ctx.imageSmoothingQuality = this.smoothingQuality;
       // Tone is applied in crop mode too so the user sees what their
       // adjustments do while re-framing. `previewOriginal` (the
       // before/after toggle) still bypasses tone + crop on purpose.
-      const applyTone =
-        !this.previewOriginal && !isToneZero(this.savedTone);
-      if (applyTone) {
+      // The WebGL path also handles per-photo curve + color and
+      // global post-process (color + curve), so we route through it
+      // whenever ANY of those is non-identity.
+      const pp = this.postProcess;
+      // Master post-process switch. When disabled the user still sees
+      // their per-photo tone + colour + curve edits (those are the
+      // photo's "real" state), but the global look layer (post color,
+      // post curve) is skipped entirely. Toggling lets you compare the
+      // look against the underlying edit instantly.
+      const ppEnabled = pp.enabled;
+      const rawSource = "kind" in src.source && src.source.kind === "raw16";
+      // RAW integer textures require manual bilinear sampling. Temporarily
+      // omit multi-tap sharpening during a slider burst, then restore it on
+      // the settle redraw; tone controls remain visually live at full rate.
+      const interactiveRaw = rawSource && this.editingActive;
+      const postCurveActive = ppEnabled && !isCurveZero(pp.curve);
+      const postColorActive = ppEnabled && !isColorZero(pp.color);
+      const editColorActive =
+       !!this.savedColor && !isColorZero(this.savedColor);
+     const sharpenActive =
+       !interactiveRaw &&
+       !!this.savedSharpen &&
+       this.savedSharpen.strength > 0;
+     const postSharpenActive =
+       !interactiveRaw && ppEnabled && pp.sharpen.strength > 0;
+     const editGrainActive =
+       !interactiveRaw && !isGrainZero(this.savedGrain);
+     const grainActive =
+       !interactiveRaw && ppEnabled && !isGrainZero(pp.grain);
+      const applyPipeline =
+       rawSource ||
+       (!this.previewOriginal &&
+       (!isToneZero(this.savedTone) ||
+         !isCurveZero(this.savedCurve) ||
+         editColorActive ||
+         postCurveActive ||
+         postColorActive ||
+         sharpenActive ||
+         editGrainActive ||
+         postSharpenActive ||
+         grainActive));
+      if (applyPipeline) {
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
         const visX1 = Math.min(cv.width, x + drawW);
@@ -1143,29 +1421,55 @@ export class PfImageCanvas extends LitElement {
           const subSy = sy + v0 * sh;
           const subSw = (u1 - u0) * sw;
           const subSh = (v1 - v0) * sh;
-          const outW = Math.max(
+          let outW = Math.max(
             1,
             Math.min(Math.ceil(visW), Math.ceil(subSw))
           );
-          const outH = Math.max(
+          let outH = Math.max(
             1,
             Math.min(Math.ceil(visH), Math.ceil(subSh))
           );
+          if (interactiveRaw) {
+            // Cap interaction rendering to roughly 1.25 MP. Canvas2D scales
+            // the result to the viewport for the drag; the settle redraw is
+            // full resolution. This keeps Retina/4K canvases responsive.
+            const maxPixels = 1_250_000;
+            const previewScale = Math.min(
+              1,
+              Math.sqrt(maxPixels / (outW * outH)),
+            );
+            outW = Math.max(1, Math.round(outW * previewScale));
+            outH = Math.max(1, Math.round(outH * previewScale));
+          }
           const toned = this.tonePipeline.render(
             src.source,
-            this.savedTone!,
+            this.savedTone ?? defaultTone(),
             { sx: subSx, sy: subSy, sw: subSw, sh: subSh },
             outW,
             outH,
+            {
+              curve: this.savedCurve,
+              postCurve: postCurveActive ? pp.curve : null,
+              editColor: editColorActive ? this.savedColor : null,
+             postColor: postColorActive ? pp.color : null,
+             sharpen: sharpenActive ? this.savedSharpen : null,
+             editGrain: editGrainActive ? this.savedGrain : null,
+             postSharpen: postSharpenActive ? pp.sharpen : null,
+             grain: grainActive ? pp.grain : null,
+            }
           );
           if (toned) {
             ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
-          } else {
+          } else if (!rawSource && !("kind" in src.source)) {
             ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
           }
         }
       } else {
-        ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
+        // A RAW working source is not a browser image and therefore cannot
+        // be drawn by Canvas2D. It is always routed through WebGL above.
+        if (!rawSource && !("kind" in src.source)) {
+          ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
+        }
       }
       if (this.cropMode && this.cropFrame) {
         this.drawCropOverlay(ctx, x, y, drawW, drawH);
@@ -1317,6 +1621,7 @@ export class PfImageCanvas extends LitElement {
     const cv = this.canvas!;
     cv.addEventListener("wheel", this.onWheel, { passive: false });
     cv.addEventListener("pointerdown", this.onPointerDown);
+    cv.addEventListener("click", this.onClick);
     cv.addEventListener("dblclick", this.onDblClick);
   }
 
@@ -1395,20 +1700,105 @@ export class PfImageCanvas extends LitElement {
       this.startCropDrag(e);
       return;
     }
-    this.dragging = true;
-    this.dragStartX = e.clientX;
-    this.dragStartY = e.clientY;
-    this.dragOffX = this.offsetX;
-    this.dragOffY = this.offsetY;
+    if (e.pointerType === "touch") {
+      e.preventDefault();
+      const wasEmpty = this.touchPointers.size === 0;
+      this.touchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (wasEmpty) {
+        this.touchStart = { x: e.clientX, y: e.clientY, time: performance.now() };
+        this.touchGestureHadPinch = false;
+      }
+      try {
+        this.canvas!.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture is best-effort */
+      }
+      if (this.touchPointers.size >= 2) {
+        this.beginPinch();
+      } else {
+        this.beginPan(e.clientX, e.clientY);
+      }
+      this.canvas!.addEventListener("pointermove", this.onPointerMove);
+      this.canvas!.addEventListener("pointerup", this.onPointerUp);
+      this.canvas!.addEventListener("pointercancel", this.onPointerUp);
+      return;
+    }
+    this.pointerDragMoved = false;
+    this.beginPan(e.clientX, e.clientY);
     this.canvas!.setPointerCapture(e.pointerId);
-    this.canvas!.classList.add("dragging");
     this.canvas!.addEventListener("pointermove", this.onPointerMove);
     this.canvas!.addEventListener("pointerup", this.onPointerUp);
     this.canvas!.addEventListener("pointercancel", this.onPointerUp);
   };
 
+  private beginPan(clientX: number, clientY: number) {
+    this.dragging = true;
+    this.dragStartX = clientX;
+    this.dragStartY = clientY;
+    this.dragOffX = this.offsetX;
+    this.dragOffY = this.offsetY;
+    this.canvas!.classList.add("dragging");
+  }
+
+  private beginPinch() {
+    if (!this.canvas) return;
+    const points = [...this.touchPointers.values()].slice(0, 2);
+    if (points.length < 2) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = this.canvas.getBoundingClientRect();
+    const midpointX = ((points[0].x + points[1].x) / 2 - rect.left) * dpr;
+    const midpointY = ((points[0].y + points[1].y) / 2 - rect.top) * dpr;
+    this.pinch = {
+      distance: Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)),
+      scale: this.scale,
+      imageCenterX: this.canvas.width / 2 + this.offsetX,
+      imageCenterY: this.canvas.height / 2 + this.offsetY,
+      midpointX,
+      midpointY,
+    };
+    this.touchGestureHadPinch = true;
+    this.dragging = false;
+    this.canvas.classList.remove("dragging");
+  }
+
   private onPointerMove = (e: PointerEvent) => {
+    if (e.pointerType === "touch" && this.touchPointers.has(e.pointerId)) {
+      this.touchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touchPointers.size >= 2 && this.pinch && this.canvas) {
+        e.preventDefault();
+        const points = [...this.touchPointers.values()].slice(0, 2);
+        const distance = Math.max(
+          1,
+          Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y),
+        );
+        const dpr = window.devicePixelRatio || 1;
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = ((points[0].x + points[1].x) / 2 - rect.left) * dpr;
+        const my = ((points[0].y + points[1].y) / 2 - rect.top) * dpr;
+        const minScale = this.minScale();
+        const maxScale = Math.max(20 * dpr, this.fitScale * 20);
+        const nextScale = Math.min(
+          maxScale,
+          Math.max(minScale, this.pinch.scale * (distance / this.pinch.distance)),
+        );
+        const ratio = nextScale / this.pinch.scale;
+        const nextCenterX =
+          mx - (this.pinch.midpointX - this.pinch.imageCenterX) * ratio;
+        const nextCenterY =
+          my - (this.pinch.midpointY - this.pinch.imageCenterY) * ratio;
+        this.scale = nextScale;
+        this.offsetX = nextCenterX - this.canvas.width / 2;
+        this.offsetY = nextCenterY - this.canvas.height / 2;
+        this.clampOffsets();
+        this.userInteracted = Math.abs(nextScale - this.fitScale) >= 1e-3;
+        this.scheduleDraw();
+        return;
+      }
+    }
     if (!this.dragging) return;
+    if (Math.hypot(e.clientX - this.dragStartX, e.clientY - this.dragStartY) > 5) {
+      this.pointerDragMoved = true;
+    }
     const dpr = window.devicePixelRatio || 1;
     this.offsetX = this.dragOffX + (e.clientX - this.dragStartX) * dpr;
     this.offsetY = this.dragOffY + (e.clientY - this.dragStartY) * dpr;
@@ -1418,6 +1808,35 @@ export class PfImageCanvas extends LitElement {
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    if (e.pointerType === "touch") {
+      const wasTracked = this.touchPointers.delete(e.pointerId);
+      if (!wasTracked) return;
+      try {
+        this.canvas?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* no-op */
+      }
+      if (this.touchPointers.size >= 2) {
+        this.beginPinch();
+        return;
+      }
+      this.pinch = null;
+      if (this.touchPointers.size === 1) {
+        const remaining = [...this.touchPointers.values()][0];
+        this.beginPan(remaining.x, remaining.y);
+        return;
+      }
+      this.dragging = false;
+      this.canvas?.classList.remove("dragging");
+      this.canvas?.removeEventListener("pointermove", this.onPointerMove);
+      this.canvas?.removeEventListener("pointerup", this.onPointerUp);
+      this.canvas?.removeEventListener("pointercancel", this.onPointerUp);
+      this.finishTouchGesture(e);
+      return;
+    }
+    if (this.pointerDragMoved) {
+      this.suppressClickUntil = performance.now() + 100;
+    }
     this.dragging = false;
     this.canvas?.classList.remove("dragging");
     try {
@@ -1430,20 +1849,110 @@ export class PfImageCanvas extends LitElement {
     this.canvas?.removeEventListener("pointercancel", this.onPointerUp);
   };
 
+  private finishTouchGesture(e: PointerEvent) {
+    const start = this.touchStart;
+    this.touchStart = null;
+    this.suppressClickUntil = performance.now() + 600;
+    if (!start || this.touchGestureHadPinch || e.type === "pointercancel") return;
+    const elapsed = performance.now() - start.time;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+
+    // At fitted zoom, a deliberate horizontal gesture navigates. Once the
+    // user has pinched in, the same one-finger gesture remains image panning.
+    const isFitting = Math.abs(this.scale - this.fitScale) < 1e-3;
+    if (
+      isFitting &&
+      elapsed <= 650 &&
+      Math.abs(dx) >= 56 &&
+      Math.abs(dx) > Math.abs(dy) * 1.35
+    ) {
+      this.lastTouchTap = null;
+      this.cancelPendingActivation();
+      this.userInteracted = false;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.dispatchEvent(
+        new CustomEvent("image-swipe", {
+          detail: { delta: dx < 0 ? 1 : -1 },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return;
+    }
+
+    const moved = Math.hypot(dx, dy);
+    if (moved > 10 || elapsed > 450) return;
+
+    const now = performance.now();
+    const previous = this.lastTouchTap;
+    if (
+      previous &&
+      now - previous.time <= 340 &&
+      Math.hypot(e.clientX - previous.x, e.clientY - previous.y) <= 28
+    ) {
+      this.lastTouchTap = null;
+      this.cancelPendingActivation();
+      this.handleDoubleActivation(e.clientX, e.clientY);
+      return;
+    }
+    this.lastTouchTap = { x: e.clientX, y: e.clientY, time: now };
+    this.scheduleActivation();
+  }
+
+  private onClick = () => {
+    if (performance.now() < this.suppressClickUntil) return;
+    this.scheduleActivation();
+  };
+
+  private scheduleActivation() {
+    this.cancelPendingActivation();
+    this.activationTimer = window.setTimeout(() => {
+      this.activationTimer = null;
+      this.dispatchEvent(
+        new CustomEvent("image-activate", { bubbles: true, composed: true }),
+      );
+    }, 280);
+  }
+
+  private cancelPendingActivation() {
+    if (this.activationTimer === null) return;
+    window.clearTimeout(this.activationTimer);
+    this.activationTimer = null;
+  }
+
   private onDblClick = (e: MouseEvent) => {
+    if (performance.now() < this.suppressClickUntil) {
+      e.preventDefault();
+      return;
+    }
     if (this.cropMode) {
       e.preventDefault();
       return;
     }
     if (!this.currentBitmap || !this.canvas) return;
     e.preventDefault();
+    this.cancelPendingActivation();
+    this.handleDoubleActivation(e.clientX, e.clientY);
+  };
+
+  private handleDoubleActivation(clientX: number, clientY: number) {
+    const claimed = !this.dispatchEvent(
+      new CustomEvent("image-double-activate", {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      }),
+    );
+    if (claimed || !this.currentBitmap || !this.canvas) return;
     const dpr = window.devicePixelRatio || 1;
     const oneToOne = dpr; // 1 image px == 1 css px
     const isFitting = Math.abs(this.scale - this.fitScale) < 1e-3;
     if (isFitting) {
       const rect = this.canvas.getBoundingClientRect();
-      const px = (e.clientX - rect.left) * dpr;
-      const py = (e.clientY - rect.top) * dpr;
+      const px = (clientX - rect.left) * dpr;
+      const py = (clientY - rect.top) * dpr;
       this.zoomAround(px, py, oneToOne);
       this.userInteracted = true;
     } else {
@@ -1453,7 +1962,7 @@ export class PfImageCanvas extends LitElement {
       this.userInteracted = false;
     }
     this.draw();
-  };
+  }
 
   /** Public: reset zoom/pan to fit. */
   resetView() {
@@ -1463,6 +1972,93 @@ export class PfImageCanvas extends LitElement {
     this.offsetX = 0;
     this.offsetY = 0;
     this.draw();
+  }
+
+  /** Render the complete edited image as a JPEG for a saved variant.
+   * This deliberately renders the source/crop dimensions instead of
+   * serialising the viewport canvas, so zoom, pan, and panel borders never
+   * become part of the saved file. */
+  async exportJpeg(): Promise<Uint8Array> {
+    const path = this.path;
+    if (!path) throw new Error("no photo is loaded");
+
+    const ext = path.split(".").pop() ?? "";
+    let source: ToneSource;
+    let sourceWidth: number;
+    let sourceHeight: number;
+
+    if (classifyFormat(ext) === "raw") {
+      const raw = await loadRawImage(path, { priority: "urgent" });
+      source = raw;
+      sourceWidth = raw.width;
+      sourceHeight = raw.height;
+    } else {
+      const bitmap = await loadFullImage(path, { priority: "urgent" });
+      const rotation = this.previewOriginal ? 0 : this.normalizedRotation();
+      if (rotation !== 0) {
+        const rotated = this.buildRotatedCache(bitmap, rotation);
+        if (!rotated) throw new Error("could not rotate image for export");
+        source = rotated.canvas;
+        sourceWidth = rotated.width;
+        sourceHeight = rotated.height;
+      } else {
+        source = bitmap;
+        sourceWidth = bitmap.width;
+        sourceHeight = bitmap.height;
+      }
+    }
+
+    if (this.path !== path) throw new Error("photo changed during export");
+
+    const edit = this.previewOriginal ? null : getPhotoEdit(path);
+    const crop = this.previewOriginal ? null : this.savedCrop;
+    const sx = crop ? clamp(crop.x, 0, 1) * sourceWidth : 0;
+    const sy = crop ? clamp(crop.y, 0, 1) * sourceHeight : 0;
+    const sw = crop
+      ? Math.max(1, clamp(crop.width, 0, 1) * sourceWidth)
+      : sourceWidth;
+    const sh = crop
+      ? Math.max(1, clamp(crop.height, 0, 1) * sourceHeight)
+      : sourceHeight;
+    const outW = Math.max(1, Math.round(sw));
+    const outH = Math.max(1, Math.round(sh));
+    const editColor = edit?.color && !isColorZero(edit.color)
+      ? edit.color
+      : null;
+    const editCurve = edit?.curve && !isCurveZero(edit.curve)
+      ? edit.curve
+      : null;
+    const rendered = this.tonePipeline.render(
+      source,
+      edit?.tone ?? defaultTone(),
+      { sx, sy, sw, sh },
+      outW,
+      outH,
+      {
+        curve: editCurve,
+        editColor,
+        sharpen: this.previewOriginal ? null : this.savedSharpen,
+        editGrain: this.previewOriginal ? null : this.savedGrain,
+      },
+    );
+    if (!rendered) throw new Error("could not render edited image");
+
+    // TonePipeline's WebGL canvas does not preserve its drawing buffer, so
+    // copy the rendered pixels to a normal 2D canvas before encoding.
+    const output = document.createElement("canvas");
+    output.width = outW;
+    output.height = outH;
+    const outputContext = output.getContext("2d");
+    if (!outputContext) throw new Error("could not create export canvas");
+    outputContext.drawImage(rendered, 0, 0, outW, outH);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      output.toBlob(
+        (value) => (value ? resolve(value) : reject(new Error("JPEG encoding failed"))),
+        "image/jpeg",
+        0.95,
+      );
+    });
+    return new Uint8Array(await blob.arrayBuffer());
   }
 
   // --- Crop mode ---------------------------------------------------------
@@ -1984,665 +2580,10 @@ export class PfImageCanvas extends LitElement {
   }
 }
 
-function decodeBase64Jpeg(b64: string): Promise<ImageBitmap> {  const bin = atob(b64);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return createOrientedBitmap(new Blob([arr], { type: "image/jpeg" }));
-}
-
-/**
- * `createImageBitmap` with EXIF orientation honoured. Older webviews don't
- * accept the `imageOrientation` option and throw `TypeError` — fall back to
- * the no-options form so we still get *some* bitmap (un-rotated).
- */
-async function createOrientedBitmap(blob: Blob): Promise<ImageBitmap> {
-  try {
-    return await createImageBitmap(blob, { imageOrientation: "from-image" });
-  } catch {
-    return await createImageBitmap(blob);
-  }
-}
-
-// --- full-image decode worker -----------------------------------------------
-//
-// A single shared worker handles every full-image decode request. Decoding
-// off the main thread is what prevents the UI from locking up while a 24 MP
-// JPEG is being parsed.
-
-interface WorkerResponse {
-  id: number;
-  ok: boolean;
-  bitmap?: ImageBitmap;
-  error?: string;
-}
-
-let decoderWorker: Worker | null = null;
-let nextDecodeId = 1;
-const pendingDecodes = new Map<
-  number,
-  { resolve: (b: ImageBitmap) => void; reject: (e: unknown) => void }
->();
-
-function getDecoderWorker(): Worker {
-  if (decoderWorker) return decoderWorker;
-  decoderWorker = new Worker(
-    new URL("../../app/full-image-worker.ts", import.meta.url),
-    { type: "module" }
-  );
-  decoderWorker.addEventListener("message", (e: MessageEvent<WorkerResponse>) => {
-    const data = e.data;
-    const entry = pendingDecodes.get(data.id);
-    if (!entry) return;
-    pendingDecodes.delete(data.id);
-    if (data.ok && data.bitmap) entry.resolve(data.bitmap);
-    else entry.reject(new Error(data.error ?? "image decode failed"));
-  });
-  decoderWorker.addEventListener("error", (e) => {
-    console.error("full-image-worker error", e.message);
-  });
-  return decoderWorker;
-}
-
-function decodeInWorker(buffer: ArrayBuffer): Promise<ImageBitmap> {
-  const id = nextDecodeId++;
-  return new Promise<ImageBitmap>((resolve, reject) => {
-    pendingDecodes.set(id, { resolve, reject });
-    // Transfer the buffer so we don't pay a copy on the way in.
-    getDecoderWorker().postMessage({ id, buffer }, [buffer]);
-  });
-}
-
-// Hand the worker-backed decoder to the shared HD-image cache so it
-// can fetch+decode entries on cache misses (and prefetches from
-// `pf-full-view`). Registering at module load means any code path that
-// imports the cache after this module is wired up.
-setHdImageDecoder(decodeInWorker);
-// Same decoder backs the full-resolution cache. The two caches use
-// independent LRU stores but share this single decode worker, so
-// concurrent HD + full-res decodes are still serialised cooperatively.
-setFullImageDecoder(decodeInWorker);
-
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
-}
-
-/**
- * Enforce an aspect ratio on a freshly-resized crop frame by adjusting
- * the dimension that wasn't directly dragged (or shrinking the one that
- * was, if doing so would push the frame outside the image).
- *
- * `kind` indicates which handle was dragged — corner drags resize both
- * dimensions, edge drags resize one and we recompute the other. The
- * anchor (the corner opposite the dragged handle/edge) stays put.
- */
-function enforceAspect(
-  proposed: CropFrame,
-  start: CropFrame,
-  aspect: number,
-  kind: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw",
-  bm: { width: number; height: number }
-): CropFrame {
-  // Anchor point (opposite the moved handle).
-  const startRight = start.x + start.width;
-  const startBottom = start.y + start.height;
-  let anchorX = start.x + start.width / 2;
-  let anchorY = start.y + start.height / 2;
-  if (kind.includes("w")) anchorX = startRight;
-  else if (kind.includes("e")) anchorX = start.x;
-  if (kind.includes("n")) anchorY = startBottom;
-  else if (kind.includes("s")) anchorY = start.y;
-
-  // Image aspect (in normalised coords) is bm.width:bm.height ratio,
-  // but our normalised coords are 0..1 in each dimension, so a
-  // crop-frame width `w` and height `h` in normalised coords represents
-  // a true-pixel ratio of (w * bm.width) / (h * bm.height) — we want
-  // that = `aspect`, i.e. h / w = (bm.width / bm.height) / aspect.
-  const ratio = bm.width / bm.height / aspect; // h/w in normalised space
-
-  let w = proposed.width;
-  let h = proposed.height;
-  if (kind === "n" || kind === "s") {
-    // Vertical edge drag: adjust width from new height.
-    h = proposed.height;
-    w = h / ratio;
-  } else if (kind === "e" || kind === "w") {
-    h = proposed.width * ratio;
-    w = proposed.width;
-  } else {
-    // Corner: pick the dimension that produces the smaller frame
-    // (more conservative — keeps within image bounds).
-    const wFromH = proposed.height / ratio;
-    const hFromW = proposed.width * ratio;
-    if (wFromH * proposed.height <= proposed.width * hFromW) {
-      w = wFromH;
-      h = proposed.height;
-    } else {
-      w = proposed.width;
-      h = hFromW;
-    }
-  }
-
-  // Re-anchor the frame so the anchor corner/edge stays put.
-  let x: number;
-  let y: number;
-  if (kind.includes("w")) x = anchorX - w;
-  else if (kind.includes("e")) x = anchorX;
-  else x = anchorX - w / 2;
-  if (kind.includes("n")) y = anchorY - h;
-  else if (kind.includes("s")) y = anchorY;
-  else y = anchorY - h / 2;
-
-  // If the frame escapes the image, shrink to fit while preserving
-  // aspect.
-  if (x < 0) {
-    const shrink = -x;
-    w -= shrink;
-    h = w * ratio;
-    x = 0;
-    if (kind.includes("n")) y = anchorY - h;
-    else if (kind.includes("s")) y = anchorY;
-    else y = anchorY - h / 2;
-  }
-  if (y < 0) {
-    const shrink = -y;
-    h -= shrink;
-    w = h / ratio;
-    y = 0;
-    if (kind.includes("w")) x = anchorX - w;
-    else if (kind.includes("e")) x = anchorX;
-    else x = anchorX - w / 2;
-  }
-  if (x + w > 1) {
-    w = 1 - x;
-    h = w * ratio;
-  }
-  if (y + h > 1) {
-    h = 1 - y;
-    w = h / ratio;
-  }
-  return {
-    x: clamp(x, 0, 1),
-    y: clamp(y, 0, 1),
-    width: clamp(w, 0.02, 1),
-    height: clamp(h, 0.02, 1),
-  };
-}
-
-/**
- * Resolve a `ToneEdit` to the uniforms that drive the WebGL tone
- * shader. Each slider is in `[-100, 100]`; we normalise to `[-1, 1]`
- * (sometimes scaled) here so the shader can stay simple. Mappings:
- *
- *   - **Exposure** → photographic stops, applied as a `2^(e/100)`
- *     multiplier. ±100 ≈ ±1 stop. Acts on every pixel uniformly.
- *
- *   - **Contrast** → S-curve around 0.5 in the shader, scaled by
- *     `c/200` (half as sensitive as a naïve `c/100`). The slider was
- *     previously much too aggressive — at +50 the image clipped hard.
- *
- *   - **Saturation** → `1 + s/100` interpolation between luminance
- *     and the original colour.
- *
- *   - **Blacks / Shadows / Highlights / Whites** → genuine tonal-
- *     region adjustments, applied per-pixel in the shader as a
- *     luminance-weighted RGB offset. Blacks/whites are *endpoint*
- *     pulls (steep falloff into pure black / pure white, the way
- *     Capture One's Levels-style "Black"/"White" sliders behave),
- *     while shadows/highlights are smooth bumps centred on the
- *     lower / upper midtones. The four regions are designed so a
- *     single slider only nudges its own zone — e.g. dragging Blacks
- *     leaves the highlights untouched.
- *
- *   The per-region shape and sensitivity is fully configurable by
- *   {@link TONE_REGION}: each region declares an `amplitude` (max
- *   luminance offset at slider ±100 and peak weight) plus a
- *   `weightExp` shape that drives the GLSL weight expression.
- *   Endpoint regions use `pow((1-L), n)` / `pow(L, n)`; midtone
- *   regions use a normalised bump `K · L^a · (1-L)^b` that peaks at
- *   `L = a/(a+b)` with peak value 1.
- */
-
-/**
- * Per-region tunables for the Blacks / Shadows / Highlights / Whites
- * sliders. Tweak these to make the sliders more or less aggressive
- * and to widen / narrow the luminance band each one targets.
- *
- * `amplitude` — maximum signed luminance offset at slider ±100 and
- *   peak weight. The smaller this number, the less the slider does.
- *
- * `weightExp` — the shape of the per-region weight curve:
- *   - `{ kind: "endpoint-low",  exp: n }` →  weight = (1-L)^n
- *     (Blacks — bigger `n` = sharper localisation at L≈0, i.e. only
- *     very dark pixels move).
- *   - `{ kind: "endpoint-high", exp: n }` →  weight = L^n
- *     (Whites — bigger `n` = sharper localisation at L≈1).
- *   - `{ kind: "midtone", a, b }` →  weight = K · L^a · (1-L)^b
- *     (Shadows / Highlights — bump centred at L = a/(a+b);
- *     larger a+b narrows the bump). K is auto-computed so the bump
- *     peaks at exactly 1.0.
- */
-type RegionWeight =
-  | { kind: "endpoint-low"; exp: number }
-  | { kind: "endpoint-high"; exp: number }
-  | { kind: "midtone"; a: number; b: number };
-
-const TONE_REGION: Record<
-  "blacks" | "shadows" | "highlights" | "whites",
-  { amplitude: number; weightExp: RegionWeight }
-> = {
-  // Endpoint pulls — sharp falloff so only the darkest / brightest
-  // pixels are affected. Higher exponents than the previous (6) make
-  // the slider feel less twitchy and more targeted.
-  blacks: {
-    amplitude: 0.25,
-    weightExp: { kind: "endpoint-low", exp: 10 },
-  },
-  whites: {
-    amplitude: 0.25,
-    weightExp: { kind: "endpoint-high", exp: 10 },
-  },
-  // Midtone bumps — narrowed (a+b raised from 4 to 6) and lower
-  // amplitude so the slider only nudges its lobe.
-  shadows: {
-    amplitude: 0.18,
-    weightExp: { kind: "midtone", a: 1, b: 5 },
-  },
-  highlights: {
-    amplitude: 0.18,
-    weightExp: { kind: "midtone", a: 5, b: 1 },
-  },
-};
-
-/** GLSL float literal with a decimal point, so the WebGL2 compiler
- *  treats it as a float and not an int. */
-function glslFloat(n: number): string {
-  return Number.isInteger(n) ? `${n}.0` : n.toString();
-}
-
-/** Build the GLSL weight expression for a region from its
- *  {@link RegionWeight} descriptor. The result is a fragment of
- *  GLSL that evaluates to a `float` weight in `[0, 1]`. */
-function regionWeightGlsl(w: RegionWeight): string {
-  switch (w.kind) {
-    case "endpoint-low":
-      return `pow(oneMinusL, ${glslFloat(w.exp)})`;
-    case "endpoint-high":
-      return `pow(L, ${glslFloat(w.exp)})`;
-    case "midtone": {
-      // Bump w(L) = L^a · (1-L)^b peaks at L = a/(a+b) with peak
-      // value (a^a · b^b) / (a+b)^(a+b). Multiply by the reciprocal
-      // (`norm`) so the weight tops out at 1.
-      const { a, b } = w;
-      const peak = (Math.pow(a, a) * Math.pow(b, b)) /
-        Math.pow(a + b, a + b);
-      const norm = peak > 0 ? 1 / peak : 1;
-      return `${glslFloat(norm)} * pow(L, ${glslFloat(a)}) * pow(oneMinusL, ${glslFloat(b)})`;
-    }
-  }
-}
-
-function toneCoefficients(t: ToneEdit): {
-  exposure: number;
-  contrast: number;
-  saturation: number;
-  blacks: number;
-  shadows: number;
-  highlights: number;
-  whites: number;
-} {
-  return {
-    exposure: Math.pow(2, t.exposure / 100),
-    // Halved sensitivity — slider [-100,100] → contrast factor [0.5, 1.5].
-    contrast: Math.max(0, 1 + t.contrast / 200),
-    saturation: Math.max(0, 1 + t.saturation / 100),
-    // Region sliders pass through normalised; the shader scales them
-    // by per-region max-offset constants.
-    blacks: t.blacks / 100,
-    shadows: t.shadows / 100,
-    highlights: t.highlights / 100,
-    whites: t.whites / 100,
-  };
-}
-
-/**
- * GPU pipeline that renders an `ImageBitmap` with brightness/contrast/
- * saturation applied by a fragment shader, into an internal canvas
- * that the main 2D canvas can `drawImage()` from.
- *
- * We use this instead of Canvas2D's `ctx.filter` because that property
- * is unsupported (or unreliable) in older WebKit versions — including
- * the WKWebView Tauri ships against on macOS — which is why the
- * sliders previously appeared to do nothing.
- *
- * Caching: the source texture is uploaded once per bitmap (a 40 MP
- * upload is the expensive part). Re-rendering with new tone uniforms
- * is essentially free.
- */
-type ToneSource =
-  | ImageBitmap
-  | HTMLCanvasElement
-  | OffscreenCanvas;
-
-class TonePipeline {
-  readonly canvas: HTMLCanvasElement;
-  private gl: WebGL2RenderingContext | null = null;
-  private program: WebGLProgram | null = null;
-  private vao: WebGLVertexArrayObject | null = null;
-  private texture: WebGLTexture | null = null;
-  private uploadedBitmap: ToneSource | null = null;
-  private uniforms: {
-    exposure: WebGLUniformLocation | null;
-    contrast: WebGLUniformLocation | null;
-    saturation: WebGLUniformLocation | null;
-    blacks: WebGLUniformLocation | null;
-    shadows: WebGLUniformLocation | null;
-    highlights: WebGLUniformLocation | null;
-    whites: WebGLUniformLocation | null;
-    srcOffset: WebGLUniformLocation | null;
-    srcScale: WebGLUniformLocation | null;
-  } = {
-    exposure: null,
-    contrast: null,
-    saturation: null,
-    blacks: null,
-    shadows: null,
-    highlights: null,
-    whites: null,
-    srcOffset: null,
-    srcScale: null,
-  };
-  private failed = false;
-
-  constructor() {
-    this.canvas = document.createElement("canvas");
-  }
-
-  /**
-   * Render the sub-rectangle `(srcRect.sx, sy)..(+sw, +sh)` of `bm`
-   * with `tone` applied, into an internal canvas of size `outW × outH`.
-   * The output canvas can then be copied with `drawImage()`. Returns
-   * `null` if WebGL initialisation failed.
-   *
-   * Rendering at the *display* size (rather than the bitmap's native
-   * size) keeps the per-frame cost proportional to what's visible: a
-   * 40 MP source feeding a 2 MP viewport processes 2 MP fragments,
-   * not 40 MP, and the subsequent `drawImage` copy is cheap.
-   */
-  render(
-    bm: ToneSource,
-    tone: ToneEdit,
-    srcRect: { sx: number; sy: number; sw: number; sh: number },
-    outW: number,
-    outH: number,
-  ): HTMLCanvasElement | null {
-    if (this.failed) return null;
-    if (!this.gl) {
-      const gl = this.canvas.getContext("webgl2", {
-        premultipliedAlpha: false,
-        preserveDrawingBuffer: false,
-      }) as WebGL2RenderingContext | null;
-      if (!gl) {
-        this.failed = true;
-        console.warn("WebGL2 unavailable — tone adjustments disabled");
-        return null;
-      }
-      this.gl = gl;
-      if (!this.initProgram()) {
-        this.failed = true;
-        return null;
-      }
-    }
-    const gl = this.gl;
-    if (this.canvas.width !== outW) this.canvas.width = outW;
-    if (this.canvas.height !== outH) this.canvas.height = outH;
-    if (this.uploadedBitmap !== bm) {
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        bm
-      );
-      this.uploadedBitmap = bm;
-    }
-    const c = toneCoefficients(tone);
-    const sx = srcRect.sx / bm.width;
-    const sy = srcRect.sy / bm.height;
-    const sw = srcRect.sw / bm.width;
-    const sh = srcRect.sh / bm.height;
-    gl.viewport(0, 0, outW, outH);
-    gl.useProgram(this.program);
-    gl.bindVertexArray(this.vao);
-    gl.uniform1f(this.uniforms.exposure, c.exposure);
-    gl.uniform1f(this.uniforms.contrast, c.contrast);
-    gl.uniform1f(this.uniforms.saturation, c.saturation);
-    gl.uniform1f(this.uniforms.blacks, c.blacks);
-    gl.uniform1f(this.uniforms.shadows, c.shadows);
-    gl.uniform1f(this.uniforms.highlights, c.highlights);
-    gl.uniform1f(this.uniforms.whites, c.whites);
-    gl.uniform2f(this.uniforms.srcOffset, sx, sy);
-    gl.uniform2f(this.uniforms.srcScale, sw, sh);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    return this.canvas;
-  }
-
-  /** Drop the cached texture upload so the next `render()` re-uploads.
-   * Called when the canvas swaps to a different bitmap. */
-  invalidate() {
-    this.uploadedBitmap = null;
-  }
-
-  /** Pre-initialise the GL context, compile the shader program, and
-   * upload `bm` as a texture so the next `render()` only needs to
-   * issue a draw call. Safe to call repeatedly with the same bitmap;
-   * a no-op if the pipeline is already warm for that bitmap. */
-  warmup(bm: ToneSource): void {
-    if (this.failed) return;
-    if (!this.gl) {
-      const gl = this.canvas.getContext("webgl2", {
-        premultipliedAlpha: false,
-        preserveDrawingBuffer: false,
-      }) as WebGL2RenderingContext | null;
-      if (!gl) {
-        this.failed = true;
-        return;
-      }
-      this.gl = gl;
-      if (!this.initProgram()) {
-        this.failed = true;
-        return;
-      }
-    }
-    if (this.uploadedBitmap === bm) return;
-    const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      bm
-    );
-    this.uploadedBitmap = bm;
-  }
-
-  dispose() {
-    const gl = this.gl;
-    if (!gl) return;
-    if (this.program) gl.deleteProgram(this.program);
-    if (this.texture) gl.deleteTexture(this.texture);
-    if (this.vao) gl.deleteVertexArray(this.vao);
-    this.program = null;
-    this.texture = null;
-    this.vao = null;
-    this.gl = null;
-    this.uploadedBitmap = null;
-  }
-
-  private initProgram(): boolean {
-    const gl = this.gl!;
-    // Y is flipped in clip space so the GL framebuffer's bottom-left
-    // origin lines up with `drawImage`'s top-left read order: without
-    // this flip, copying the GL canvas into a 2D canvas produces an
-    // upside-down image.
-    const vsSource = `#version 300 es
-      in vec2 a_pos;
-      uniform vec2 u_srcOffset;
-      uniform vec2 u_srcScale;
-      out vec2 v_uv;
-      void main() {
-        vec2 q = a_pos * 0.5 + 0.5;
-        v_uv = u_srcOffset + q * u_srcScale;
-        gl_Position = vec4(a_pos.x, -a_pos.y, 0.0, 1.0);
-      }
-    `;
-    // Pipeline (in order):
-    //   1. Exposure       — global multiply.
-    //   2. Region offsets — Capture-One-style Blacks/Shadows/
-    //      Highlights/Whites sliders. Each is a luminance-weighted
-    //      additive offset using bumps that don't overlap much, so
-    //      e.g. dragging Blacks only moves the dark end. The exact
-    //      shape and amplitude per region is configured in the
-    //      module-level `TONE_REGION` table.
-    //   3. Contrast — S-curve around 0.5.
-    //   4. Saturation — interpolate towards luminance.
-    const wB = regionWeightGlsl(TONE_REGION.blacks.weightExp);
-    const wS = regionWeightGlsl(TONE_REGION.shadows.weightExp);
-    const wH = regionWeightGlsl(TONE_REGION.highlights.weightExp);
-    const wW = regionWeightGlsl(TONE_REGION.whites.weightExp);
-    const aB = glslFloat(TONE_REGION.blacks.amplitude);
-    const aS = glslFloat(TONE_REGION.shadows.amplitude);
-    const aH = glslFloat(TONE_REGION.highlights.amplitude);
-    const aW = glslFloat(TONE_REGION.whites.amplitude);
-    const fsSource = `#version 300 es
-      precision highp float;
-      uniform sampler2D u_tex;
-      uniform float u_exposure;
-      uniform float u_contrast;
-      uniform float u_saturation;
-      uniform float u_blacks;
-      uniform float u_shadows;
-      uniform float u_highlights;
-      uniform float u_whites;
-      in vec2 v_uv;
-      out vec4 outColor;
-
-      const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
-
-      void main() {
-        vec4 src = texture(u_tex, v_uv);
-        vec3 col = src.rgb * u_exposure;
-
-        // Per-tonal-region adjustments. Compute luminance once, derive
-        // four non-overlapping weights, and add a uniform-RGB offset
-        // so chroma is preserved. Using clamped luminance for weights
-        // keeps the highlight bump effective even after Exposure has
-        // pushed the brightest pixels above 1.0.
-        float L = clamp(dot(col, LUMA), 0.0, 1.0);
-        float oneMinusL = 1.0 - L;
-
-        float wBlacks    = ${wB};
-        float wWhites    = ${wW};
-        float wShadows   = ${wS};
-        float wHighlights= ${wH};
-
-        float offset =
-            u_blacks     * ${aB} * wBlacks
-          + u_shadows    * ${aS} * wShadows
-          + u_highlights * ${aH} * wHighlights
-          + u_whites     * ${aW} * wWhites;
-        col += vec3(offset);
-
-        // S-curve around 0.5.
-        col = (col - 0.5) * u_contrast + 0.5;
-
-        // Saturation: interpolate between greyscale and colour.
-        float postLuma = dot(col, LUMA);
-        col = mix(vec3(postLuma), col, u_saturation);
-
-        outColor = vec4(col, src.a);
-      }
-    `;
-    const vs = this.compile(gl.VERTEX_SHADER, vsSource);
-    const fs = this.compile(gl.FRAGMENT_SHADER, fsSource);
-    if (!vs || !fs) return false;
-    const program = gl.createProgram();
-    if (!program) return false;
-    gl.attachShader(program, vs);
-    gl.attachShader(program, fs);
-    gl.linkProgram(program);
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error("tone shader link failed:", gl.getProgramInfoLog(program));
-      gl.deleteProgram(program);
-      return false;
-    }
-    this.program = program;
-    this.uniforms.exposure = gl.getUniformLocation(program, "u_exposure");
-    this.uniforms.contrast = gl.getUniformLocation(program, "u_contrast");
-    this.uniforms.saturation = gl.getUniformLocation(program, "u_saturation");
-    this.uniforms.blacks = gl.getUniformLocation(program, "u_blacks");
-    this.uniforms.shadows = gl.getUniformLocation(program, "u_shadows");
-    this.uniforms.highlights = gl.getUniformLocation(program, "u_highlights");
-    this.uniforms.whites = gl.getUniformLocation(program, "u_whites");
-    this.uniforms.srcOffset = gl.getUniformLocation(program, "u_srcOffset");
-    this.uniforms.srcScale = gl.getUniformLocation(program, "u_srcScale");
-
-    // Fullscreen quad as two triangles in clip space.
-    const vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    // prettier-ignore
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([
-        -1, -1,  1, -1,  -1,  1,
-        -1,  1,  1, -1,   1,  1,
-      ]),
-      gl.STATIC_DRAW
-    );
-    const posLoc = gl.getAttribLocation(program, "a_pos");
-    gl.enableVertexAttribArray(posLoc);
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    this.vao = vao;
-
-    // Texture: linear filtering, clamp.
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    this.texture = tex;
-    return true;
-  }
-
-  private compile(type: number, src: string): WebGLShader | null {
-    const gl = this.gl!;
-    const shader = gl.createShader(type);
-    if (!shader) return null;
-    gl.shaderSource(shader, src);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      console.error("tone shader compile failed:", gl.getShaderInfoLog(shader));
-      gl.deleteShader(shader);
-      return null;
-    }
-    return shader;
-  }
-}
 
 declare global {
   interface HTMLElementTagNameMap {
     "pf-image-canvas": PfImageCanvas;
   }
 }
+    // Per-photo effects (sharpen, …) live in their own localStorage

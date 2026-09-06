@@ -1,3 +1,8 @@
+/**
+ * Photo domain types — the shape of an individual file on disk and
+ * its sibling variants. Pure value-object definitions, no logic.
+ */
+
 export interface PhotoFile {
   /** Absolute path to the file on disk. */
   path: string;
@@ -18,11 +23,4 @@ export interface Photo {
   extensions?: string[];
   /** Per-file breakdown including variant labels. */
   files?: PhotoFile[];
-}
-
-export interface Folder {
-  id: string;
-  path: string;
-  name: string;
-  children: Folder[];
 }
