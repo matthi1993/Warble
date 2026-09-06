@@ -25,7 +25,8 @@ const MAX_RAW_IMAGES = 1;
 const PRIORITY_RANK: Record<TaskPriority, number> = {
   urgent: 0,
   foreground: 1,
-  background: 2,
+  nearby: 2,
+  background: 3,
 };
 
 export interface LoadOptions {

@@ -42,7 +42,7 @@ pub async fn get_thumbnail(
     request_id: Option<u64>,
     priority: Option<String>,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
     // Thumbnails default to background — folder batches and offscreen
@@ -53,10 +53,11 @@ pub async fn get_thumbnail(
         Some(s) => Priority::parse(Some(s)),
         None => Priority::Background,
     };
-    tasks::run(prio, request_id, "thumbnail", move |cancel| {
+    let bytes = tasks::run(prio, request_id, "thumbnail", move |cancel| {
         thumbnails::render(&resolved, &photo_path, cancel)
     })
-    .await
+    .await?;
+    Ok(Response::new(bytes))
 }
 
 #[tauri::command]
@@ -179,6 +180,7 @@ pub struct PhotoFilterInfo {
 #[tauri::command]
 pub async fn get_photo_filter_metadata(
     photo_paths: Vec<String>,
+    request_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<Vec<PhotoFilterInfo>, String> {
     let mut requests = Vec::with_capacity(photo_paths.len());
@@ -189,40 +191,40 @@ pub async fn get_photo_filter_metadata(
 
     tasks::run(
         Priority::Background,
-        None,
+        request_id,
         "filter_metadata",
-        move |_cancel| {
-            Ok(requests
-                .into_iter()
-                .map(|(path, resolved)| {
-                    let metadata = exif_cache::get_or_compute(&path, &resolved);
-                    let camera = metadata
-                        .camera_model
-                        .clone()
-                        .or_else(|| metadata.camera_make.clone());
-                    let lens = metadata
-                        .lens_model
-                        .clone()
-                        .or_else(|| metadata.lens_make.clone());
-                    // Older cache rows predate the numeric field. Recover their
-                    // value from the existing display string without forcing a
-                    // second source-file parse.
-                    let focal_length_mm = metadata.focal_length_mm.or_else(|| {
-                        metadata
-                            .focal_length
-                            .as_deref()
-                            .and_then(parse_focal_length_mm)
-                    });
-                    let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
-                    PhotoFilterInfo {
-                        path,
-                        camera,
-                        lens,
-                        focal_length_mm,
-                        date_taken,
-                    }
-                })
-                .collect())
+        move |cancel| {
+            let mut result = Vec::with_capacity(requests.len());
+            for (path, resolved) in requests {
+                cancel.check()?;
+                let metadata = exif_cache::get_or_compute(&path, &resolved);
+                let camera = metadata
+                    .camera_model
+                    .clone()
+                    .or_else(|| metadata.camera_make.clone());
+                let lens = metadata
+                    .lens_model
+                    .clone()
+                    .or_else(|| metadata.lens_make.clone());
+                // Older cache rows predate the numeric field. Recover their
+                // value from the existing display string without forcing a
+                // second source-file parse.
+                let focal_length_mm = metadata.focal_length_mm.or_else(|| {
+                    metadata
+                        .focal_length
+                        .as_deref()
+                        .and_then(parse_focal_length_mm)
+                });
+                let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
+                result.push(PhotoFilterInfo {
+                    path,
+                    camera,
+                    lens,
+                    focal_length_mm,
+                    date_taken,
+                });
+            }
+            Ok(result)
         },
     )
     .await

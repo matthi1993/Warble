@@ -7,8 +7,9 @@
  *   - **Foreground** (`urgent` + `foreground`): the photo currently
  *     on screen, the EXIF panel for it, and any thumbnail card the
  *     user is looking at.
- *   - **Background** (`background`): folder-wide thumbnail batches and
- *     full-image neighbour prefetches.
+ *   - **Nearby** (`nearby`): previews beside the active photo, on the
+ *     memory-safe background lane but ahead of folder-wide work.
+ *   - **Background** (`background`): folder-wide thumbnail and EXIF batches.
  *
  * Background work can never block foreground work because the two
  * pools have disjoint workers. Foreground work tagged `urgent` jumps
@@ -22,7 +23,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
-export type TaskPriority = "urgent" | "foreground" | "background";
+export type TaskPriority = "urgent" | "foreground" | "nearby" | "background";
 
 let nextId = 1;
 /** Generate a process-unique request id. */

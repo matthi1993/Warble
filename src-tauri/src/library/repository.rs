@@ -32,6 +32,28 @@ impl LibraryRepository {
         Ok(repo)
     }
 
+    /// Notify the debounced snapshot worker after user-meaningful library
+    /// rows change. Cached EXIF is deliberately excluded: warming metadata
+    /// must not repeatedly rewrite a user-selected library file.
+    pub fn enable_autosave(&self, library_id: String) -> Result<(), String> {
+        self.install_change_hook(library_id, crate::autosave::mark_dirty)
+    }
+
+    fn install_change_hook<F>(&self, library_id: String, mut on_dirty: F) -> Result<(), String>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.update_hook(Some(
+            move |_action, database: &str, table: &str, _row_id| {
+                if database == "main" && is_autosave_table(table) {
+                    on_dirty(library_id.clone());
+                }
+            },
+        ));
+        Ok(())
+    }
+
     fn migrate(&self) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
 
@@ -418,14 +440,22 @@ impl LibraryRepository {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        for table in ["photo_variants", "photo_edits", "photo_exif", "photo_ratings"] {
+        for table in [
+            "photo_variants",
+            "photo_edits",
+            "photo_exif",
+            "photo_ratings",
+        ] {
             rewrite_root_paths(&tx, table, new_root_id, rewrites)?;
         }
         rewrite_root_settings(&tx, new_root_id, rewrites)?;
 
         for (old_root_id, _) in rewrites {
-            tx.execute("DELETE FROM media_roots WHERE id = ?1", params![old_root_id])
-                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM media_roots WHERE id = ?1",
+                params![old_root_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         tx.execute(
             "INSERT INTO media_roots (id, name, added_at) VALUES (?1, ?2, ?3)",
@@ -523,6 +553,13 @@ impl LibraryRepository {
     }
 }
 
+fn is_autosave_table(table: &str) -> bool {
+    matches!(
+        table,
+        "media_roots" | "photo_variants" | "photo_edits" | "photo_ratings" | "app_settings"
+    )
+}
+
 fn rewrite_root_paths(
     tx: &rusqlite::Transaction<'_>,
     table: &str,
@@ -544,12 +581,7 @@ fn rewrite_root_paths(
                 .map_err(|e| e.to_string())?
         };
         for old_path in paths {
-            let new_path = remap_root_path(
-                &old_path,
-                old_root_id,
-                new_root_id,
-                relative_prefix,
-            )?;
+            let new_path = remap_root_path(&old_path, old_root_id, new_root_id, relative_prefix)?;
             tx.execute(
                 &format!("UPDATE {table} SET path = ?1 WHERE path = ?2"),
                 params![new_path, old_path],
@@ -571,8 +603,7 @@ fn rewrite_root_settings(
         }
     }
     if let Some(raw) = read_setting(tx, "app_view")? {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         if let Some(path) = value.get("path").and_then(|entry| entry.as_str()) {
             if let Some(mapped) = remap_from_any_root(path, new_root_id, rewrites)? {
                 value["path"] = serde_json::Value::String(mapped);
@@ -591,8 +622,8 @@ fn rewrite_root_settings(
             .ok_or_else(|| "photo_effects_v1 is not a JSON object".to_string())?;
         let mut migrated = serde_json::Map::new();
         for (path, effects) in object {
-            let mapped = remap_from_any_root(path, new_root_id, rewrites)?
-                .unwrap_or_else(|| path.clone());
+            let mapped =
+                remap_from_any_root(path, new_root_id, rewrites)?.unwrap_or_else(|| path.clone());
             migrated.insert(mapped, effects.clone());
         }
         write_setting(
@@ -824,6 +855,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn autosave_hook_tracks_library_changes_but_not_exif_cache_writes() {
+        let dir = std::env::temp_dir().join(format!("warble-autosave-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        let changes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = std::sync::Arc::clone(&changes);
+        repo.install_change_hook("library-a".to_string(), move |library_id| {
+            observed.lock().unwrap().push(library_id);
+        })
+        .unwrap();
+
+        repo.set_photo_exif("root/photo.jpg", 1, 2, 1, "{}")
+            .unwrap();
+        assert!(changes.lock().unwrap().is_empty());
+
+        repo.set_photo_rating_row("root/photo.jpg", 5, "green", 3)
+            .unwrap();
+        assert_eq!(changes.lock().unwrap().as_slice(), ["library-a"]);
+
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn migrates_legacy_absolute_paths_to_portable_keys() {
         let dir = std::env::temp_dir().join(format!("warble-migration-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -892,10 +947,7 @@ mod tests {
 
     #[test]
     fn consolidates_child_roots_without_losing_metadata() {
-        let dir = std::env::temp_dir().join(format!(
-            "warble-consolidate-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("warble-consolidate-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("library.warble");
         let repo = LibraryRepository::open(&db).unwrap();
@@ -911,11 +963,8 @@ mod tests {
             r#"{"path":"child-b/portrait.jpg","view":"full"}"#,
         )
         .unwrap();
-        repo.set_setting(
-            "photo_effects_v1",
-            r#"{"child-a/trip.jpg":{"grain":null}}"#,
-        )
-        .unwrap();
+        repo.set_setting("photo_effects_v1", r#"{"child-a/trip.jpg":{"grain":null}}"#)
+            .unwrap();
 
         repo.consolidate_media_roots(
             "parent",
@@ -930,15 +979,15 @@ mod tests {
         let roots = repo.media_roots().unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].id, "parent");
-        assert_eq!(
-            repo.all_photo_variants().unwrap()[0].0,
-            "parent/A/trip.jpg"
-        );
+        assert_eq!(repo.all_photo_variants().unwrap()[0].0, "parent/A/trip.jpg");
         assert_eq!(
             repo.all_photo_ratings().unwrap()[0].0,
             "parent/B/portrait.jpg"
         );
-        assert_eq!(repo.get_setting("last_folder").unwrap().unwrap(), "parent/A");
+        assert_eq!(
+            repo.get_setting("last_folder").unwrap().unwrap(),
+            "parent/A"
+        );
         assert!(repo
             .get_setting("app_view")
             .unwrap()

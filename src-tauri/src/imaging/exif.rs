@@ -142,15 +142,15 @@ fn extract(exif: &Exif) -> ExifMetadata {
     m.white_balance = white_balance(exif);
     m.flash = flash(exif);
 
-    m.pixel_width = uint_field(exif, Tag::PixelXDimension)
-        .or_else(|| uint_field(exif, Tag::ImageWidth));
-    m.pixel_height = uint_field(exif, Tag::PixelYDimension)
-        .or_else(|| uint_field(exif, Tag::ImageLength));
+    m.pixel_width =
+        uint_field(exif, Tag::PixelXDimension).or_else(|| uint_field(exif, Tag::ImageWidth));
+    m.pixel_height =
+        uint_field(exif, Tag::PixelYDimension).or_else(|| uint_field(exif, Tag::ImageLength));
     m.orientation = orientation_label(exif);
     m.color_space = color_space(exif);
 
-    m.date_taken = string_field(exif, Tag::DateTimeOriginal)
-        .or_else(|| string_field(exif, Tag::DateTime));
+    m.date_taken =
+        string_field(exif, Tag::DateTimeOriginal).or_else(|| string_field(exif, Tag::DateTime));
     m.artist = string_field(exif, Tag::Artist);
     m.copyright = string_field(exif, Tag::Copyright);
 

@@ -20,6 +20,11 @@ use crate::imaging::exif_cache;
 use crate::library::{library_db_path, LibraryRepository};
 
 const LIBRARY_FILE_EXT: &str = "warble";
+static SNAPSHOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn snapshot_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    SNAPSHOT_LOCK.lock().map_err(|error| error.to_string())
+}
 
 #[derive(Serialize)]
 pub struct LibrarySelection {
@@ -83,6 +88,7 @@ pub fn get_open_library_path(app: AppHandle, state: State<'_, AppState>) -> Resu
 /// library is intentionally untitled until the user saves it somewhere.
 #[tauri::command]
 pub async fn create_new_library(app: AppHandle) -> Result<(), String> {
+    let _snapshot_guard = snapshot_guard()?;
     let state = app.state::<AppState>();
     let dest = library_db_path(&app);
     if let Some(parent) = dest.parent() {
@@ -100,7 +106,11 @@ pub async fn create_new_library(app: AppHandle) -> Result<(), String> {
     drop(fresh);
 
     {
-        let old = state.repository.lock().ok().and_then(|mut guard| guard.take());
+        let old = state
+            .repository
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
         drop(old);
     }
 
@@ -112,12 +122,11 @@ pub async fn create_new_library(app: AppHandle) -> Result<(), String> {
 
     let repo = LibraryRepository::open(&dest)?;
     let library_id = repo.library_id()?;
+    repo.enable_autosave(library_id.clone())?;
     let arc = std::sync::Arc::new(repo);
     exif_cache::init(std::sync::Arc::clone(&arc));
     state.set_active_library_id(library_id);
-    state
-        .device_storage
-        .set_library_source(None, None, None)?;
+    state.device_storage.set_library_source(None, None, None)?;
     crate::library::rehydrate_media_roots(arc.as_ref(), &state);
     state.swap_repository(arc);
     let _ = app.emit("library-reloaded", ());
@@ -131,17 +140,16 @@ pub async fn save_library(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _snapshot_guard = snapshot_guard()?;
     let dest = ensure_extension(PathBuf::from(&path), LIBRARY_FILE_EXT);
     ensure_source_unchanged_if_same_destination(&state, &dest)?;
     let renewed_bookmark = write_snapshot(&app, &state, &dest)?;
     let fingerprint = file_fingerprint(&dest)?;
-    state
-        .device_storage
-        .set_library_source(
-            Some(&dest),
-            renewed_bookmark.as_deref(),
-            Some(fingerprint),
-        )?;
+    state.device_storage.set_library_source(
+        Some(&dest),
+        renewed_bookmark.as_deref(),
+        Some(fingerprint),
+    )?;
     Ok(())
 }
 
@@ -169,6 +177,7 @@ pub async fn save_library_as(
         let Some(path) = selected else {
             return Ok(None);
         };
+        let _snapshot_guard = snapshot_guard()?;
         let dest = ensure_extension(PathBuf::from(path), LIBRARY_FILE_EXT);
         ensure_source_unchanged_if_same_destination(&state, &dest)?;
         write_snapshot(&app, &state, &dest)?;
@@ -181,6 +190,7 @@ pub async fn save_library_as(
 
     #[cfg(target_os = "ios")]
     {
+        let _snapshot_guard = snapshot_guard()?;
         // iOS saves documents by exporting an existing file through the Files
         // picker. Build a clean SQLite snapshot first, then retain the returned
         // security-scoped bookmark so it can be reopened at launch.
@@ -217,6 +227,31 @@ pub async fn save_library_as(
 
 #[tauri::command]
 pub async fn save_open_library(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _snapshot_guard = snapshot_guard()?;
+    save_open_library_inner(&app, &state)
+}
+
+/// Save after a debounced repository change. A missing external source is not
+/// an error because the canonical working database is itself always durable.
+/// The active id is checked after taking the snapshot lock so a queued change
+/// from a previously open library can never overwrite the new destination.
+pub(crate) fn autosave_open_library(
+    app: &AppHandle,
+    state: &AppState,
+    expected_library_id: &str,
+) -> Result<bool, String> {
+    let _snapshot_guard = snapshot_guard()?;
+    if state.active_library_id()? != expected_library_id {
+        return Ok(false);
+    }
+    if state.device_storage.last_library_path().is_none() {
+        return Ok(false);
+    }
+    save_open_library_inner(app, state)?;
+    Ok(true)
+}
+
+fn save_open_library_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let remembered_path = state
         .device_storage
         .last_library_path()
@@ -225,7 +260,7 @@ pub async fn save_open_library(app: AppHandle, state: State<'_, AppState>) -> Re
         "This library was opened before safe shared saving was enabled. Reopen it or use Save As before saving to its current location."
             .to_string()
     })?;
-    let (dest, bookmark) = resolve_library_source(&app, &state, &remembered_path)?;
+    let (dest, bookmark) = resolve_library_source(app, state, &remembered_path)?;
     let current = file_fingerprint(&dest)
         .map_err(|error| format!("the shared library is unavailable: {error}"))?;
     if current != expected {
@@ -235,7 +270,7 @@ pub async fn save_open_library(app: AppHandle, state: State<'_, AppState>) -> Re
         );
     }
 
-    let renewed_bookmark = write_snapshot(&app, &state, &dest)?;
+    let renewed_bookmark = write_snapshot(app, state, &dest)?;
     let fingerprint = file_fingerprint(&dest)?;
     state.device_storage.set_library_source(
         Some(&dest),
@@ -343,6 +378,7 @@ pub async fn load_library(
         )?;
         return Ok(());
     }
+    let _snapshot_guard = snapshot_guard()?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -380,7 +416,6 @@ pub async fn load_library(
 
     // 5-7. Install new repo, re-init caches, re-hydrate catalog.
     let arc = std::sync::Arc::new(new_repo);
-    let _ = arc.delete_setting("cache_settings");
     exif_cache::init(std::sync::Arc::clone(&arc));
 
     {
@@ -390,7 +425,9 @@ pub async fn load_library(
         state.settings.load_from(&state.device_storage);
 
         let library_id = arc.library_id()?;
+        arc.enable_autosave(library_id.clone())?;
         state.set_active_library_id(library_id.clone());
+        let _ = arc.delete_setting("cache_settings");
         for (root_id, legacy_path) in arc.legacy_root_bindings()? {
             state.device_storage.set_root_binding(
                 &library_id,
@@ -409,6 +446,7 @@ pub async fn load_library(
         crate::library::rehydrate_media_roots(arc.as_ref(), &state);
 
         state.swap_repository(arc);
+        crate::autosave::mark_dirty(library_id);
     }
 
     // If migration changed the working copy, write the portable form back on
@@ -523,10 +561,8 @@ mod tests {
 
     #[test]
     fn fingerprint_changes_when_file_contents_change() {
-        let path = std::env::temp_dir().join(format!(
-            "warble-fingerprint-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("warble-fingerprint-{}", uuid::Uuid::new_v4()));
         std::fs::write(&path, b"first library").unwrap();
         let first = file_fingerprint(&path).unwrap();
         std::fs::write(&path, b"second library").unwrap();

@@ -8,10 +8,9 @@
  * JPEG is what the canvas actually displays today; full-resolution
  * decoding is left in place for a future zoom-to-100 % path.
  *
- * Cache size is wired to the same `full_image_bitmap_max_entries`
- * setting used by the full-image cache — the bitmap LRU bound is
- * driven by GPU memory, which is independent of which encoder
- * produced the bytes.
+ * Cache size follows `full_image_bitmap_max_entries`, with a floor of two
+ * lightweight HD bitmaps so the active photo and next swipe target remain
+ * available even when the full-resolution cache is configured to one.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -23,7 +22,11 @@ import {
 } from "./task-manager";
 import { getCacheSettings } from "./cache-settings";
 
-const DEFAULT_MAX_ENTRIES = 1;
+// Keep the active 1920px preview plus the next likely swipe target. This is
+// deliberately independent of the much more expensive full-resolution cache:
+// two HD bitmaps are a modest, bounded cost even on iPad.
+const MIN_HD_ENTRIES = 2;
+const DEFAULT_MAX_ENTRIES = MIN_HD_ENTRIES;
 
 const cache = new Map<string, ImageBitmap>();
 
@@ -40,7 +43,8 @@ let maxEntries = DEFAULT_MAX_ENTRIES;
 const PRIORITY_RANK: Record<TaskPriority, number> = {
   urgent: 0,
   foreground: 1,
-  background: 2,
+  nearby: 2,
+  background: 3,
 };
 
 let decodeBytes: ((buf: ArrayBuffer) => Promise<ImageBitmap>) | null = null;
@@ -55,7 +59,7 @@ interface CacheSettings {
 
 function setMaxEntries(n: number): void {
   if (!Number.isFinite(n) || n < 1) return;
-  maxEntries = Math.floor(n);
+  maxEntries = Math.max(MIN_HD_ENTRIES, Math.floor(n));
   while (cache.size > maxEntries) {
     const oldestKey = cache.keys().next().value as string | undefined;
     if (!oldestKey) break;
@@ -208,9 +212,14 @@ function releaseRef(path: string, entry: PendingEntry): void {
   }
 }
 
-export function prefetchHdImages(paths: readonly string[]): void {
-  const limit = Math.min(paths.length, maxEntries);
-  for (let i = limit - 1; i >= 0; i--) {
+/** Prepare likely swipe targets on the nearby queue. `paths` must be ordered
+ * nearest-first and must not include the active photo (the canvas owns it). */
+export function prefetchHdImages(paths: readonly string[]): { cancel(): void } {
+  // The active canvas owns one bitmap slot. Only use the remaining slots
+  // for neighbours, and issue them nearest-first so the next swipe wins.
+  const limit = Math.min(paths.length, Math.max(0, maxEntries - 1));
+  const controllers: AbortController[] = [];
+  for (let i = 0; i < limit; i++) {
     const p = paths[i];
     if (cache.has(p)) {
       const bm = cache.get(p)!;
@@ -219,10 +228,20 @@ export function prefetchHdImages(paths: readonly string[]): void {
       continue;
     }
     if (pending.has(p)) continue;
-    void loadHdImage(p, { priority: "background" }).catch((err) => {
-      console.warn("hd image prefetch failed", p, err);
-    });
+    const controller = new AbortController();
+    controllers.push(controller);
+    void loadHdImage(p, { priority: "nearby", signal: controller.signal })
+      .catch((err) => {
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          console.warn("hd image prefetch failed", p, err);
+        }
+      });
   }
+  return {
+    cancel(): void {
+      for (const controller of controllers) controller.abort();
+    },
+  };
 }
 
 /**

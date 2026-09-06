@@ -27,13 +27,9 @@ async function createOrientedBitmap(blob: Blob): Promise<ImageBitmap> {
   }
 }
 
-/** Decode a base64-encoded JPEG (returned by thumbnail IPC) into an
- *  EXIF-oriented `ImageBitmap`. */
-export function decodeBase64Jpeg(b64: string): Promise<ImageBitmap> {
-  const bin = atob(b64);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return createOrientedBitmap(new Blob([arr], { type: "image/jpeg" }));
+/** Decode binary JPEG bytes returned by thumbnail IPC into an oriented bitmap. */
+export function decodeJpegBytes(bytes: ArrayBuffer): Promise<ImageBitmap> {
+  return createOrientedBitmap(new Blob([bytes], { type: "image/jpeg" }));
 }
 
 interface WorkerResponse {

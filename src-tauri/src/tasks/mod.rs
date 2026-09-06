@@ -2,7 +2,7 @@
 //! is currently looking at always wins over background work like
 //! folder-wide thumbnail batches and neighbour prefetching.
 //!
-//! Two dedicated worker pools:
+//! Two dedicated worker lanes:
 //!
 //! * **Foreground** workers drain `Urgent` and `Foreground` jobs.
 //!   `Urgent` jumps the queue (push_front) so a navigation away from
@@ -10,9 +10,10 @@
 //!   These workers never pick up `Background` jobs, so a slow RAW
 //!   thumbnail can never block the next full-resolution decode.
 //!
-//! * **Background** workers drain only `Background` jobs (folder-wide
-//!   thumbnail batches, full-image prefetches for neighbouring
-//!   photos). They share the rest of the CPU cores.
+//! * **Background** workers drain `Nearby` before `Background` jobs.
+//!   Nearby work prepares the photos beside the active photo; ordinary
+//!   background work covers folder-wide thumbnail and metadata batches.
+//!   Both stay off the latency-sensitive foreground workers.
 //!
 //! Each submitted job gets an optional `request_id` so the frontend
 //! can flip its [`CancelToken`]. Workers check the flag before
@@ -35,6 +36,9 @@ pub enum Priority {
     /// Foreground pool, FIFO. Use for visible-but-not-active UI like
     /// thumbnail cards in the current viewport.
     Foreground,
+    /// Background lane, ahead of folder-wide work. Use for the next
+    /// photos a user is likely to swipe to from the full viewer.
+    Nearby,
     /// Background pool. Use for prefetch and folder-wide batches.
     Background,
 }
@@ -43,6 +47,7 @@ impl Priority {
     pub fn parse(s: Option<&str>) -> Self {
         match s.unwrap_or("") {
             "urgent" => Priority::Urgent,
+            "nearby" => Priority::Nearby,
             "background" => Priority::Background,
             // Default to foreground so older invocations stay snappy.
             _ => Priority::Foreground,
@@ -53,6 +58,7 @@ impl Priority {
         match self {
             Priority::Urgent => "urgent",
             Priority::Foreground => "foreground",
+            Priority::Nearby => "nearby",
             Priority::Background => "background",
         }
     }
@@ -100,6 +106,7 @@ struct Job {
 
 struct Inner {
     fg_queue: VecDeque<Job>,
+    nearby_queue: VecDeque<Job>,
     bg_queue: VecDeque<Job>,
 }
 
@@ -155,8 +162,10 @@ pub struct PoolStats {
     pub fg_workers: usize,
     pub bg_workers: usize,
     pub fg_queued: usize,
+    pub nearby_queued: usize,
     pub bg_queued: usize,
     pub fg_running: usize,
+    pub nearby_running: usize,
     pub bg_running: usize,
     pub total_submitted: u64,
     pub total_completed: u64,
@@ -213,6 +222,7 @@ impl TaskPool {
         let state = Arc::new((
             Mutex::new(Inner {
                 fg_queue: VecDeque::new(),
+                nearby_queue: VecDeque::new(),
                 bg_queue: VecDeque::new(),
             }),
             Condvar::new(),
@@ -385,6 +395,10 @@ impl TaskPool {
                 g.fg_queue.push_back(job);
                 fg_cv.notify_one();
             }
+            Priority::Nearby => {
+                g.nearby_queue.push_back(job);
+                bg_cv.notify_one();
+            }
             Priority::Background => {
                 g.bg_queue.push_back(job);
                 bg_cv.notify_one();
@@ -424,7 +438,12 @@ impl TaskPool {
         {
             let (lock, _, _) = &*self.state;
             let g = lock.lock().unwrap();
-            for j in g.fg_queue.iter().chain(g.bg_queue.iter()) {
+            for j in g
+                .fg_queue
+                .iter()
+                .chain(g.nearby_queue.iter())
+                .chain(g.bg_queue.iter())
+            {
                 if !j.cancel.is_cancelled() {
                     j.cancel.cancel();
                     count += 1;
@@ -473,14 +492,21 @@ impl TaskPool {
                     let limit = self.bg_concurrency.load(Ordering::Relaxed);
                     let active = self.bg_active.load(Ordering::Relaxed);
                     if active < limit {
+                        if let Some(j) = g.nearby_queue.pop_front() {
+                            // Increment while holding the queue lock. Otherwise
+                            // two workers can both observe the same free final
+                            // slot before either increments the atomic counter.
+                            self.bg_active.fetch_add(1, Ordering::Relaxed);
+                            break j;
+                        }
                         if let Some(j) = g.bg_queue.pop_front() {
+                            self.bg_active.fetch_add(1, Ordering::Relaxed);
                             break j;
                         }
                     }
                     g = bg_cv.wait(g).unwrap();
                 }
             };
-            self.bg_active.fetch_add(1, Ordering::Relaxed);
             self.execute(job);
             self.bg_active.fetch_sub(1, Ordering::Relaxed);
             // A concurrency slot just opened up — wake the next
@@ -538,10 +564,15 @@ impl TaskPool {
         let now = Instant::now();
         let mut jobs: Vec<JobSnapshot> = Vec::new();
 
-        let (fg_queued, bg_queued) = {
+        let (fg_queued, nearby_queued, bg_queued) = {
             let (lock, _, _) = &*self.state;
             let g = lock.lock().unwrap();
-            for j in g.fg_queue.iter().chain(g.bg_queue.iter()) {
+            for j in g
+                .fg_queue
+                .iter()
+                .chain(g.nearby_queue.iter())
+                .chain(g.bg_queue.iter())
+            {
                 jobs.push(JobSnapshot {
                     job_id: j.meta.job_id,
                     label: j.meta.label,
@@ -553,30 +584,30 @@ impl TaskPool {
                     cancelled: j.cancel.is_cancelled(),
                 });
             }
-            (g.fg_queue.len(), g.bg_queue.len())
+            (g.fg_queue.len(), g.nearby_queue.len(), g.bg_queue.len())
         };
 
-        let (fg_running, bg_running) = {
+        let (fg_running, nearby_running, bg_running) = {
             let r = self.running.lock().unwrap();
             let mut fg = 0usize;
+            let mut nearby = 0usize;
             let mut bg = 0usize;
             for (id, entry) in r.iter() {
                 match entry.priority {
                     Priority::Background => bg += 1,
-                    _ => fg += 1,
+                    Priority::Nearby => nearby += 1,
+                    Priority::Urgent | Priority::Foreground => fg += 1,
                 }
                 jobs.push(JobSnapshot {
                     job_id: *id,
                     label: entry.label,
                     priority: entry.priority.as_str(),
-                    age_ms: now
-                        .saturating_duration_since(entry.started_at)
-                        .as_millis() as u64,
+                    age_ms: now.saturating_duration_since(entry.started_at).as_millis() as u64,
                     running: true,
                     cancelled: entry.cancel.is_cancelled(),
                 });
             }
-            (fg, bg)
+            (fg, nearby, bg)
         };
 
         // Most recent first (highest job_id at the top).
@@ -593,8 +624,10 @@ impl TaskPool {
             fg_workers: self.counters.fg_workers.load(Ordering::Relaxed) as usize,
             bg_workers: self.counters.bg_workers.load(Ordering::Relaxed) as usize,
             fg_queued,
+            nearby_queued,
             bg_queued,
             fg_running,
+            nearby_running,
             bg_running,
             total_submitted: self.counters.submitted.load(Ordering::Relaxed),
             total_completed: self.counters.completed.load(Ordering::Relaxed),
@@ -634,6 +667,5 @@ where
         };
         let _ = tx.send(result);
     });
-    rx.await
-        .map_err(|_| "task channel dropped".to_string())?
+    rx.await.map_err(|_| "task channel dropped".to_string())?
 }

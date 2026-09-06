@@ -153,13 +153,14 @@ fn import_folder_inner(
             continue;
         };
         if existing_path.starts_with(&root) && existing_path != root {
-            let relative = existing_path.strip_prefix(&root).map_err(|e| e.to_string())?;
+            let relative = existing_path
+                .strip_prefix(&root)
+                .map_err(|e| e.to_string())?;
             rewrites.push((existing_id.clone(), portable_relative(relative)?));
         }
     }
     for existing in &media_roots {
-        if bindings.contains_key(&existing.id)
-            || rewrites.iter().any(|(id, _)| id == &existing.id)
+        if bindings.contains_key(&existing.id) || rewrites.iter().any(|(id, _)| id == &existing.id)
         {
             continue;
         }
@@ -176,12 +177,9 @@ fn import_folder_inner(
 
     if rewrites.is_empty() {
         repo.add_media_root(&root_id, &name)?;
-        state.device_storage.set_root_grant(
-            &library_id,
-            &root_id,
-            &root,
-            bookmark.as_deref(),
-        )?;
+        state
+            .device_storage
+            .set_root_grant(&library_id, &root_id, &root, bookmark.as_deref())?;
     } else {
         repo.consolidate_media_roots(&root_id, &name, &rewrites)?;
         let old_ids: Vec<String> = rewrites.iter().map(|(id, _)| id.clone()).collect();
@@ -237,11 +235,7 @@ pub fn bind_media_root(
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     if selected_name != media_root.name && root_path.join(&media_root.name).is_dir() {
-        import_folder_inner(
-            root_path.to_string_lossy().into_owned(),
-            bookmark,
-            &state,
-        )?;
+        import_folder_inner(root_path.to_string_lossy().into_owned(), bookmark, &state)?;
         return list_imported_folders(state);
     }
     let library_id = repo.library_id()?;

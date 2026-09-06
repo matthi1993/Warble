@@ -1,4 +1,5 @@
 mod app_state;
+mod autosave;
 mod caching;
 mod commands;
 mod device_storage;
@@ -22,6 +23,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            autosave::init(app.handle().clone());
             // Spin up the priority task pool early so worker threads
             // are warm before the first image request.
             let _ = tasks::pool();

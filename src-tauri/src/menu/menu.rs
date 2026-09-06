@@ -147,13 +147,9 @@ fn build_window_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
         .build()
 }
 
-fn build_file_submenu(
-    app: &AppHandle<Wry>
-) -> tauri::Result<Submenu<Wry>> {
-    let load_file =
-        MenuItemBuilder::with_id(ID_FILE_LOAD, "Load Library ...").build(app)?;
-    let save_file =
-        MenuItemBuilder::with_id(ID_FILE_SAVE, "Save Library As ...").build(app)?;
+fn build_file_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
+    let load_file = MenuItemBuilder::with_id(ID_FILE_LOAD, "Load Library ...").build(app)?;
+    let save_file = MenuItemBuilder::with_id(ID_FILE_SAVE, "Save Library As ...").build(app)?;
     SubmenuBuilder::new(app, "File")
         .item(&load_file)
         .item(&save_file)
@@ -176,7 +172,13 @@ fn build_cache_submenu(
         ID_THUMB_PREFIX,
         THUMB_PRESETS,
         settings.thumbnail_disk_max_entries,
-        |n| if n == 0 { "Off".into() } else { format_count_label(n, "files") },
+        |n| {
+            if n == 0 {
+                "Off".into()
+            } else {
+                format_count_label(n, "files")
+            }
+        },
     )?;
     let hd_group = build_preset_group(
         app,
@@ -184,7 +186,13 @@ fn build_cache_submenu(
         ID_HD_PREFIX,
         HD_PRESETS,
         settings.hd_image_disk_max_entries,
-        |n| if n == 0 { "Off".into() } else { format_count_label(n, "files") },
+        |n| {
+            if n == 0 {
+                "Off".into()
+            } else {
+                format_count_label(n, "files")
+            }
+        },
     )?;
     let full_mem_group = build_preset_group(
         app,
@@ -192,7 +200,13 @@ fn build_cache_submenu(
         ID_FULL_MEM_PREFIX,
         FULL_MEM_PRESETS,
         settings.full_image_memory_max_entries,
-        |n| if n == 0 { "Off".into() } else { format!("{n} images") },
+        |n| {
+            if n == 0 {
+                "Off".into()
+            } else {
+                format!("{n} images")
+            }
+        },
     )?;
     let full_bitmap_group = build_preset_group(
         app,
@@ -234,23 +248,17 @@ fn build_cache_submenu(
     )
     .checked(settings.background_thumbnails_enabled)
     .build(app)?;
-    let bg_hd = CheckMenuItemBuilder::with_id(
-        ID_BG_HD_TOGGLE,
-        "Pre-generate Folder HD Previews",
-    )
-    .checked(settings.background_hd_previews_enabled)
-    .build(app)?;
-    let full_res = CheckMenuItemBuilder::with_id(
-        ID_FULL_RES_TOGGLE,
-        "Load Full Resolution After Pause",
-    )
-    .checked(settings.full_resolution_enabled)
-    .build(app)?;
+    let bg_hd = CheckMenuItemBuilder::with_id(ID_BG_HD_TOGGLE, "Pre-generate Folder HD Previews")
+        .checked(settings.background_hd_previews_enabled)
+        .build(app)?;
+    let full_res =
+        CheckMenuItemBuilder::with_id(ID_FULL_RES_TOGGLE, "Load Full Resolution After Pause")
+            .checked(settings.full_resolution_enabled)
+            .build(app)?;
 
     let clear_thumb =
         MenuItemBuilder::with_id(ID_THUMB_CLEAR, "Clear Thumbnail Cache").build(app)?;
-    let clear_hd =
-        MenuItemBuilder::with_id(ID_HD_CLEAR, "Clear HD Image Cache").build(app)?;
+    let clear_hd = MenuItemBuilder::with_id(ID_HD_CLEAR, "Clear HD Image Cache").build(app)?;
     let clear_full_mem =
         MenuItemBuilder::with_id(ID_FULL_MEM_CLEAR, "Clear Full Image Memory Cache").build(app)?;
     SubmenuBuilder::new(app, "Cache")
@@ -314,8 +322,7 @@ fn build_disk_usage_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>>
     let reveal_hd =
         MenuItemBuilder::with_id(ID_REVEAL_HD, "Reveal HD Images in Finder").build(app)?;
 
-    let refresh =
-        MenuItemBuilder::with_id(ID_REFRESH_USAGE, "Refresh Disk Usage").build(app)?;
+    let refresh = MenuItemBuilder::with_id(ID_REFRESH_USAGE, "Refresh Disk Usage").build(app)?;
 
     SubmenuBuilder::new(app, "Disk Usage")
         .item(&thumb_size)
@@ -496,9 +503,9 @@ fn apply_hd_max(app: &AppHandle<Wry>, n: usize) {
 
 fn apply_full_mem_max(app: &AppHandle<Wry>, n: usize) {
     let state = app.state::<AppState>();
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.full_image_memory_max_entries = n);
+    let snapshot = state.settings.update(&state.device_storage, |s| {
+        s.full_image_memory_max_entries = n
+    });
     full_image::set_memory_cache_capacity(n);
     sync_group_check_state(ID_FULL_MEM_PREFIX, FULL_MEM_PRESETS, n);
     let _ = app.emit("cache-settings-changed", snapshot);
@@ -506,9 +513,9 @@ fn apply_full_mem_max(app: &AppHandle<Wry>, n: usize) {
 
 fn apply_full_bitmap_max(app: &AppHandle<Wry>, n: usize) {
     let state = app.state::<AppState>();
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.full_image_bitmap_max_entries = n);
+    let snapshot = state.settings.update(&state.device_storage, |s| {
+        s.full_image_bitmap_max_entries = n
+    });
     sync_group_check_state(ID_FULL_BITMAP_PREFIX, FULL_BITMAP_PRESETS, n);
     // Frontend listens to `cache-settings-changed` and resizes its own
     // ImageBitmap LRU.
@@ -519,9 +526,9 @@ fn apply_bg_concurrency(app: &AppHandle<Wry>, n: usize) {
     let state = app.state::<AppState>();
     let cap = tasks::pool().bg_thread_capacity().max(1);
     let clamped = n.clamp(1, cap);
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.background_pool_workers = clamped);
+    let snapshot = state.settings.update(&state.device_storage, |s| {
+        s.background_pool_workers = clamped
+    });
     tasks::pool().set_bg_concurrency(clamped);
     sync_group_check_state(ID_BG_PREFIX, BG_PRESETS, clamped);
     let _ = app.emit("cache-settings-changed", snapshot);

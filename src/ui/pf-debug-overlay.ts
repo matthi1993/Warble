@@ -14,7 +14,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 interface JobSnapshot {
   job_id: number;
   label: string;
-  priority: "urgent" | "foreground" | "background";
+  priority: "urgent" | "foreground" | "nearby" | "background";
   age_ms: number;
   running: boolean;
   cancelled: boolean;
@@ -23,7 +23,7 @@ interface JobSnapshot {
 interface FinishedJob {
   job_id: number;
   label: string;
-  priority: "urgent" | "foreground" | "background";
+  priority: "urgent" | "foreground" | "nearby" | "background";
   queued_ms: number;
   run_ms: number;
   cancelled: boolean;
@@ -33,8 +33,10 @@ interface PoolStats {
   fg_workers: number;
   bg_workers: number;
   fg_queued: number;
+  nearby_queued: number;
   bg_queued: number;
   fg_running: number;
+  nearby_running: number;
   bg_running: number;
   total_submitted: number;
   total_completed: number;
@@ -55,9 +57,9 @@ export class PfDebugOverlay extends LitElement {
       left: var(--pf-debug-left, auto);
       bottom: var(--pf-debug-bottom, 16px);
       right: var(--pf-debug-right, 16px);
-      width: 380px;
-      max-height: 300px;
-      z-index: 1000;
+      width: min(380px, calc(100vw - 32px));
+      max-height: min(420px, calc(100vh - 32px));
+      z-index: 13000;
       display: none;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 11px;
@@ -102,6 +104,10 @@ export class PfDebugOverlay extends LitElement {
     header button:hover {
       background: rgba(255, 255, 255, 0.08);
       color: #fff;
+    }
+    @media (pointer: coarse) {
+      header { min-height: 32px; }
+      header button { padding: 8px 10px; }
     }
     .summary {
       display: grid;
@@ -163,6 +169,10 @@ export class PfDebugOverlay extends LitElement {
       background: rgba(120, 180, 255, 0.16);
       color: #9ec5ff;
     }
+    .pri.nearby {
+      background: rgba(187, 134, 252, 0.18);
+      color: #d2adff;
+    }
     .pri.background {
       background: rgba(160, 160, 160, 0.16);
       color: #c8c8c8;
@@ -221,6 +231,13 @@ export class PfDebugOverlay extends LitElement {
     }).then((un) => {
       this.unlistenToggle = un;
     });
+  }
+
+  /** Open from touch-only surfaces such as the iPad settings sheet. */
+  show(): void {
+    this.open = true;
+    this.toggleAttribute("open", true);
+    this.startPolling();
   }
 
   disconnectedCallback(): void {
@@ -311,6 +328,10 @@ export class PfDebugOverlay extends LitElement {
                 <span class="value">
                   ${s.fg_running}/${s.fg_workers} · q${s.fg_queued}
                 </span>
+              </div>
+              <div class="row">
+                <span class="label">Near</span>
+                <span class="value">${s.nearby_running} · q${s.nearby_queued}</span>
               </div>
               <div class="row">
                 <span class="label">BG</span>
@@ -415,6 +436,8 @@ function priLabel(p: JobSnapshot["priority"]): string {
       return "URG";
     case "foreground":
       return "FG";
+    case "nearby":
+      return "NEAR";
     case "background":
       return "BG";
   }

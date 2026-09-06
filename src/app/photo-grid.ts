@@ -579,7 +579,7 @@ export class PfPhotoGrid extends LitElement {
       .sort((a, b) => {
         if (a.date === null) return 1;
         if (b.date === null) return -1;
-        return b.date.localeCompare(a.date);
+        return a.date.localeCompare(b.date);
       });
   }
 

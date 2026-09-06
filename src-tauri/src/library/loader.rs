@@ -79,6 +79,9 @@ pub fn init_library_repository(app: &tauri::App) {
             if reset {
                 clear_remembered_library(&state);
             }
+            if let Err(error) = repo.enable_autosave(library_id.clone()) {
+                eprintln!("failed to enable library autosave: {error}");
+            }
             let arc = Arc::new(repo);
             state.set_active_library_id(library_id.clone());
             persist_legacy_bindings(arc.as_ref(), &state, &library_id);
@@ -87,7 +90,9 @@ pub fn init_library_repository(app: &tauri::App) {
                 let mut guard = state.repository.lock().expect("repository mutex poisoned");
                 *guard = Some(Arc::clone(&arc));
             }
+            let autosave_library_id = library_id.clone();
             hydrate_media_roots_after_startup(app, arc, library_id);
+            crate::autosave::mark_dirty(autosave_library_id);
         }
         Err(e) => eprintln!(
             "failed to initialise both the saved and fallback libraries at {db_path:?}: {e}"
@@ -188,11 +193,11 @@ fn restore_last_library(state: &AppState, db_path: &std::path::Path) {
     }
     match crate::commands::file_fingerprint(&source) {
         Ok(fingerprint) => {
-            if let Err(error) = state.device_storage.set_library_source(
-                Some(&source),
-                None,
-                Some(fingerprint),
-            ) {
+            if let Err(error) =
+                state
+                    .device_storage
+                    .set_library_source(Some(&source), None, Some(fingerprint))
+            {
                 eprintln!("failed to remember restored library fingerprint: {error}");
             }
         }

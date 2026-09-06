@@ -12,13 +12,14 @@ import { getCacheSettings } from "./cache-settings";
  * `spawn_blocking` jobs (each decoding multi-MB files). Also caches results
  * so re-visiting a folder is instant.
  *
- * Requests are routed at one of three priority tiers:
+ * Requests are routed at one of four priority tiers:
  *
  *   - `urgent`     — the photo currently on screen.
  *   - `foreground` — visible thumbnail cards in the grid.
+ *   - `nearby`     — photos beside the active full-view photo.
  *   - `background` — folder-wide batch prefetch.
  *
- * The renderer drains its three queues in priority order so an
+ * The renderer drains its four queues in priority order so an
  * urgent request issued while a 1000-image batch is mid-pump runs
  * before any further batch jobs leave the renderer. The backend
  * additionally splits work across two thread pools so background
@@ -41,14 +42,14 @@ type Job = {
    * dispatched we can't pull it back out of the priority queue, so
    * cancellation has to go through the backend cancel command. */
   dispatched: boolean;
-  resolve: (value: string) => void;
+  resolve: (value: ArrayBuffer) => void;
   reject: (err: unknown) => void;
 };
 
-const cache = new Map<string, string>(); // path -> base64
+const cache = new Map<string, ArrayBuffer>(); // path -> encoded JPEG bytes
 const inflight = new Map<
   string,
-  { promise: Promise<string>; priority: TaskPriority }
+  { promise: Promise<ArrayBuffer>; priority: TaskPriority }
 >();
 
 /** One queue per priority tier so a flood of background jobs can never
@@ -56,19 +57,21 @@ const inflight = new Map<
 const queues: Record<TaskPriority, Job[]> = {
   urgent: [],
   foreground: [],
+  nearby: [],
   background: [],
 };
-const PRIORITY_ORDER: TaskPriority[] = ["urgent", "foreground", "background"];
+const PRIORITY_ORDER: TaskPriority[] = ["urgent", "foreground", "nearby", "background"];
 const PRIORITY_RANK: Record<TaskPriority, number> = {
   urgent: 0,
   foreground: 1,
-  background: 2,
+  nearby: 2,
+  background: 3,
 };
 let active = 0;
 
-function rememberInCache(path: string, b64: string) {
+function rememberInCache(path: string, bytes: ArrayBuffer) {
   if (cache.has(path)) cache.delete(path);
-  cache.set(path, b64);
+  cache.set(path, bytes);
   while (cache.size > CACHE_LIMIT) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
@@ -100,14 +103,14 @@ function pump() {
     if (!job) return;
     active += 1;
     job.dispatched = true;
-    invoke<string>("get_thumbnail", {
+    invoke<ArrayBuffer>("get_thumbnail", {
       photoPath: job.path,
       requestId: job.requestId,
       priority: job.priority,
     })
-      .then((b64) => {
-        rememberInCache(job.path, b64);
-        if (!job.cancelled) job.resolve(b64);
+      .then((bytes) => {
+        rememberInCache(job.path, bytes);
+        if (!job.cancelled) job.resolve(bytes);
         else job.reject(new DOMException("cancelled", "AbortError"));
       })
       .catch((err) => {
@@ -131,7 +134,7 @@ function pump() {
 }
 
 export interface ThumbnailHandle {
-  promise: Promise<string>;
+  promise: Promise<ArrayBuffer>;
   cancel(): void;
 }
 
@@ -159,7 +162,7 @@ export function requestThumbnail(
   // behind a batch entry. Both will land via the disk cache.
 
   let job!: Job;
-  const promise = new Promise<string>((resolve, reject) => {
+  const promise = new Promise<ArrayBuffer>((resolve, reject) => {
     job = {
       path,
       priority,

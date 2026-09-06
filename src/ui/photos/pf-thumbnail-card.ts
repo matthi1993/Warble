@@ -151,7 +151,7 @@ export class PfThumbnailCard extends LitElement {
   selected = false;
 
   @state()
-  private dataUrl: string | null = null;
+  private thumbnailUrl: string | null = null;
 
   @state()
   private error: string | null = null;
@@ -184,13 +184,13 @@ export class PfThumbnailCard extends LitElement {
 
   /**
    * Forget the currently-displayed thumbnail and re-fetch it. Used after
-   * a global cache-clear so on-screen cards drop their stale base64 and
+   * a global cache-clear so on-screen cards drop their stale object URL and
    * re-decode from source instead of reusing the renderer-side cache.
    */
   reload(): void {
     this.pending?.cancel();
     this.pending = null;
-    this.dataUrl = null;
+    this.clearThumbnailUrl();
     this.error = null;
     this.loading = false;
     this.loadedPath = null;
@@ -205,6 +205,9 @@ export class PfThumbnailCard extends LitElement {
     this.observer = null;
     this.pending?.cancel();
     this.pending = null;
+    this.clearThumbnailUrl();
+    this.loadedPath = null;
+    this.loading = false;
     this.unsubscribeHdCached?.();
     this.unsubscribeHdCached = null;
   }
@@ -213,7 +216,7 @@ export class PfThumbnailCard extends LitElement {
     if (changed.has("path") && this.path !== this.loadedPath) {
       this.pending?.cancel();
       this.pending = null;
-      this.dataUrl = null;
+      this.clearThumbnailUrl();
       this.error = null;
       this.loading = false;
       this.loadedPath = null;
@@ -248,9 +251,12 @@ export class PfThumbnailCard extends LitElement {
     const handle = requestThumbnail(requestedPath);
     this.pending = handle;
     try {
-      const b64 = await handle.promise;
+      const bytes = await handle.promise;
       if (this.path !== requestedPath) return;
-      this.dataUrl = `data:image/jpeg;base64,${b64}`;
+      this.clearThumbnailUrl();
+      this.thumbnailUrl = URL.createObjectURL(
+        new Blob([bytes], { type: "image/jpeg" })
+      );
       this.loadedPath = requestedPath;
       this.dispatchEvent(
         new CustomEvent("thumbnail-load", { bubbles: true, composed: true })
@@ -270,6 +276,11 @@ export class PfThumbnailCard extends LitElement {
     }
   }
 
+  private clearThumbnailUrl(): void {
+    if (this.thumbnailUrl) URL.revokeObjectURL(this.thumbnailUrl);
+    this.thumbnailUrl = null;
+  }
+
   render() {
     const showBadge = this.extensions && this.extensions.length > 1;
     return html`
@@ -280,8 +291,8 @@ export class PfThumbnailCard extends LitElement {
         @contextmenu=${this.onContextMenu}
       >
         <div class="thumb">
-          ${this.dataUrl
-            ? html`<img src=${this.dataUrl} alt=${this.filename} loading="lazy" />`
+          ${this.thumbnailUrl
+            ? html`<img src=${this.thumbnailUrl} alt=${this.filename} loading="lazy" />`
             : this.error
             ? html`<div class="error" title=${this.error}>
                 <pf-icon name="alert"></pf-icon>

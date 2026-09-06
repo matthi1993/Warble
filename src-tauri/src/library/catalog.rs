@@ -397,7 +397,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("warble-partial-scan-{root_id}"));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("visible.jpg"), []).unwrap();
-        symlink(root.join("missing.jpg"), root.join("remote-placeholder.jpg")).unwrap();
+        symlink(
+            root.join("missing.jpg"),
+            root.join("remote-placeholder.jpg"),
+        )
+        .unwrap();
 
         let mut catalog = LibraryCatalog::default();
         let error = catalog.import_root(&root_id, "Photos", &root).unwrap_err();

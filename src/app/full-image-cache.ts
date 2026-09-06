@@ -67,7 +67,8 @@ let maxEntries = DEFAULT_MAX_ENTRIES;
 const PRIORITY_RANK: Record<TaskPriority, number> = {
   urgent: 0,
   foreground: 1,
-  background: 2,
+  nearby: 2,
+  background: 3,
 };
 
 let decodeBytes: ((buf: ArrayBuffer) => Promise<ImageBitmap>) | null = null;

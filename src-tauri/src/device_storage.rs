@@ -219,9 +219,7 @@ impl DeviceStorage {
             .into_iter()
             .flat_map(|(root_id, grants)| {
                 grants.into_iter().filter_map(move |grant| {
-                    grant
-                        .bookmark
-                        .map(|bookmark| (root_id.clone(), bookmark))
+                    grant.bookmark.map(|bookmark| (root_id.clone(), bookmark))
                 })
             })
             .collect()
@@ -305,10 +303,8 @@ mod tests {
 
     #[test]
     fn migrates_legacy_grant_and_selects_an_available_alternative() {
-        let dir = std::env::temp_dir().join(format!(
-            "warble-device-storage-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("warble-device-storage-{}", uuid::Uuid::new_v4()));
         let first = dir.join("usb");
         let second = dir.join("smb");
         std::fs::create_dir_all(&first).unwrap();

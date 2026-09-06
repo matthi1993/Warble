@@ -4,8 +4,8 @@
  *
  * Loading strategy:
  *   1. Kick off both the cached thumbnail and the full image in parallel.
- *   2. The thumbnail typically resolves first (it's already on disk + base64
- *      decoded) — paint it immediately so the user sees something.
+ *   2. The thumbnail typically resolves first (it's already on disk as a
+ *      compact JPEG) — paint it immediately so the user sees something.
  *   3. When the full image's encoded bytes arrive, hand them to the
  *      browser's native `createImageBitmap` (multi-threaded, SIMD JPEG
  *      decode) and swap it in.
@@ -62,8 +62,8 @@ import {
 } from "@services/effects/effects-store";
 import { classifyFormat } from "@domain/photo";
 // Side-effect import: wires the worker-backed decoder into both
-// image caches and exports `decodeBase64Jpeg` for thumbnail decoding.
-import { decodeBase64Jpeg } from "./canvas/decoder-bootstrap";
+// image caches and exports the binary thumbnail decoder.
+import { decodeJpegBytes } from "./canvas/decoder-bootstrap";
 import { TonePipeline, type ToneSource } from "./canvas/tone-pipeline";
 import type { RawImageSource } from "./canvas/raw-source";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
@@ -881,7 +881,7 @@ export class PfImageCanvas extends LitElement {
     // right now — it must jump ahead of any folder-wide batch.
     const thumbHandle = requestThumbnail(path, "urgent");
     void thumbHandle.promise
-      .then((b64) => decodeBase64Jpeg(b64))
+      .then((bytes) => decodeJpegBytes(bytes))
       .then((bm) => {
         if (ac.signal.aborted || this.path !== path) {
           bm.close?.();

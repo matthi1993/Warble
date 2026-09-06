@@ -45,6 +45,7 @@ export class PfCacheSettings extends LitElement {
     button:disabled { opacity: .55; cursor: default; }
     .usage { padding: 10px 12px; border-radius: var(--pf-radius-md); background: var(--pf-surface-2);
       color: var(--pf-text-muted); font-size: var(--pf-text-xs); line-height: 1.5; overflow-wrap: anywhere; }
+    .diagnostics { justify-content: flex-start; }
     .error { color: var(--pf-danger); font-size: var(--pf-text-xs); }
     @media (pointer: coarse) { select, button { min-height: 46px; } .row { min-height: 50px; } }
   `;
@@ -70,6 +71,13 @@ export class PfCacheSettings extends LitElement {
   }
 
   private close = () => { if (!this.saving) this.visible = false; };
+  private openTaskPool = () => {
+    this.visible = false;
+    this.dispatchEvent(new CustomEvent("task-pool-open", {
+      bubbles: true,
+      composed: true,
+    }));
+  };
   private setNumber(key: keyof CacheSettings, event: Event) {
     this.draft = { ...this.draft, [key]: Number((event.target as HTMLSelectElement).value) };
   }
@@ -110,7 +118,13 @@ export class PfCacheSettings extends LitElement {
             ${this.select("thumbnail_disk_max_entries", "Thumbnail disk cache", "Generated JPEG files", [0,1000,5000,10000,25000], "files")}
             ${this.select("hd_image_disk_max_entries", "HD preview disk cache", "Generated 1920px JPEG files", [0,500,1000,2000,5000], "files")}
             ${this.select("full_image_memory_max_entries", "Full-image byte cache", "Encoded originals retained in app memory", [0,2,4,8,16], "images")}
-            ${this.select("full_image_bitmap_max_entries", "Decoded bitmap cache", "Includes the active image; each large bitmap can be 100 MB+", [1,2,4,8], "images")}
+            ${this.select("full_image_bitmap_max_entries", "Full-resolution bitmap cache", "The lightweight active + next HD previews are always retained separately; each full-resolution bitmap can be 100 MB+.", [1,2,4,8], "images")}
+          </section>
+          <section><h3>Diagnostics</h3>
+            <div class="row diagnostics">
+              <button type="button" @click=${this.openTaskPool}>Show Task Pool</button>
+            </div>
+            <p class="note">Shows queued, running, and recently completed image work.</p>
           </section>
           ${this.usage ? html`<div class="usage">Currently on this device: ${this.usage.thumbnail.files} thumbnails (${this.formatBytes(this.usage.thumbnail.bytes)}) and ${this.usage.hd_image.files} HD previews (${this.formatBytes(this.usage.hd_image.bytes)}).<br>${this.usage.thumbnail.path ?? "Cache directory unavailable"}</div>` : nothing}
           ${this.error ? html`<div class="error">${this.error}</div>` : nothing}

@@ -146,6 +146,7 @@ export class PfFullView extends LitElement {
   private unsubscribeEdits: (() => void) | null = null;
   private unsubscribePostProcess: (() => void) | null = null;
   private unsubscribeCacheSettings: (() => void) | null = null;
+  private focusedPrefetch: { cancel(): void } | null = null;
 
   @state()
   private fullResolutionEnabled = getCacheSettings().full_resolution_enabled;
@@ -277,7 +278,7 @@ export class PfFullView extends LitElement {
     });
     this.unsubscribeCacheSettings = subscribeCacheSettings((settings) => {
       this.fullResolutionEnabled = settings.full_resolution_enabled;
-      if (settings.background_hd_previews_enabled) this.schedulePrefetch();
+      this.schedulePrefetch();
     });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
@@ -302,6 +303,8 @@ export class PfFullView extends LitElement {
     this.unsubscribePostProcess = null;
     this.unsubscribeCacheSettings?.();
     this.unsubscribeCacheSettings = null;
+    this.focusedPrefetch?.cancel();
+    this.focusedPrefetch = null;
   }
 
   willUpdate(changed: Map<string, unknown>): void {
@@ -356,17 +359,20 @@ export class PfFullView extends LitElement {
   }
 
   /**
-   * Keep the current photo and its neighbours warm in the shared
-   * full-image LRU. Priority radiates outwards from the active index
-   * so forward scrolling — the common case — wins by one slot.
+   * Keep the next swipe targets warm in the shared HD LRU. This focused
+   * prefetch is always enabled and is separate from the optional folder-wide
+   * HD pre-generation setting. Forward navigation wins each distance tier.
    */
   private schedulePrefetch() {
-    if (!getCacheSettings().background_hd_previews_enabled) return;
+    // Navigation invalidates the previous prediction. Cancelling before
+    // re-queueing prevents rapid swipes from accumulating stale neighbours.
+    this.focusedPrefetch?.cancel();
+    this.focusedPrefetch = null;
     const total = this.photos.length;
     if (total === 0) return;
     const i = this.index;
     if (i < 0 || i >= total) return;
-    const order: string[] = [this.photos[i].path];
+    const order: string[] = [];
     for (let d = 1; d < total && order.length < 20; d++) {
       const fwd = i + d;
       if (fwd < total) order.push(this.photos[fwd].path);
@@ -374,7 +380,7 @@ export class PfFullView extends LitElement {
       const back = i - d;
       if (back >= 0) order.push(this.photos[back].path);
     }
-    prefetchHdImages(order);
+    this.focusedPrefetch = prefetchHdImages(order);
   }
 
   private bgCss(bg: BgColor): string {
