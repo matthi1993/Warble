@@ -12,6 +12,31 @@ struct OpenInArgs: Decodable { let path: String }
 final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
   private var pending: Invoke?
   private var pickingLibrary = false
+  private let resourceLock = NSLock()
+  private var activeResources: [String: URL] = [:]
+
+  deinit {
+    resourceLock.lock()
+    let resources = Array(activeResources.values)
+    activeResources.removeAll()
+    resourceLock.unlock()
+    resources.forEach { $0.stopAccessingSecurityScopedResource() }
+  }
+
+  /// Keep one balanced security-scope access alive for each selected URL.
+  /// Folder descendants remain readable after the picker callback returns.
+  private func retainSecurityScope(for url: URL) -> Bool {
+    resourceLock.lock()
+    defer { resourceLock.unlock() }
+    if activeResources[url.path] != nil {
+      return true
+    }
+    guard url.startAccessingSecurityScopedResource() else {
+      return false
+    }
+    activeResources[url.path] = url
+    return true
+  }
 
   @objc func pickFolders(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(PickFoldersArgs.self)
@@ -94,7 +119,7 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
         relativeTo: nil,
         bookmarkDataIsStale: &stale
       )
-      guard url.startAccessingSecurityScopedResource() else {
+      guard retainSecurityScope(for: url) else {
         invoke.reject("Folder permission is no longer valid")
         return
       }
@@ -112,6 +137,111 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
     } catch {
       invoke.reject(error.localizedDescription)
     }
+  }
+
+  @objc func prepareFolder(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(ResolveBookmarkArgs.self)
+    guard let data = Data(base64Encoded: args.bookmark) else {
+      invoke.reject("Invalid folder bookmark")
+      return
+    }
+
+    DispatchQueue.global(qos: .userInitiated).async {
+      var stale = false
+      do {
+        let url = try URL(
+          resolvingBookmarkData: data,
+          options: [],
+          relativeTo: nil,
+          bookmarkDataIsStale: &stale
+        )
+        guard self.retainSecurityScope(for: url) else {
+          invoke.reject("Folder permission is no longer valid")
+          return
+        }
+        let entryCount = try self.prepareFolderEnumeration(at: url)
+        let currentBookmark = stale
+          ? try url.bookmarkData(
+              options: [],
+              includingResourceValuesForKeys: nil,
+              relativeTo: nil
+            )
+          : data
+        invoke.resolve([
+          "path": url.path,
+          "bookmark": currentBookmark.base64EncodedString(),
+          "entryCount": entryCount
+        ])
+      } catch {
+        invoke.reject("Could not read the selected folder: \(error.localizedDescription)")
+      }
+    }
+  }
+
+  /// NSFileCoordinator gives SMB/File Provider extensions time to fetch each
+  /// directory listing. Walking the enumerator here warms those listings for
+  /// the portable Rust catalog scan that follows.
+  private func prepareFolderEnumeration(at url: URL) throws -> Int {
+    let emptyRetryDelays: [TimeInterval] = [0.2, 0.5, 1.0, 2.0]
+    for attempt in 0...emptyRetryDelays.count {
+      let entryCount = try coordinateFolderEnumeration(at: url)
+      if entryCount > 0 || attempt == emptyRetryDelays.count {
+        return entryCount
+      }
+      // Some SMB File Providers report an empty successful listing while
+      // asynchronously fetching the real directory. Re-coordinate after a
+      // short delay instead of accepting a permanently blank library root.
+      Thread.sleep(forTimeInterval: emptyRetryDelays[attempt])
+    }
+    return 0
+  }
+
+  private func coordinateFolderEnumeration(at url: URL) throws -> Int {
+    let coordinator = NSFileCoordinator()
+    var coordinationError: NSError?
+    var enumerationError: Error?
+    var entryCount = 0
+    coordinator.coordinate(
+      readingItemAt: url,
+      options: .withoutChanges,
+      error: &coordinationError
+    ) { coordinatedURL in
+      let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
+      var providerError: Error?
+      guard let enumerator = FileManager.default.enumerator(
+        at: coordinatedURL,
+        includingPropertiesForKeys: keys,
+        options: [.skipsHiddenFiles],
+        errorHandler: { _, error in
+          providerError = error
+          return false
+        }
+      ) else {
+        enumerationError = NSError(
+          domain: "FolderAccess",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "The folder could not be enumerated"]
+        )
+        return
+      }
+
+      do {
+        for case let itemURL as URL in enumerator {
+          _ = try itemURL.resourceValues(forKeys: Set(keys))
+          entryCount += 1
+        }
+        if let providerError = providerError {
+          throw providerError
+        }
+      } catch {
+        enumerationError = error
+      }
+    }
+
+    if let error = coordinationError ?? enumerationError as NSError? {
+      throw error
+    }
+    return entryCount
   }
 
   @objc func replaceLibrary(_ invoke: Invoke) throws {
@@ -209,7 +339,7 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
     pickingLibrary = false
     do {
       let folders = try urls.map { url -> [String: String] in
-        guard url.startAccessingSecurityScopedResource() else {
+        guard retainSecurityScope(for: url) else {
           throw NSError(domain: "FolderAccess", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not access selected folder"])
         }
         let bookmark = try url.bookmarkData(

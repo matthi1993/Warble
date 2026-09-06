@@ -4,6 +4,7 @@ fn main() {
         "pickLibrary",
         "exportLibrary",
         "resolveBookmark",
+        "prepareFolder",
         "replaceLibrary",
         "trashFiles",
         "openIn",

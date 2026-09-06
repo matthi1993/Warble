@@ -10,6 +10,14 @@ pub struct FolderGrant {
     pub bookmark: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedFolder {
+    pub path: String,
+    pub bookmark: String,
+    pub entry_count: usize,
+}
+
 #[derive(Deserialize)]
 struct PickResponse {
     folders: Vec<FolderGrant>,
@@ -59,6 +67,19 @@ pub fn resolve_bookmark<R: Runtime>(
     app.state::<FolderAccess<R>>()
         .0
         .run_mobile_plugin::<FolderGrant>("resolveBookmark", BookmarkPayload { bookmark })
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve a folder bookmark, retain its security scope, and ask the native
+/// file coordinator to enumerate the subtree. This materializes directory
+/// listings exposed by remote iOS File Providers before Rust scans them.
+pub fn prepare_folder<R: Runtime>(
+    app: &AppHandle<R>,
+    bookmark: &str,
+) -> Result<PreparedFolder, String> {
+    app.state::<FolderAccess<R>>()
+        .0
+        .run_mobile_plugin::<PreparedFolder>("prepareFolder", BookmarkPayload { bookmark })
         .map_err(|e| e.to_string())
 }
 

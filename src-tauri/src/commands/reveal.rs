@@ -12,6 +12,8 @@ use std::path::PathBuf;
 #[cfg(desktop)]
 use std::process::Command;
 use tauri::{AppHandle, State};
+#[cfg(target_os = "macos")]
+use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
 
@@ -26,8 +28,8 @@ pub async fn reveal_in_file_manager(
         .map_err(|e| e.to_string())?
 }
 
-/// Hand a photo to another application. macOS opens it in its associated
-/// external app; iPadOS presents the system share/open-in sheet.
+/// Hand a photo to another application. macOS asks which installed app to
+/// use; iPadOS presents the same system share/open-in sheet as Files.
 #[tauri::command]
 pub async fn open_photo_in_app(
     path: String,
@@ -41,7 +43,35 @@ pub async fn open_photo_in_app(
         return tauri_plugin_folder_access::open_in(&app, &resolved.to_string_lossy());
     }
 
-    #[cfg(desktop)]
+    #[cfg(target_os = "macos")]
+    {
+        let picker_app = app.clone();
+        let selected_app = tauri::async_runtime::spawn_blocking(move || {
+            picker_app
+                .dialog()
+                .file()
+                .set_title("Open Photo With…")
+                // Start with Apple's image apps (Preview, Photos, etc.). The
+                // standard Applications sidebar remains available for
+                // third-party editors installed in /Applications.
+                .set_directory("/System/Applications")
+                .add_filter("Applications", &["app"])
+                .blocking_pick_file()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let Some(selected_app) = selected_app else {
+            return Ok(());
+        };
+        let selected_app = selected_app.to_string();
+        return tauri::async_runtime::spawn_blocking(move || {
+            open_with_application(&resolved, &selected_app)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(all(desktop, not(target_os = "macos")))]
     {
         let _ = app;
         return tauri::async_runtime::spawn_blocking(move || open_external(&resolved))
@@ -56,14 +86,34 @@ pub async fn open_photo_in_app(
     }
 }
 
-#[cfg(desktop)]
+#[cfg(target_os = "macos")]
+fn open_with_application(path: &Path, application: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("path does not exist: {}", path.display()));
+    }
+    if !Path::new(application).is_dir() || !application.ends_with(".app") {
+        return Err("the selected item is not a macOS application".to_string());
+    }
+
+    let status = Command::new("open")
+        .arg("-a")
+        .arg(application)
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to open photo with the selected application: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("the selected application could not open the photo".to_string())
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
 fn open_external(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("path does not exist: {}", path.display()));
     }
 
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("open");
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = Command::new("cmd");

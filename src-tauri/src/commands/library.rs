@@ -65,10 +65,12 @@ pub async fn select_folders_dialog(_app: AppHandle) -> Result<Vec<FolderSelectio
 
 #[tauri::command]
 pub fn import_folder(
+    app: AppHandle,
     path: String,
     bookmark: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Folder, String> {
+    let (path, bookmark) = prepare_selected_folder(&app, path, bookmark)?;
     import_folder_inner(path, bookmark, &state)
 }
 
@@ -211,11 +213,13 @@ fn portable_relative(path: &Path) -> Result<String, String> {
 /// Reconnect a root from a library created on another device.
 #[tauri::command]
 pub fn bind_media_root(
+    app: AppHandle,
     root_id: String,
     path: String,
     bookmark: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<Folder>, String> {
+    let (path, bookmark) = prepare_selected_folder(&app, path, bookmark)?;
     let root_path = std::fs::canonicalize(PathBuf::from(path)).map_err(|e| e.to_string())?;
     if !root_path.is_dir() {
         return Err("selected media root is not a directory".to_string());
@@ -266,6 +270,30 @@ pub fn bind_media_root(
             )
         })?;
     list_imported_folders(state)
+}
+
+#[cfg(target_os = "ios")]
+fn prepare_selected_folder(
+    app: &AppHandle,
+    _path: String,
+    bookmark: Option<String>,
+) -> Result<(String, Option<String>), String> {
+    let bookmark = bookmark.ok_or_else(|| {
+        "The iPad did not receive permission for this folder. Choose it again in Files.".to_string()
+    })?;
+    let prepared = tauri_plugin_folder_access::prepare_folder(app, &bookmark)?;
+    // Use the bookmark-resolved path rather than the picker path. File
+    // Providers can remount a network share at a new transient location.
+    Ok((prepared.path, Some(prepared.bookmark)))
+}
+
+#[cfg(not(target_os = "ios"))]
+fn prepare_selected_folder(
+    _app: &AppHandle,
+    path: String,
+    bookmark: Option<String>,
+) -> Result<(String, Option<String>), String> {
+    Ok((path, bookmark))
 }
 
 #[tauri::command]

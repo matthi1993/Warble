@@ -114,6 +114,32 @@ Denies the pickLibrary command without any pre-configured scope.
 <tr>
 <td>
 
+`folder-access:allow-prepareFolder`
+
+</td>
+<td>
+
+Enables the prepareFolder command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`folder-access:deny-prepareFolder`
+
+</td>
+<td>
+
+Denies the prepareFolder command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `folder-access:allow-replaceLibrary`
 
 </td>

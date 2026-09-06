@@ -343,6 +343,18 @@
           "markdownDescription": "Denies the pickLibrary command without any pre-configured scope."
         },
         {
+          "description": "Enables the prepareFolder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-prepareFolder",
+          "markdownDescription": "Enables the prepareFolder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the prepareFolder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-prepareFolder",
+          "markdownDescription": "Denies the prepareFolder command without any pre-configured scope."
+        },
+        {
           "description": "Enables the replaceLibrary command without any pre-configured scope.",
           "type": "string",
           "const": "allow-replaceLibrary",

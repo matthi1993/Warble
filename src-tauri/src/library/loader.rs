@@ -357,7 +357,7 @@ fn persist_legacy_bindings(repo: &LibraryRepository, state: &AppState, library_i
 #[cfg(target_os = "ios")]
 pub fn restore_security_scoped_roots(app: &tauri::AppHandle, state: &AppState, library_id: &str) {
     for (root_id, bookmark) in state.device_storage.root_bookmarks_for(library_id) {
-        match tauri_plugin_folder_access::resolve_bookmark(app, &bookmark) {
+        match tauri_plugin_folder_access::prepare_folder(app, &bookmark) {
             Ok(grant) => {
                 let _ = state.device_storage.refresh_root_grant(
                     library_id,
