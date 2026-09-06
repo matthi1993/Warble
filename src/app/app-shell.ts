@@ -3,9 +3,9 @@ import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "@tauri-apps/plugin-dialog";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
-import type { Photo } from "@domain/photo";
+import type { Photo, PhotoFilterInfo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
@@ -54,6 +54,10 @@ function findFolderByPath(roots: Folder[], path: string): Folder | null {
 interface FolderSelection {
   path: string;
   bookmark: string | null;
+}
+
+interface PhotoFilterInfoResult extends PhotoFilterInfo {
+  path: string;
 }
 
 function isIPad(): boolean {
@@ -191,6 +195,20 @@ export class WarbleApp extends LitElement {
       flex-direction: column;
       gap: var(--pf-space-2);
     }
+    .sidebar-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--pf-space-2);
+    }
+    .sidebar-title {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      color: var(--pf-text);
+      font-size: var(--pf-text-sm);
+      font-weight: 600;
+    }
     .sidebar-header-row {
       display: flex;
       align-items: center;
@@ -206,39 +224,118 @@ export class WarbleApp extends LitElement {
       gap: var(--pf-space-1);
       flex: 0 0 auto;
     }
-    .subfolder-toggle {
-      display: inline-flex;
+    .folder-actions {
+      flex: 0 0 auto;
+      padding: var(--pf-space-2);
+      border-top: 1px solid var(--pf-border);
+    }
+    .add-folders-button {
+      display: flex;
       align-items: center;
+      justify-content: center;
+      width: 100%;
       gap: var(--pf-space-2);
-      font-size: var(--pf-text-xs);
+      padding: var(--pf-space-2) var(--pf-space-3);
+      border: 1px dashed var(--pf-border-strong);
+      border-radius: var(--pf-radius-md);
+      background: transparent;
       color: var(--pf-text-muted);
+      font: inherit;
+      font-size: var(--pf-text-sm);
       cursor: pointer;
-      user-select: none;
-      padding: 2px 0;
+      transition: background var(--pf-transition), border-color var(--pf-transition), color var(--pf-transition);
     }
-    .subfolder-toggle input {
-      margin: 0;
-      accent-color: var(--pf-accent);
-      cursor: pointer;
+    .add-folders-button:hover {
+      border-color: var(--pf-accent);
+      background: var(--pf-accent-soft);
+      color: var(--pf-accent-hover);
     }
-    .library-path {
-      overflow: hidden;
-      color: var(--pf-text-subtle);
-      font-size: var(--pf-text-xs);
-      line-height: 1.35;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .sidebar-footer {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: var(--pf-space-2);
+      padding: var(--pf-space-2);
+      border-top: 1px solid var(--pf-border);
+      background: var(--pf-surface-2);
     }
     .library-actions {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: var(--pf-space-2);
+      padding-top: var(--pf-space-2);
     }
     .library-actions pf-button {
       min-width: 0;
+      width: 100%;
     }
-    .library-actions pf-button:first-child {
-      grid-column: 1 / -1;
+    .empty-content-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-3) var(--pf-space-1) var(--pf-space-2);
+      border-bottom: 1px solid var(--pf-border);
+    }
+    .empty-content-header h1 {
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: var(--pf-text-xl);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .include-subfolders-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      flex: 0 0 auto;
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      cursor: pointer;
+      user-select: none;
+    }
+    .include-subfolders-toggle input {
+      margin: 0;
+      accent-color: var(--pf-accent);
+      cursor: pointer;
+    }
+    .library-card {
+      padding: var(--pf-space-2);
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface);
+    }
+    .library-card-title {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .library-path {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--pf-space-2);
+      min-width: 0;
+      padding: var(--pf-space-1) var(--pf-space-1) 0;
+      color: var(--pf-text-subtle);
+      font-size: var(--pf-text-xs);
+      line-height: 1.35;
+    }
+    .library-path pf-icon {
+      margin-top: 2px;
+    }
+    .library-path span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .app-busy-overlay {
       position: fixed;
@@ -283,11 +380,7 @@ export class WarbleApp extends LitElement {
       overflow-y: auto;
       padding: var(--pf-space-2);
     }
-    .sidebar-settings {
-      flex: 0 0 auto;
-      padding: var(--pf-space-2);
-      border-top: 1px solid var(--pf-border);
-    }
+    .sidebar-settings { flex: 0 0 auto; }
     .sidebar-settings pf-button { width: 100%; }
     .empty {
       color: var(--pf-text-subtle);
@@ -533,6 +626,9 @@ export class WarbleApp extends LitElement {
    * progress events stream in. */
   private hdPrewarmedBatchId: number = 0;
 
+  /** Invalidates filter metadata requests when the active photo set changes. */
+  private filterMetadataRequest = 0;
+
   /** Suppresses the persistence side-effect during the initial restore
    * pass so we don't immediately write back what we just read. */
   private appViewHydrated = false;
@@ -621,10 +717,10 @@ export class WarbleApp extends LitElement {
             // Re-fetch with the restored recursive flag so the grid
             // matches the persisted toggle state.
             try {
-              this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+              this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
                 folderPath: this.selectedFolderId,
                 recursive: true,
-              });
+              }));
               this.startBackgroundWork();
             } catch (err) {
               console.error("Failed to refresh photos with subfolders", err);
@@ -649,6 +745,36 @@ export class WarbleApp extends LitElement {
   }
 
   private unlistenLibraryReload: UnlistenFn | null = null;
+
+  private setPhotos(photos: Photo[]): void {
+    this.photos = photos;
+    void this.loadPhotoFilterInfo(photos);
+  }
+
+  private async loadPhotoFilterInfo(photos: Photo[]): Promise<void> {
+    const request = ++this.filterMetadataRequest;
+    if (photos.length === 0) return;
+    try {
+      const info = await invoke<PhotoFilterInfoResult[]>("get_photo_filter_metadata", {
+        photoPaths: photos.map((photo) => photo.path),
+      });
+      if (request !== this.filterMetadataRequest) return;
+      const byPath = new Map(info.map((item) => [item.path, item]));
+      const enriched = this.photos.map((photo) => ({
+        ...photo,
+        filterInfo: byPath.get(photo.path) ?? photo.filterInfo,
+      }));
+      this.photos = enriched;
+      const selectedPath = this.selectedPhoto?.path;
+      if (selectedPath) {
+        this.selectedPhoto = enriched.find((photo) => photo.path === selectedPath) ?? this.selectedPhoto;
+      }
+    } catch (err) {
+      // Metadata is an enhancement; thumbnails and the rest of the grid
+      // remain usable when a file provider temporarily refuses a read.
+      console.warn("Failed to load photo filter metadata", err);
+    }
+  }
 
   disconnectedCallback(): void {
    super.disconnectedCallback();
@@ -1013,6 +1139,28 @@ export class WarbleApp extends LitElement {
     }
   }
 
+  private async newLibrary() {
+    const confirmed = await ask(
+      "Create a new empty library? Unsaved changes in the current library will be discarded.",
+      { title: "New Library", kind: "warning" },
+    );
+    if (!confirmed) return;
+
+    const endBusy = beginAppBusy("Creating library…");
+    try {
+      await this.flushLibraryWrites();
+      await invoke("create_new_library");
+    } catch (err) {
+      console.error("Failed to create library", err);
+      void message(`Failed to create library: ${err}`, {
+        title: "New Library",
+        kind: "error",
+      });
+    } finally {
+      endBusy();
+    }
+  }
+
   private async saveLibrary() {
     const endBusy = beginAppBusy("Saving library…");
     try {
@@ -1064,10 +1212,10 @@ export class WarbleApp extends LitElement {
       if (this.selectedFolderId && this.selectedFolderId !== null) {
         try {
           const path = this.selectedFolderId;
-          this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+          this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
             folderPath: path,
             recursive: this.includeSubfolders,
-          });
+          }));
           this.startBackgroundWork();
         } catch (err) {
           console.error("Failed to refresh active folder", err);
@@ -1089,10 +1237,10 @@ export class WarbleApp extends LitElement {
     this.selectedFolderId = id;
     const name = id.split("/").filter(Boolean).pop() ?? path;
     this.selectedFolderName = name;
-    this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+    this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
       folderPath: path,
       recursive: this.includeSubfolders,
-    });
+    }));
     // If the full view is open, jump to the first photo of the new
     // folder so the user sees something immediately (not a blank
     // screen from the stale index). Close the full view if the
@@ -1151,10 +1299,10 @@ export class WarbleApp extends LitElement {
       this.imports = await invoke<Folder[]>("refresh_folder", {
         folderPath: this.selectedFolderId,
       });
-      this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+      this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
         folderPath: this.selectedFolderId,
         recursive: this.includeSubfolders,
-      });
+      }));
       if (kind === "photo-delete") {
         if (this.photos.length === 0) {
           this.selectedPhoto = null;
@@ -1258,7 +1406,7 @@ export class WarbleApp extends LitElement {
         this.selectedFolderName = null;
         this.selectedPhoto = null;
         this.fullViewIndex = null;
-        this.photos = [];
+        this.setPhotos([]);
         clearThumbnailBatch();
         void invoke("set_last_folder", { path: "" });
       }
@@ -1315,10 +1463,10 @@ export class WarbleApp extends LitElement {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
       try {
-        this.photos = await invoke<Photo[]>("get_photos_in_folder", {
+        this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
           folderPath: this.selectedFolderId,
           recursive: this.includeSubfolders,
-        });
+        }));
         // Reset selection + restart background work so progress
         // matches the new photo set.
         this.selectedPhoto = null;
@@ -1399,7 +1547,7 @@ export class WarbleApp extends LitElement {
     if (first) {
       await this.selectFolder(first.id, first.path);
     } else {
-      this.photos = [];
+      this.setPhotos([]);
       this.selectedFolderId = null;
       this.selectedFolderName = null;
     }
@@ -1424,23 +1572,15 @@ export class WarbleApp extends LitElement {
     }
   }
 
-  render() {
+  private renderSidebar() {
     return html`
-      <div class="sidebar-rail">
-        <pf-icon-button
-          icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
-          label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-          @click=${this.toggleSidebar}
-        ></pf-icon-button>
-      </div>
-
       <aside class="sidebar">
         <div class="sidebar-header">
-          <div class="sidebar-header-row">
-            <pf-button variant="primary" @click=${() => this.importFolder()}>
-              <pf-icon name="folder-plus"></pf-icon>
-              Add Folders
-            </pf-button>
+          <div class="sidebar-title-row">
+            <div class="sidebar-title">
+              <pf-icon name="folder"></pf-icon>
+              Folders
+            </div>
             <span class="header-actions">
               <pf-icon-button
                 icon="refresh"
@@ -1450,24 +1590,13 @@ export class WarbleApp extends LitElement {
               <pf-theme-toggle></pf-theme-toggle>
             </span>
           </div>
-          <label class="subfolder-toggle" title="Show photos from all nested subfolders of the selected folder">
-            <input
-              type="checkbox"
-              .checked=${this.includeSubfolders}
-              @change=${this.toggleIncludeSubfolders}
-            />
-            Include subfolders
-          </label>
-          ${this.libraryPath
-            ? html`<div class="library-path" title=${this.libraryPath}>${this.libraryPath}</div>`
-            : null}
-          <div class="library-actions">
-            <pf-button @click=${this.openLibrary}>Open Library</pf-button>
-            <pf-button @click=${this.saveLibrary}>Save</pf-button>
-            <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
-          </div>
         </div>
-        <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot} @folder-context-menu=${this.onFolderContextMenu}>
+        <div
+          class="tree"
+          @folder-select=${this.onFolderSelect}
+          @root-reconnect=${this.reconnectRoot}
+          @folder-context-menu=${this.onFolderContextMenu}
+        >
           ${this.folders.length === 0
             ? html`<div class="empty">No folders imported yet.</div>`
             : this.folders.map(
@@ -1480,30 +1609,91 @@ export class WarbleApp extends LitElement {
                 `
               )}
         </div>
-        <div class="sidebar-settings">
-          <pf-button @click=${this.openCacheSettings}>
-            <pf-icon name="settings"></pf-icon>
-            Performance & Caches
-          </pf-button>
+        <div class="folder-actions">
+          <button
+            type="button"
+            class="add-folders-button"
+            @click=${() => this.importFolder()}
+          >
+            <pf-icon name="folder-plus"></pf-icon>
+            Add folders
+          </button>
+        </div>
+        <div class="sidebar-footer">
+          <div class="sidebar-settings">
+            <pf-button @click=${this.openCacheSettings}>
+              <pf-icon name="settings"></pf-icon>
+              Performance &amp; Caches
+            </pf-button>
+          </div>
+          <div class="library-card">
+            <div class="library-card-title">
+              <pf-icon name="save"></pf-icon>
+              Library
+            </div>
+            <div class="library-actions">
+              <pf-button @click=${this.newLibrary}>
+                <pf-icon name="file-plus"></pf-icon>
+                New
+              </pf-button>
+              <pf-button @click=${this.openLibrary}>
+                <pf-icon name="folder"></pf-icon>
+                Open
+              </pf-button>
+              <pf-button @click=${this.saveLibrary}>
+                <pf-icon name="save"></pf-icon>
+                Save
+              </pf-button>
+              <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
+            </div>
+          </div>
+          ${this.libraryPath
+            ? html`<div class="library-path" title=${this.libraryPath}>
+                <pf-icon name="folder"></pf-icon>
+                <span>${this.libraryPath}</span>
+              </div>`
+            : null}
         </div>
       </aside>
+    `;
+  }
+
+  render() {
+    return html`
+      <div class="sidebar-rail">
+        <pf-icon-button
+          icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
+          label=${this.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          @click=${this.toggleSidebar}
+        ></pf-icon-button>
+      </div>
+
+      ${this.renderSidebar()}
 
       <main
         class="content"
         @photo-selected=${this.onPhotoSelected}
         @photo-open=${this.onPhotoOpen}
         @photo-context-menu=${this.onPhotoContextMenu}
+        @toggle-include-subfolders=${this.toggleIncludeSubfolders}
       >
         ${this.selectedFolderId === null
           ? html`<h1>Warble</h1>
               <p>Select a folder from the sidebar to view its photos.</p>`
           : this.photos.length === 0
-          ? html`<h1>${this.selectedFolderName ?? ""}</h1>
+          ? html`<div class="empty-content-header">
+              <h1>${this.selectedFolderName ?? ""}</h1>
+              <label class="include-subfolders-toggle" title="Show photos from all nested subfolders of the selected folder">
+                <input type="checkbox" .checked=${this.includeSubfolders} @change=${this.toggleIncludeSubfolders} />
+                Include subfolders
+              </label>
+            </div>
               <p>No photos in this folder.</p>`
           : html`<pf-photo-grid
               .photos=${this.photos}
               .selectedPath=${this.selectedPhoto?.path ?? null}
               .folderName=${this.selectedFolderName ?? ""}
+              .includeSubfolders=${this.includeSubfolders}
               ?full-view-open=${this.fullViewIndex !== null}
             ></pf-photo-grid>`}
       </main>
@@ -1564,61 +1754,7 @@ export class WarbleApp extends LitElement {
                     </div>
                     ${this.sidebarCollapsed
                       ? null
-                      : html`
-                          <aside class="sidebar">
-                            <div class="sidebar-header">
-                              <div class="sidebar-header-row">
-                                <pf-button variant="primary" @click=${() => this.importFolder()}>
-                                  <pf-icon name="folder-plus"></pf-icon>
-                                  Add Folders
-                                </pf-button>
-                                <span class="header-actions">
-                                  <pf-icon-button
-                                    icon="refresh"
-                                    label="Refresh folders"
-                                    @click=${() => this.refreshFolders()}
-                                  ></pf-icon-button>
-                                  <pf-theme-toggle></pf-theme-toggle>
-                                </span>
-                              </div>
-                              <label class="subfolder-toggle" title="Show photos from all nested subfolders of the selected folder">
-                                <input
-                                  type="checkbox"
-                                  .checked=${this.includeSubfolders}
-                                  @change=${this.toggleIncludeSubfolders}
-                                />
-                                Include subfolders
-                              </label>
-                              ${this.libraryPath
-                                ? html`<div class="library-path" title=${this.libraryPath}>${this.libraryPath}</div>`
-                                : null}
-                              <div class="library-actions">
-                                <pf-button @click=${this.openLibrary}>Open Library</pf-button>
-                                <pf-button @click=${this.saveLibrary}>Save</pf-button>
-                                <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
-                              </div>
-                            </div>
-                            <div class="tree" @folder-select=${this.onFolderSelect} @root-reconnect=${this.reconnectRoot} @folder-context-menu=${this.onFolderContextMenu}>
-                              ${this.folders.length === 0
-                                ? html`<div class="empty">No folders imported yet.</div>`
-                                : this.folders.map(
-                                    (f) => html`
-                                      <pf-folder-tree-item
-                                        .folder=${f}
-                                        is-root
-                                        selected-id=${this.selectedFolderId ?? ""}
-                                      ></pf-folder-tree-item>
-                                    `
-                                  )}
-                            </div>
-                            <div class="sidebar-settings">
-                              <pf-button @click=${this.openCacheSettings}>
-                                <pf-icon name="settings"></pf-icon>
-                                Performance & Caches
-                              </pf-button>
-                            </div>
-                          </aside>
-                        `}
+                      : this.renderSidebar()}
                   </div>
                 `
               : null}

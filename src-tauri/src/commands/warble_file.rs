@@ -79,6 +79,51 @@ pub fn get_open_library_path(app: AppHandle, state: State<'_, AppState>) -> Resu
     Ok(library_db_path(&app).to_string_lossy().into_owned())
 }
 
+/// Replace the active working database with a fresh empty library. The new
+/// library is intentionally untitled until the user saves it somewhere.
+#[tauri::command]
+pub async fn create_new_library(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let dest = library_db_path(&app);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let tmp = dest.with_extension("warble.new");
+    remove_sqlite_sidecars(&tmp);
+    if tmp.exists() {
+        std::fs::remove_file(&tmp).map_err(|e| e.to_string())?;
+    }
+
+    // Create and validate the complete schema before touching the active DB.
+    let fresh = LibraryRepository::open(&tmp)?;
+    drop(fresh);
+
+    {
+        let old = state.repository.lock().ok().and_then(|mut guard| guard.take());
+        drop(old);
+    }
+
+    remove_sqlite_sidecars(&dest);
+    if std::fs::rename(&tmp, &dest).is_err() {
+        std::fs::copy(&tmp, &dest).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    let repo = LibraryRepository::open(&dest)?;
+    let library_id = repo.library_id()?;
+    let arc = std::sync::Arc::new(repo);
+    exif_cache::init(std::sync::Arc::clone(&arc));
+    state.set_active_library_id(library_id);
+    state
+        .device_storage
+        .set_library_source(None, None, None)?;
+    crate::library::rehydrate_media_roots(arc.as_ref(), &state);
+    state.swap_repository(arc);
+    let _ = app.emit("library-reloaded", ());
+    Ok(())
+}
+
 /// Write a clean snapshot of the active library DB to `path`.
 #[tauri::command]
 pub async fn save_library(

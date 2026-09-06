@@ -60,6 +60,9 @@ pub struct ExifMetadata {
     pub shutter_speed: Option<String>,
     pub aperture: Option<String>,
     pub focal_length: Option<String>,
+    /// Raw focal length in millimetres, retained separately from the
+    /// presentation string so callers can perform numeric range queries.
+    pub focal_length_mm: Option<f64>,
     pub focal_length_35mm: Option<String>,
     pub exposure_compensation: Option<String>,
     pub exposure_program: Option<String>,
@@ -130,6 +133,7 @@ fn extract(exif: &Exif) -> ExifMetadata {
     m.shutter_speed = shutter(exif);
     m.aperture = aperture(exif);
     m.focal_length = focal_length(exif);
+    m.focal_length_mm = focal_length_mm(exif);
     m.focal_length_35mm = focal_length_35mm(exif);
     m.exposure_compensation = exposure_compensation(exif);
     m.exposure_program = exposure_program(exif);
@@ -234,6 +238,18 @@ fn focal_length(exif: &Exif) -> Option<String> {
         return Some(format!("{:.0}mm", v));
     }
     None
+}
+
+fn focal_length_mm(exif: &Exif) -> Option<f64> {
+    let f = exif.get_field(Tag::FocalLength, In::PRIMARY)?;
+    let Value::Rational(rs) = &f.value else {
+        return None;
+    };
+    let r = rs.first()?;
+    if r.denom == 0 {
+        return None;
+    }
+    Some(r.num as f64 / r.denom as f64)
 }
 
 fn focal_length_35mm(exif: &Exif) -> Option<String> {

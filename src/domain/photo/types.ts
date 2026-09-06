@@ -13,6 +13,16 @@ export interface PhotoFile {
   variant: string;
 }
 
+/** EXIF fields used by the grid filter panel. Kept separate from the full
+ * EXIF record so photo listings do not carry the complete info panel model. */
+export interface PhotoFilterInfo {
+  camera?: string | null;
+  lens?: string | null;
+  focalLengthMm?: number | null;
+  /** Normalized EXIF capture day in YYYY-MM-DD form. */
+  dateTaken?: string | null;
+}
+
 export interface Photo {
   path: string;
   filename: string;
@@ -23,4 +33,6 @@ export interface Photo {
   extensions?: string[];
   /** Per-file breakdown including variant labels. */
   files?: PhotoFile[];
+  /** Cached EXIF projection used by grid filters. */
+  filterInfo?: PhotoFilterInfo;
 }

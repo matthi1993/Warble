@@ -28,6 +28,7 @@
 //! request — essential for the hot navigation case where the user
 //! flicks past a still-decoding photo.
 
+use serde::Serialize;
 use tauri::ipc::Response;
 use tauri::State;
 
@@ -157,4 +158,110 @@ pub async fn get_exif_metadata(
         Ok::<_, String>(exif_cache::get_or_compute(&photo_path, &resolved))
     })
     .await
+}
+
+/// Small EXIF projection used by the grid filters. The full metadata record
+/// is still what gets cached in the library; this command avoids sending the
+/// much larger info-panel payload for every photo in a folder.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotoFilterInfo {
+    pub path: String,
+    pub camera: Option<String>,
+    pub lens: Option<String>,
+    pub focal_length_mm: Option<f64>,
+    pub date_taken: Option<String>,
+}
+
+/// Read filter metadata for a folder in one background task. Each item is
+/// served by the same fingerprinted EXIF cache used by image rendering and
+/// the detail panel, so subsequent consumers do not parse the source again.
+#[tauri::command]
+pub async fn get_photo_filter_metadata(
+    photo_paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<PhotoFilterInfo>, String> {
+    let mut requests = Vec::with_capacity(photo_paths.len());
+    for key in photo_paths {
+        let resolved = state.resolve_library_path(&key)?;
+        requests.push((key, resolved));
+    }
+
+    tasks::run(
+        Priority::Background,
+        None,
+        "filter_metadata",
+        move |_cancel| {
+            Ok(requests
+                .into_iter()
+                .map(|(path, resolved)| {
+                    let metadata = exif_cache::get_or_compute(&path, &resolved);
+                    let camera = metadata
+                        .camera_model
+                        .clone()
+                        .or_else(|| metadata.camera_make.clone());
+                    let lens = metadata
+                        .lens_model
+                        .clone()
+                        .or_else(|| metadata.lens_make.clone());
+                    // Older cache rows predate the numeric field. Recover their
+                    // value from the existing display string without forcing a
+                    // second source-file parse.
+                    let focal_length_mm = metadata.focal_length_mm.or_else(|| {
+                        metadata
+                            .focal_length
+                            .as_deref()
+                            .and_then(parse_focal_length_mm)
+                    });
+                    let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
+                    PhotoFilterInfo {
+                        path,
+                        camera,
+                        lens,
+                        focal_length_mm,
+                        date_taken,
+                    }
+                })
+                .collect())
+        },
+    )
+    .await
+}
+
+fn parse_focal_length_mm(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .trim_end_matches("mm")
+        .trim()
+        .parse::<f64>()
+        .ok()
+}
+
+/// Convert the common EXIF `YYYY:MM:DD HH:MM:SS` form (and ISO-like
+/// variants) into a sortable, date-input-compatible day string.
+fn normalize_date(value: &str) -> Option<String> {
+    let day = value.trim().split([' ', 'T']).next()?.trim();
+    let normalized = if day.len() >= 10 && day.as_bytes().get(4) == Some(&b':') {
+        format!("{}-{}-{}", &day[0..4], &day[5..7], &day[8..10])
+    } else {
+        day.get(..10)?.to_string()
+    };
+    let bytes = normalized.as_bytes();
+    if normalized.len() == 10
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && normalized[..4].parse::<u16>().is_ok()
+        && normalized[5..7]
+            .parse::<u8>()
+            .ok()
+            .is_some_and(|month| (1..=12).contains(&month))
+        && normalized[8..10]
+            .parse::<u8>()
+            .ok()
+            .is_some_and(|day| (1..=31).contains(&day))
+    {
+        Some(normalized)
+    } else {
+        None
+    }
 }

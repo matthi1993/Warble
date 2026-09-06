@@ -7,6 +7,7 @@
 //! `photo_exif`), keyed by the source file's `(mtime, size)` so any
 //! external edit invalidates the row automatically.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -16,9 +17,40 @@ use crate::library::LibraryRepository;
 
 static REPO: std::sync::OnceLock<std::sync::Mutex<Option<Arc<LibraryRepository>>>> =
     std::sync::OnceLock::new();
+static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::OnceLock::new();
 
 fn repo_slot() -> &'static std::sync::Mutex<Option<Arc<LibraryRepository>>> {
     REPO.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn in_flight_slot() -> &'static std::sync::Mutex<HashSet<String>> {
+    IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+/// Claim the first-touch parse for a photo. Thumbnail, HD, detail, and
+/// filter requests can arrive together, so a persistent cache alone is not
+/// enough to prevent duplicate parses on a cold row.
+fn claim(key: &str, path: &Path) -> bool {
+    loop {
+        if get(key, path).is_some() {
+            return false;
+        }
+        let Ok(mut guard) = in_flight_slot().lock() else {
+            return true;
+        };
+        if guard.insert(key.to_string()) {
+            return true;
+        }
+        drop(guard);
+        std::thread::yield_now();
+    }
+}
+
+fn release(key: &str) {
+    if let Ok(mut guard) = in_flight_slot().lock() {
+        guard.remove(key);
+    }
 }
 
 /// Wire up the cache. Replaces any previous repository (used by
@@ -51,13 +83,26 @@ pub fn get_or_compute(key: &str, path: &Path) -> ExifMetadata {
     if let Some((_, metadata)) = get(key, path) {
         return metadata;
     }
-    match exif::read_full_metadata(path) {
+    if !claim(key, path) {
+        return get(key, path)
+            .map(|(_, metadata)| metadata)
+            .unwrap_or_default();
+    }
+    let result = match exif::read_full_metadata(path) {
         Some((orientation, metadata)) => {
             store(key, path, orientation, &metadata);
             metadata
         }
-        None => ExifMetadata::default(),
-    }
+        None => {
+            // Cache the negative result too. Otherwise screenshots and
+            // images without EXIF are reparsed by every consumer.
+            let metadata = ExifMetadata::default();
+            store(key, path, IDENTITY, &metadata);
+            metadata
+        }
+    };
+    release(key);
+    result
 }
 
 /// Cached orientation, falling back to parsing the in-memory `bytes`.
@@ -69,13 +114,24 @@ pub fn orientation_or_warm(key: &str, path: &Path, bytes: &[u8]) -> u32 {
     if let Some((orient, _)) = get(key, path) {
         return orient;
     }
-    match exif::read_full_metadata_from_bytes(bytes) {
+    if !claim(key, path) {
+        return get(key, path)
+            .map(|(orientation, _)| orientation)
+            .unwrap_or(IDENTITY);
+    }
+    let result = match exif::read_full_metadata_from_bytes(bytes) {
         Some((orient, metadata)) => {
             store(key, path, orient, &metadata);
             orient
         }
-        None => IDENTITY,
-    }
+        None => {
+            let metadata = ExifMetadata::default();
+            store(key, path, IDENTITY, &metadata);
+            IDENTITY
+        }
+    };
+    release(key);
+    result
 }
 
 /// Variant for callers that already parsed EXIF themselves (e.g. the

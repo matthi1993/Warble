@@ -136,6 +136,12 @@ fn render(path: &Path, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8
     if raw_preview::is_raw_extension(&ext) {
         let preview = raw_preview::extract_preview_sized(path, Some(LONG_SIDE_PX as usize))?;
         cancel.check()?;
+        // RAW preview extraction does not expose the complete EXIF record.
+        // Warm the shared cache once so the filter panel and info card can
+        // reuse the same source read.
+        if exif_cache::get(library_key, path).is_none() {
+            let _ = exif_cache::get_or_compute(library_key, path);
+        }
         // Embedded RAW previews are JPEG — same fast path applies.
         if let Ok(out) = render_jpeg_fast(&preview.jpeg_bytes, preview.orientation, cancel) {
             return Ok(out);
