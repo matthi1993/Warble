@@ -83,10 +83,7 @@ export const fullViewStyles = css`
   :host([fullscreen][controls-hidden]) .toolbar-wrap,
   :host([fullscreen][controls-hidden]) .bottombar-wrap,
   :host([fullscreen][controls-hidden]) .nav,
-  :host([fullscreen][controls-hidden]) .hint,
-  :host([fullscreen][controls-hidden]) .edit-side-rail,
-  :host([fullscreen][controls-hidden]) pf-edit-side-panel,
-  :host([fullscreen][controls-hidden]) .fv-rating-overlay {
+  :host([fullscreen][controls-hidden]) .hint {
     opacity: 0;
     pointer-events: none;
   }
@@ -279,10 +276,14 @@ export const fullViewStyles = css`
   }
   .fv-rating-overlay {
     position: absolute;
-    bottom: var(--pf-space-3);
-    right: var(--pf-space-3);
-    z-index: 6;
+    inset: 0;
+    z-index: 11;
     pointer-events: none;
+  }
+  :host([fullscreen]:not([controls-hidden])) .fv-rating-overlay {
+    --pf-rating-bottom-offset: calc(
+      32px + var(--pf-space-2) + env(safe-area-inset-bottom, 0px)
+    );
   }
   .nav {
     position: absolute;
@@ -390,8 +391,8 @@ export const fullViewStyles = css`
   :host(:not([edit-panel-open])) pf-edit-side-panel {
     display: none;
   }
-  /* In fullscreen, float over the stage and follow the same visibility
-     state as the header, footer, navigation, and overlays. */
+  /* In fullscreen, float the editor over the stage. Its visibility is
+     controlled independently by the right-edge reveal state. */
   :host([fullscreen]) .edit-side-rail,
   :host([fullscreen]) pf-edit-side-panel {
     position: absolute;
@@ -405,6 +406,22 @@ export const fullViewStyles = css`
     pointer-events: auto;
     transform: translateX(0);
     transition: opacity 200ms ease, transform 200ms ease;
+  }
+  :host([fullscreen][edit-panel-open]:not([edit-panel-revealed]))
+    .edit-side-rail,
+  :host([fullscreen][edit-panel-open]:not([edit-panel-revealed]))
+    pf-edit-side-panel {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(100%);
+  }
+  /* The image toggle is a hard immersion boundary: no editor surface,
+     including the tab rail, may remain visible with chrome hidden. */
+  :host([fullscreen][controls-hidden]) .edit-side-rail,
+  :host([fullscreen][controls-hidden]) pf-edit-side-panel {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(100%);
   }
   /* Offset below toolbar / above bottombar when visible. */
   :host([fullscreen]) .edit-side-rail,

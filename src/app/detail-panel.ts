@@ -9,6 +9,12 @@ import { currentSelection } from "./views/full-view/variant-selector";
 import "../ui/controls/pf-icon-button";
 import "../ui/photos/pf-image-canvas";
 
+function isIPad(): boolean {
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent ?? "";
+  return /iPad/i.test(ua) ||
+    (/Macintosh/i.test(ua) && (navigator.maxTouchPoints ?? 0) > 1);
+}
+
 @customElement("pf-detail-panel")
 export class PfDetailPanel extends LitElement {
   static styles = css`
@@ -245,7 +251,7 @@ export class PfDetailPanel extends LitElement {
           fit="contain"
           background="transparent"
         ></pf-image-canvas>
-        ${this.fullViewOpen
+        ${this.fullViewOpen || isIPad()
           ? null
           : html`<pf-icon-button
               class="expand-btn"

@@ -14,6 +14,7 @@ import {
 } from "@services/rating/rating-store";
 import "../ui/photos/pf-thumbnail-card";
 import "../ui/controls/pf-slider";
+import "../ui/icons/pf-icon";
 
 function variantCount(photo: Photo): number {
   const files = photo.files ?? [];
@@ -156,6 +157,9 @@ export class PfPhotoGrid extends LitElement {
     .filter-control {
       position: relative;
       min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
     }
     .focal-range-label {
       color: var(--pf-text-muted);
@@ -163,7 +167,7 @@ export class PfPhotoGrid extends LitElement {
       font-weight: 600;
       letter-spacing: 0.02em;
     }
-    .filter-control input,
+    .filter-control select,
     .focal-inputs input,
     .date-inputs input {
       box-sizing: border-box;
@@ -177,7 +181,38 @@ export class PfPhotoGrid extends LitElement {
       font: inherit;
       font-size: var(--pf-text-xs);
     }
-    .filter-control input::placeholder,
+    .filter-label {
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .select-wrap {
+      position: relative;
+      display: block;
+    }
+    .filter-control select {
+      appearance: none;
+      padding-right: 28px;
+      cursor: pointer;
+    }
+    .filter-control select:hover {
+      border-color: var(--pf-accent);
+    }
+    .filter-control select:focus-visible {
+      outline: 2px solid var(--pf-accent);
+      outline-offset: 1px;
+    }
+    .select-wrap pf-icon {
+      position: absolute;
+      top: 50%;
+      right: 8px;
+      width: 13px;
+      height: 13px;
+      color: var(--pf-text-muted);
+      pointer-events: none;
+      transform: translateY(-50%);
+    }
     .date-inputs input::placeholder {
       color: var(--pf-text-muted);
     }
@@ -736,12 +771,12 @@ export class PfPhotoGrid extends LitElement {
     this.activeLabels = next;
   }
 
-  private setTextFilter(
+  private setSelectFilter(
     filter: "camera" | "lens",
     event: Event
   ): void {
     this.resetVisiblePhotoPages();
-    const value = (event.target as HTMLInputElement).value;
+    const value = (event.target as HTMLSelectElement).value;
     if (filter === "camera") this.cameraFilter = value;
     else this.lensFilter = value;
   }
@@ -913,24 +948,36 @@ export class PfPhotoGrid extends LitElement {
           </div>
           <div class="filter-controls">
             <label class="filter-control">
-              <input
-                type="text"
-                list="camera-options"
-                placeholder="Camera"
-                aria-label="Camera"
-                .value=${this.cameraFilter}
-                @input=${(e: Event) => this.setTextFilter("camera", e)}
-              />
+              <span class="filter-label">Camera</span>
+              <span class="select-wrap">
+                <select
+                  aria-label="Camera"
+                  .value=${this.cameraFilter}
+                  @change=${(e: Event) => this.setSelectFilter("camera", e)}
+                >
+                  <option value="">All cameras</option>
+                  ${this.cameraOptions.map(
+                    (camera) => html`<option value=${camera}>${camera}</option>`
+                  )}
+                </select>
+                <pf-icon name="chevron-down"></pf-icon>
+              </span>
             </label>
             <label class="filter-control">
-              <input
-                type="text"
-                list="lens-options"
-                placeholder="Lens"
-                aria-label="Lens"
-                .value=${this.lensFilter}
-                @input=${(e: Event) => this.setTextFilter("lens", e)}
-              />
+              <span class="filter-label">Lens</span>
+              <span class="select-wrap">
+                <select
+                  aria-label="Lens"
+                  .value=${this.lensFilter}
+                  @change=${(e: Event) => this.setSelectFilter("lens", e)}
+                >
+                  <option value="">All lenses</option>
+                  ${this.lensOptions.map(
+                    (lens) => html`<option value=${lens}>${lens}</option>`
+                  )}
+                </select>
+                <pf-icon name="chevron-down"></pf-icon>
+              </span>
             </label>
             <div class="focal-range">
               <span class="focal-range-label">Focal length (mm)</span>
@@ -1012,12 +1059,6 @@ export class PfPhotoGrid extends LitElement {
             </span>
           </span>
           </div>
-          <datalist id="camera-options">
-            ${this.cameraOptions.map((camera) => html`<option value=${camera}></option>`)}
-          </datalist>
-          <datalist id="lens-options">
-            ${this.lensOptions.map((lens) => html`<option value=${lens}></option>`)}
-          </datalist>
         </div>
       </div>
       <div class="grid-scroll">

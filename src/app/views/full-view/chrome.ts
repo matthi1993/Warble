@@ -48,6 +48,7 @@ export interface ToolbarOptions {
   onOpenIn: () => void;
   deletingPhoto: boolean;
   openingIn: boolean;
+  showFullscreenToggle: boolean;
   onToggleFullscreen: () => void;
   onClose: () => void;
 }
@@ -131,22 +132,22 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
         ></pf-icon-button>
       </div>
       <div class="toolbar-right">
-        <pf-icon-button
-          icon=${fullscreen ? "minimize" : "maximize"}
-          label=${fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          @click=${opts.onToggleFullscreen}
-        ></pf-icon-button>
+        ${opts.showFullscreenToggle
+          ? html`<pf-icon-button
+              icon=${fullscreen ? "minimize" : "maximize"}
+              label=${fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              @click=${opts.onToggleFullscreen}
+            ></pf-icon-button>`
+          : null}
         <button
           class="close-btn"
           type="button"
-          aria-label="Close full view"
-          title="Close (Esc)"
+          aria-label="Back to grid"
+          title="Back to grid (Esc)"
           @click=${opts.onClose}
           @pointerdown=${(e: Event) => e.stopPropagation()}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M6 6 L18 18 M18 6 L6 18" stroke-linecap="round" />
-          </svg>
+          <pf-icon name="grid"></pf-icon>
         </button>
       </div>
     </div>

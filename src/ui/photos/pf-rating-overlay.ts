@@ -1,6 +1,7 @@
 /**
- * Visual overlay showing a photo's star rating (bottom-right) and
- * color label (top-left). The stars are always interactive: clicking
+ * Visual overlay showing a photo's star rating and color label. The
+ * fullscreen view centers both badges; thumbnails keep them in their
+ * corner positions. The stars are always interactive: clicking
  * one sets the rating to that value, and clicking the leftmost
  * filled star a second time clears the rating. The overlay
  * subscribes to the rating store directly so it updates when the
@@ -58,6 +59,35 @@ export class PfRatingOverlay extends LitElement {
       pointer-events: auto;
       transition: opacity var(--pf-transition, 120ms ease-out);
     }
+    .fullscreen-badges {
+      position: absolute;
+      bottom: calc(
+        var(--pf-rating-inset, 8px) +
+          var(--pf-rating-bottom-offset, 0px)
+      );
+      left: 50%;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      pointer-events: none;
+      transform: translateX(-50%);
+    }
+    .fullscreen-badges .label {
+      position: static;
+      width: auto;
+      height: auto;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: #fff;
+      font-size: var(--pf-text-xs, 0.7rem);
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+    }
+    .fullscreen-badges .stars {
+      position: static;
+    }
     /* When the photo has no rating yet, the stars only fade in on
        hover/focus so the overlay stays out of the way until the
        user wants to rate. */
@@ -72,7 +102,7 @@ export class PfRatingOverlay extends LitElement {
     }
     /* In fullscreen we hide both badges by default and let the
        host force them visible (when chrome is on screen) or flash
-       them for a second when the value changes. */
+       them for two seconds when the value changes. */
     :host([fullscreen]) .stars,
     :host([fullscreen]) .label {
       opacity: 0;
@@ -153,7 +183,7 @@ export class PfRatingOverlay extends LitElement {
     }
   }
 
-  /** Briefly reveal the badges (rating + label) for 1s, then hide
+  /** Briefly reveal the badges (rating + label) for 2s, then hide
    *  them again. Used to surface user actions in fullscreen where
    *  the overlay would otherwise stay invisible. */
   private startFlash(): void {
@@ -162,7 +192,7 @@ export class PfRatingOverlay extends LitElement {
     this.flashTimer = window.setTimeout(() => {
       this.toggleAttribute("flashing", false);
       this.flashTimer = null;
-    }, 1000);
+    }, 2000);
   }
 
   willUpdate(changed: Map<string, unknown>): void {
@@ -194,16 +224,15 @@ export class PfRatingOverlay extends LitElement {
     const { rating, label } = this.value;
     const color = label ? LABEL_COLORS[label] : "";
     const labelTitle = label ? LABEL_DISPLAY_NAMES[label] : "";
-    return html`
-      ${label
-        ? html`<span
-            class="label"
-            style=${`--pf-rating-label-color: ${color};`}
-            title=${labelTitle}
-            aria-label=${labelTitle}
-          ></span>`
-        : nothing}
-      <span
+    const labelBadge = label
+      ? html`<span
+          class=${this.fullscreen ? "label label-text" : "label"}
+          style=${`--pf-rating-label-color: ${color};`}
+          title=${labelTitle}
+          aria-label=${labelTitle}
+        >${this.fullscreen ? labelTitle : nothing}</span>`
+      : nothing;
+    const starsBadge = html`<span
         class=${`stars${rating === 0 ? " idle" : ""}`}
         role="radiogroup"
         aria-label="Rating"
@@ -223,8 +252,12 @@ export class PfRatingOverlay extends LitElement {
             ★
           </button>`
         )}
-      </span>
-    `;
+      </span>`;
+    return this.fullscreen
+      ? html`<div class="fullscreen-badges">
+          ${labelBadge}${starsBadge}
+        </div>`
+      : html`${labelBadge}${starsBadge}`;
   }
 }
 
@@ -233,4 +266,3 @@ declare global {
     "pf-rating-overlay": PfRatingOverlay;
   }
 }
-

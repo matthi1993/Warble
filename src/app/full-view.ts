@@ -151,8 +151,14 @@ export class PfFullView extends LitElement {
 
  /** Reflects whether the panel content (any tab) is expanded.
   *  Equivalent to `activeTab !== null`. */
- @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
- editPanelOpen = false;
+  @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
+  editPanelOpen = false;
+
+  /** Whether the fullscreen editor is currently revealed. The panel stays
+   *  open in the selected tab while its surface hides away from the right
+   *  edge, just like the fullscreen folder overlay on the left. */
+  @property({ type: Boolean, reflect: true, attribute: "edit-panel-revealed" })
+  private editPanelRevealed = false;
 
   /** Active side-panel tab, or null if the panel is collapsed. */
   @state()
@@ -231,6 +237,7 @@ export class PfFullView extends LitElement {
     super.connectedCallback();
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("click", this.onDocClick, { capture: true });
+    window.addEventListener("mousemove", this.onFullscreenMouseMove);
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
@@ -260,6 +267,7 @@ export class PfFullView extends LitElement {
     window.removeEventListener("click", this.onDocClick, {
       capture: true,
     } as unknown as EventListenerOptions);
+    window.removeEventListener("mousemove", this.onFullscreenMouseMove);
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
     this.unsubscribeEdits?.();
@@ -287,6 +295,9 @@ export class PfFullView extends LitElement {
     if (changed.has("fullscreen")) {
       if (!this.fullscreen) {
         this.controlsHidden = false;
+        this.editPanelRevealed = false;
+      } else {
+        this.editPanelRevealed = this.activeTab !== null;
       }
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
@@ -309,6 +320,7 @@ export class PfFullView extends LitElement {
     }
     if (changed.has("activeTab")) {
       this.editPanelOpen = this.activeTab !== null;
+      this.editPanelRevealed = this.fullscreen && this.activeTab !== null;
     }
     this.syncToolsFromStore();
     this.exifLoader.syncToPath(this.editTargetPath());
@@ -478,7 +490,44 @@ export class PfFullView extends LitElement {
   private onImageActivate = () => {
     if (!this.fullscreen) return;
     this.controlsHidden = !this.controlsHidden;
+    if (this.activeTab !== null) {
+      this.editPanelRevealed = !this.controlsHidden;
+    }
     this.openMenu = null;
+    this.dispatchEvent(
+      new CustomEvent("full-view-controls-visibility", {
+        detail: { hidden: this.controlsHidden },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  };
+
+  private onFullscreenMouseMove = (event: MouseEvent) => {
+    if (!this.fullscreen || this.activeTab === null) return;
+
+    const nearRightEdge = event.clientX >= window.innerWidth - 12;
+    let overRevealedPanel = false;
+    if (this.editPanelRevealed) {
+      overRevealedPanel = Array.from(
+        this.renderRoot.querySelectorAll<HTMLElement>(
+          ".edit-side-rail, pf-edit-side-panel"
+        )
+      ).some((panel) => {
+        const rect = panel.getBoundingClientRect();
+        return (
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom
+        );
+      });
+    }
+
+    const shouldReveal = nearRightEdge || overRevealedPanel;
+    if (shouldReveal !== this.editPanelRevealed) {
+      this.editPanelRevealed = shouldReveal;
+    }
   };
 
   private onImageDoubleActivate = (event: Event) => {
@@ -1068,6 +1117,7 @@ export class PfFullView extends LitElement {
        onOpenIn: this.openIn,
        deletingPhoto: this.deletingPhoto,
        openingIn: this.openingIn,
+       showFullscreenToggle: !this.isIPad(),
        onToggleFullscreen: this.toggleFullscreen,
        onClose: this.close,
      })}
@@ -1120,15 +1170,13 @@ export class PfFullView extends LitElement {
            <pf-icon name="chevron-right"></pf-icon>
          </button>
           <div class="hint">
-            ${buildHintLine(this.shortcuts, [
-              "Scroll to zoom",
-              "pinch to zoom",
-              "drag to pan",
-              "double-click to toggle 100%",
-              "F fullscreen",
-              "G grid",
-              "Esc to close",
-            ])}
+            ${buildHintLine(
+              this.shortcuts.filter(
+                (shortcut) =>
+                  shortcut.keys.includes("ArrowLeft") ||
+                  shortcut.keys.includes("ArrowRight")
+              )
+            )}
           </div>
         </div>
         ${this.editMode

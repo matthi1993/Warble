@@ -125,6 +125,10 @@ export class WarbleApp extends LitElement {
    :host(.fs-fullview) > footer.app-footer {
      display: none;
    }
+   :host(.fs-fullview) pf-full-view[controls-hidden] ~ .fs-hotzone-left,
+   :host(.fs-fullview) pf-full-view[controls-hidden] ~ .fs-overlay-left {
+     display: none;
+   }
    :host(.fs-fullview) pf-full-view {
     grid-area: fullview;
     grid-row: 1;
@@ -904,6 +908,12 @@ export class WarbleApp extends LitElement {
       this.fsLeftReveal = false;
       return;
     }
+    const fullView = this.renderRoot.querySelector("pf-full-view");
+    if (fullView?.hasAttribute("controls-hidden")) {
+      this.fsLeftReveal = false;
+      this.fsLeftOverOverlay = false;
+      return;
+    }
     this.fsLeftReveal = e.clientX <= 12 || this.fsLeftOverOverlay;
   };
 
@@ -1427,6 +1437,14 @@ export class WarbleApp extends LitElement {
     this.editPanelOpen = e.detail.open;
   };
 
+  private onFullViewControlsVisibilityChanged = (
+    e: CustomEvent<{ hidden: boolean }>
+  ) => {
+    if (!e.detail.hidden) return;
+    this.fsLeftReveal = false;
+    this.fsLeftOverOverlay = false;
+  };
+
   private toggleSidebar = () => {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
@@ -1652,6 +1670,7 @@ export class WarbleApp extends LitElement {
             @full-view-close=${this.onFullViewClose}
             @photo-catalog-changed=${this.onPhotoCatalogChanged}
             @edit-panel-open-changed=${this.onEditPanelOpenChanged}
+            @full-view-controls-visibility=${this.onFullViewControlsVisibilityChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
         : null}
