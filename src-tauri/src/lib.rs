@@ -47,6 +47,7 @@ pub fn run() {
             commands::get_raw_image_bytes,
             commands::get_hd_image_bytes,
             commands::cancel_image_request,
+            commands::promote_image_request,
             commands::get_exif_metadata,
             commands::get_photo_filter_metadata,
             commands::get_cache_settings,

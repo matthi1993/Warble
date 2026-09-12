@@ -251,6 +251,7 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.exifLoader.syncToPath(null);
     const t = this.editTargetPath();
     if (t) void flushPhotoEdit(t);
     window.removeEventListener("keydown", this.onKeyDown, {

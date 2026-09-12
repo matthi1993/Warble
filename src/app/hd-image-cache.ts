@@ -14,7 +14,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CacheSettings } from "./cache-settings";
-import { cancelTaskRequest, nextRequestId } from "./task-manager";
+import {
+  beginTask,
+  cancelTaskRequest,
+  isTaskCancellation,
+  nextRequestId,
+} from "./task-manager";
 
 // Keep a couple of lightweight HD bitmaps independently from expensive
 // full-resolution bitmaps.
@@ -27,6 +32,8 @@ interface PendingEntry {
   promise: Promise<ImageBitmap>;
   requestId: number;
   refcount: number;
+  cancelled: boolean;
+  cancel(): void;
 }
 
 const pending = new Map<string, PendingEntry>();
@@ -94,6 +101,12 @@ export function loadHdImage(
     return Promise.reject(new DOMException("aborted", "AbortError"));
   }
 
+  // The HD preview represents the current photo. Once another path is
+  // requested, no caller should keep older HD work alive.
+  for (const [pendingPath, entry] of [...pending]) {
+    if (pendingPath !== path) entry.cancel();
+  }
+
   const cached = getHdImage(path);
   if (cached) return Promise.resolve(cached);
 
@@ -110,7 +123,7 @@ export function loadHdImage(
     const onAbort = () => {
       if (settled) return;
       settled = true;
-      releaseRef(path, captured);
+      releaseRef(captured);
       reject(new DOMException("aborted", "AbortError"));
     };
     if (signal) {
@@ -140,38 +153,67 @@ function startLoad(path: string): PendingEntry {
   }
 
   const requestId = nextRequestId();
+  const task = beginTask({
+    kind: "hd-image",
+    label: "Opening HD image",
+    priority: "urgent",
+    target: path,
+  });
+  let rejectCancellation!: (reason: DOMException) => void;
   const entry: PendingEntry = {
     promise: undefined as unknown as Promise<ImageBitmap>,
     requestId,
     refcount: 1,
+    cancelled: false,
+    cancel(): void {},
   };
 
-  entry.promise = (async (): Promise<ImageBitmap> => {
-    try {
-      const buf = await invoke<ArrayBuffer>("get_hd_image_bytes", {
-        photoPath: path,
-        requestId,
-      });
-      const bm = await decode(buf);
-      store(path, bm);
-      return bm;
-    } finally {
+  const cancellation = new Promise<never>((_, reject) => {
+    rejectCancellation = reject;
+  });
+  entry.cancel = (): void => {
+    if (entry.cancelled) return;
+    entry.cancelled = true;
+    cancelTaskRequest(requestId);
+    task.finish("cancelled");
+    if (pending.get(path) === entry) pending.delete(path);
+    rejectCancellation(new DOMException("aborted", "AbortError"));
+  };
+
+  const backend = (async (): Promise<ImageBitmap> => {
+    const buf = await invoke<ArrayBuffer>("get_hd_image_bytes", {
+      photoPath: path,
+      requestId,
+    });
+    if (entry.cancelled) throw new DOMException("aborted", "AbortError");
+    const bm = await decode(buf);
+    if (entry.cancelled) {
+      bm.close?.();
+      throw new DOMException("aborted", "AbortError");
+    }
+    store(path, bm);
+    return bm;
+  })();
+  entry.promise = Promise.race([backend, cancellation])
+    .catch((error) => {
+      task.finish(isTaskCancellation(error) ? "cancelled" : "failed");
+      throw error;
+    })
+    .finally(() => {
+      task.finish();
       if (pending.get(path) === entry) {
         pending.delete(path);
       }
-    }
-  })();
+    });
   pending.set(path, entry);
   return entry;
 }
 
-function releaseRef(path: string, entry: PendingEntry): void {
+function releaseRef(entry: PendingEntry): void {
+  if (entry.cancelled) return;
   entry.refcount -= 1;
   if (entry.refcount > 0) return;
-  cancelTaskRequest(entry.requestId);
-  if (pending.get(path) === entry) {
-    pending.delete(path);
-  }
+  entry.cancel();
 }
 
 function store(path: string, bm: ImageBitmap): void {
@@ -187,7 +229,7 @@ function store(path: string, bm: ImageBitmap): void {
 }
 
 export function clearHdImageCache(): void {
+  for (const entry of [...pending.values()]) entry.cancel();
   for (const bm of cache.values()) bm.close?.();
   cache.clear();
-  pending.clear();
 }

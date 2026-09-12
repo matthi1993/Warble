@@ -33,7 +33,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CacheSettings } from "./cache-settings";
-import { cancelTaskRequest, nextRequestId } from "./task-manager";
+import {
+  beginTask,
+  cancelTaskRequest,
+  isTaskCancellation,
+  nextRequestId,
+} from "./task-manager";
 
 /** Fallback used until the persisted setting is loaded from the backend. */
 const DEFAULT_MAX_ENTRIES = 1;
@@ -168,6 +173,12 @@ function startLoad(path: string): PendingEntry {
   }
 
   const requestId = nextRequestId();
+  const task = beginTask({
+    kind: "full-image",
+    label: "Opening full image",
+    priority: "urgent",
+    target: path,
+  });
   const entry: PendingEntry = {
     promise: undefined as unknown as Promise<ImageBitmap>,
     requestId,
@@ -183,7 +194,11 @@ function startLoad(path: string): PendingEntry {
       const bm = await decode(buf);
       store(path, bm);
       return bm;
+    } catch (error) {
+      task.finish(isTaskCancellation(error) ? "cancelled" : "failed");
+      throw error;
     } finally {
+      task.finish();
       if (pending.get(path) === entry) {
         pending.delete(path);
       }

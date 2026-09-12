@@ -516,16 +516,38 @@ export class PfPhotoGrid extends LitElement {
     if (!this.filtersActive) {
       return this.photos;
     }
+    const metadataFiltersActive =
+      this.cameraFilter !== "" ||
+      this.lensFilter !== "" ||
+      this.minFocalLength !== null ||
+      this.maxFocalLength !== null ||
+      this.startDate !== "" ||
+      this.endDate !== "";
     return this.photos.filter((p) => {
       const r = getPhotoRating(p.path);
       if (this.minStars > 0 && r.rating < this.minStars) return false;
       if (this.activeLabels.size > 0) {
         if (r.label === "" || !this.activeLabels.has(r.label)) return false;
       }
-      if (this.cameraFilter && p.filterInfo?.camera !== this.cameraFilter) {
+      // Do not briefly report an empty result while this photo's metadata is
+      // still queued. It will be evaluated as soon as its batch arrives.
+      if (metadataFiltersActive && this.filterMetadataLoading && !p.filterInfo) {
+        return true;
+      }
+      if (
+        this.cameraFilter &&
+        !p.filterInfo?.camera?.toLocaleLowerCase().includes(
+          this.cameraFilter.trim().toLocaleLowerCase()
+        )
+      ) {
         return false;
       }
-      if (this.lensFilter && p.filterInfo?.lens !== this.lensFilter) {
+      if (
+        this.lensFilter &&
+        !p.filterInfo?.lens?.toLocaleLowerCase().includes(
+          this.lensFilter.trim().toLocaleLowerCase()
+        )
+      ) {
         return false;
       }
       const focalLength = p.filterInfo?.focalLengthMm;
@@ -842,15 +864,6 @@ export class PfPhotoGrid extends LitElement {
     </div>`;
   }
 
-  private requestFilterMetadata = () => {
-    this.dispatchEvent(
-      new CustomEvent("filter-metadata-request", {
-        bubbles: true,
-        composed: true,
-      })
-    );
-  };
-
   render() {
     // Slider is visually inverted: dragging right reduces column
     // count (bigger thumbnails). We pass `MIN + MAX - columns` to the
@@ -906,7 +919,6 @@ export class PfPhotoGrid extends LitElement {
                 placeholder="Camera"
                 aria-label="Camera"
                 .value=${this.cameraFilter}
-                @focus=${this.requestFilterMetadata}
                 @input=${(e: Event) => this.setTextFilter("camera", e)}
               />
             </label>
@@ -917,7 +929,6 @@ export class PfPhotoGrid extends LitElement {
                 placeholder="Lens"
                 aria-label="Lens"
                 .value=${this.lensFilter}
-                @focus=${this.requestFilterMetadata}
                 @input=${(e: Event) => this.setTextFilter("lens", e)}
               />
             </label>
@@ -931,7 +942,6 @@ export class PfPhotoGrid extends LitElement {
                   placeholder=${focalBounds ? `From ${focalBounds.min}` : "Min"}
                   .value=${this.minFocalLength?.toString() ?? ""}
                   aria-label="Minimum focal length"
-                  @focus=${this.requestFilterMetadata}
                   @input=${(e: Event) => this.setFocalLength("min", e)}
                 />
                 <input
@@ -941,7 +951,6 @@ export class PfPhotoGrid extends LitElement {
                   placeholder=${focalBounds ? `To ${focalBounds.max}` : "Max"}
                   .value=${this.maxFocalLength?.toString() ?? ""}
                   aria-label="Maximum focal length"
-                  @focus=${this.requestFilterMetadata}
                   @input=${(e: Event) => this.setFocalLength("max", e)}
                 />
               </div>
@@ -953,14 +962,12 @@ export class PfPhotoGrid extends LitElement {
                   type="date"
                   .value=${this.startDate}
                   aria-label="Start date"
-                  @focus=${this.requestFilterMetadata}
                   @change=${(e: Event) => this.setDate("start", e)}
                 />
                 <input
                   type="date"
                   .value=${this.endDate}
                   aria-label="End date"
-                  @focus=${this.requestFilterMetadata}
                   @change=${(e: Event) => this.setDate("end", e)}
                 />
               </div>

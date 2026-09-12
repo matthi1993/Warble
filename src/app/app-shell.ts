@@ -20,13 +20,20 @@ import {
   loadPhotoRatings,
   reloadPhotoRatings,
 } from "@services/rating/rating-store";
-import { dropAllThumbnailState } from "./thumbnail-service";
+import { dropAllThumbnailState, prefetchThumbnails } from "./thumbnail-service";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
 import { beginAppBusy, subscribeAppBusy } from "./app-busy";
-import { cancelTaskRequest, nextRequestId } from "./task-manager";
+import {
+  beginTask,
+  cancelTaskRequest,
+  nextRequestId,
+  subscribeTasks,
+  type TaskRecord,
+} from "./task-manager";
 import "./pf-cache-settings";
+import "./pf-task-details";
 
 function findFolderByPath(roots: Folder[], path: string): Folder | null {
   for (const r of roots) {
@@ -441,6 +448,37 @@ export class WarbleApp extends LitElement {
     .footer-label {
       flex-shrink: 0;
     }
+    .footer-task-spinner {
+      width: 11px;
+      height: 11px;
+      box-sizing: border-box;
+      flex: 0 0 auto;
+      border: 2px solid var(--pf-border);
+      border-top-color: var(--pf-accent);
+      border-radius: 50%;
+      animation: app-busy-spin 0.75s linear infinite;
+    }
+    .footer-details {
+      min-height: 24px;
+      padding: 2px 8px;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-sm);
+      background: transparent;
+      color: var(--pf-text-muted);
+      font: inherit;
+      cursor: pointer;
+    }
+    .footer-details:hover {
+      border-color: var(--pf-accent);
+      color: var(--pf-text);
+    }
+    .footer-task-details-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .footer-task-spinner { animation-duration: 1.5s; }
+    }
     .footer-spacer {
       flex: 1;
     }
@@ -583,6 +621,15 @@ export class WarbleApp extends LitElement {
   @state()
   private filterMetadataLoading = false;
 
+  @state()
+  private activeTasks: readonly TaskRecord[] = [];
+
+  @state()
+  private recentTasks: readonly TaskRecord[] = [];
+
+  @state()
+  private taskDetailsOpen = false;
+
   /** Suppresses the persistence side-effect during the initial restore
    * pass so we don't immediately write back what we just read. */
   private appViewHydrated = false;
@@ -597,6 +644,10 @@ export class WarbleApp extends LitElement {
    window.addEventListener("mousemove", this.onMouseMove);
    this.unsubscribeAppBusy = subscribeAppBusy((label) => {
      this.busyLabel = label;
+   });
+   this.unsubscribeTasks = subscribeTasks((tasks, recentTasks) => {
+     this.activeTasks = tasks;
+     this.recentTasks = recentTasks;
    });
    this.unlistenFoldersRehydrated = await listen("folders-rehydrated", () => {
      void this.onFoldersRehydrated();
@@ -688,14 +739,22 @@ export class WarbleApp extends LitElement {
   }
 
   private unlistenFoldersRehydrated: UnlistenFn | null = null;
+  private unsubscribeTasks: (() => void) | null = null;
+  private cancelThumbnailPrefetch: (() => void) | null = null;
 
   private setPhotos(photos: Photo[]): void {
-    this.pausePhotoFilterInfo();
+    this.stopPhotoBackgroundWork();
     // Reuse metadata that was prepared for filtering in another folder.
     this.photos = sortPhotosOldestFirst(photos.map((photo) => {
       const filterInfo = photo.filterInfo ?? this.filterInfoByPath.get(photo.path);
       return filterInfo ? { ...photo, filterInfo } : photo;
     }));
+    if (this.photos.length > 0) {
+      this.cancelThumbnailPrefetch = prefetchThumbnails(
+        this.photos.map((photo) => photo.path)
+      );
+      this.requestPhotoFilterInfo();
+    }
   }
 
   private pausePhotoFilterInfo(): void {
@@ -707,16 +766,21 @@ export class WarbleApp extends LitElement {
     this.filterMetadataLoading = false;
   }
 
-  /** Load folder metadata only when a metadata-based filter is used. */
-  private requestPhotoFilterInfo = (): void => {
-    if (this.fullViewIndex !== null || this.filterMetadataLoading) return;
+  private stopPhotoBackgroundWork(): void {
     this.pausePhotoFilterInfo();
+    this.cancelThumbnailPrefetch?.();
+    this.cancelThumbnailPrefetch = null;
+  }
+
+  /** Load capture metadata as soon as a folder opens. */
+  private requestPhotoFilterInfo = (): void => {
+    if (this.filterMetadataLoading) return;
     const unprepared = this.photos.filter(
       (photo) => !this.filterInfoByPath.has(photo.path)
     );
     this.filterMetadataLoading = unprepared.length > 0;
     if (!this.filterMetadataLoading) return;
-    const request = this.filterMetadataRequest;
+    const request = ++this.filterMetadataRequest;
     void this.loadPhotoFilterInfo(unprepared, request);
   };
 
@@ -724,6 +788,16 @@ export class WarbleApp extends LitElement {
     photos: Photo[],
     request: number
   ): Promise<void> {
+    const task = beginTask({
+      kind: "exif",
+      label: "Reading photo metadata",
+      priority: "normal",
+      target: `${photos.length} photos`,
+      completed: 0,
+      total: photos.length,
+    });
+    let completed = 0;
+    let taskStatus: "completed" | "cancelled" | "failed" = "completed";
     try {
       for (let start = 0; start < photos.length; start += FILTER_METADATA_BATCH_SIZE) {
         if (request !== this.filterMetadataRequest) return;
@@ -743,6 +817,8 @@ export class WarbleApp extends LitElement {
         }
         if (request !== this.filterMetadataRequest) return;
         for (const item of info) this.filterInfoByPath.set(item.path, item);
+        completed += batch.length;
+        task.update({ completed });
 
         const enriched = sortPhotosOldestFirst(this.photos.map((photo) => {
           const filterInfo = this.filterInfoByPath.get(photo.path);
@@ -769,9 +845,14 @@ export class WarbleApp extends LitElement {
       // Metadata is an enhancement; thumbnails and the rest of the grid
       // remain usable when a file provider temporarily refuses a read.
       if (request === this.filterMetadataRequest) {
+        taskStatus = "failed";
         console.warn("Failed to load photo filter metadata", err);
+      } else {
+        taskStatus = "cancelled";
       }
     } finally {
+      if (request !== this.filterMetadataRequest) taskStatus = "cancelled";
+      task.finish(taskStatus);
       if (request === this.filterMetadataRequest) {
         this.filterMetadataLoading = false;
       }
@@ -787,10 +868,9 @@ export class WarbleApp extends LitElement {
     this.unsubscribeCacheCleared = null;
     this.unsubscribeAppBusy?.();
     this.unsubscribeAppBusy = null;
-    if (this.filterMetadataTaskId !== null) {
-      cancelTaskRequest(this.filterMetadataTaskId);
-      this.filterMetadataTaskId = null;
-    }
+    this.unsubscribeTasks?.();
+    this.unsubscribeTasks = null;
+    this.stopPhotoBackgroundWork();
   }
 
   private refreshAfterThumbnailCacheClear(): void {
@@ -1132,6 +1212,7 @@ export class WarbleApp extends LitElement {
   };
 
   private async selectFolder(id: string, path: string) {
+    this.stopPhotoBackgroundWork();
     this.selectedFolderId = id;
     const name = id.split("/").filter(Boolean).pop() ?? path;
     this.selectedFolderName = name;
@@ -1357,6 +1438,7 @@ export class WarbleApp extends LitElement {
   private toggleIncludeSubfolders = async () => {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
+      this.stopPhotoBackgroundWork();
       try {
         this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
           folderPath: this.selectedFolderId,
@@ -1520,7 +1602,6 @@ export class WarbleApp extends LitElement {
         @photo-open=${this.onPhotoOpen}
         @photo-context-menu=${this.onPhotoContextMenu}
         @toggle-include-subfolders=${this.toggleIncludeSubfolders}
-        @filter-metadata-request=${this.requestPhotoFilterInfo}
       >
         ${this.selectedFolderId === null
           ? html`<div class="welcome">
@@ -1709,9 +1790,31 @@ export class WarbleApp extends LitElement {
   }
 
   private renderFooter() {
+    const primary = this.activeTasks[0];
+    const sameKindCount = primary
+      ? this.activeTasks.filter((task) => task.kind === primary.kind).length
+      : 0;
+    const status = primary
+      ? `${primary.label}${sameKindCount > 1 ? ` (${sameKindCount})` : ""}…`
+      : "Ready";
     return html`
       <footer class="app-footer" role="status" aria-live="polite">
-        <span class="footer-label">Ready</span>
+        ${primary ? html`<span class="footer-task-spinner" aria-hidden="true"></span>` : null}
+        <span class="footer-label">${status}</span>
+        <span class="footer-task-details-wrap">
+          <button
+            type="button"
+            class="footer-details"
+            aria-expanded=${this.taskDetailsOpen}
+            @pointerdown=${(event: Event) => event.stopPropagation()}
+            @click=${() => (this.taskDetailsOpen = !this.taskDetailsOpen)}
+          >Details</button>
+          <pf-task-details
+            .open=${this.taskDetailsOpen}
+            .tasks=${this.recentTasks}
+            @task-details-close=${() => (this.taskDetailsOpen = false)}
+          ></pf-task-details>
+        </span>
         <span class="footer-spacer"></span>
       </footer>
     `;

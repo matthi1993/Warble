@@ -4,6 +4,15 @@
 
 Warble is photo viewer with small editing and presentation features built for mac. Built with Vite, TypeScript, and Tauri.
 
+## Documentation
+
+- [App overview](<00 docs/app-overview.md>)
+- [Views and navigation](<00 docs/views-and-navigation.md>)
+- [Library and browsing](<00 docs/library-and-browsing.md>)
+- [Image loading and background work](<00 docs/image-loading-and-background-work.md>)
+- [Editor tools](<00 docs/editor-tools.md>)
+- [Architecture](architecture.md)
+
 ## Getting Started
 
 To start the app in development mode:

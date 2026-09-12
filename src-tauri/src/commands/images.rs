@@ -25,12 +25,15 @@ pub async fn get_thumbnail(
     photo_path: String,
     request_id: Option<u64>,
     urgent: Option<bool>,
+    background: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
     let priority = if urgent.unwrap_or(false) {
         Priority::Urgent
+    } else if background.unwrap_or(false) {
+        Priority::Background
     } else {
         Priority::Normal
     };
@@ -102,6 +105,17 @@ pub fn cancel_image_request(request_id: u64) {
     tasks::pool().cancel(request_id);
 }
 
+/// Raise a queued background request when it becomes visible or urgent.
+#[tauri::command]
+pub fn promote_image_request(request_id: u64, urgent: bool) {
+    let priority = if urgent {
+        Priority::Urgent
+    } else {
+        Priority::Normal
+    };
+    tasks::pool().promote(request_id, priority);
+}
+
 /// Read EXIF metadata for the photo at `photo_path`. Returns an
 /// `ExifMetadata` with `null` for any tags that aren't present so the
 /// frontend can decide whether to render each row.
@@ -112,10 +126,12 @@ pub fn cancel_image_request(request_id: u64) {
 #[tauri::command]
 pub async fn get_exif_metadata(
     photo_path: String,
+    request_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<crate::imaging::exif::ExifMetadata, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
-    tasks::run(Priority::Urgent, None, move |_cancel| {
+    tasks::run(Priority::Urgent, request_id, move |cancel| {
+        cancel.check()?;
         Ok::<_, String>(exif_cache::get_or_compute(&photo_path, &resolved))
     })
     .await
@@ -148,43 +164,39 @@ pub async fn get_photo_filter_metadata(
         requests.push((key, resolved));
     }
 
-    tasks::run(
-        Priority::Normal,
-        request_id,
-        move |cancel| {
-            let mut result = Vec::with_capacity(requests.len());
-            for (path, resolved) in requests {
-                cancel.check()?;
-                let metadata = exif_cache::get_or_compute(&path, &resolved);
-                let camera = metadata
-                    .camera_model
-                    .clone()
-                    .or_else(|| metadata.camera_make.clone());
-                let lens = metadata
-                    .lens_model
-                    .clone()
-                    .or_else(|| metadata.lens_make.clone());
-                // Older cache rows predate the numeric field. Recover their
-                // value from the existing display string without forcing a
-                // second source-file parse.
-                let focal_length_mm = metadata.focal_length_mm.or_else(|| {
-                    metadata
-                        .focal_length
-                        .as_deref()
-                        .and_then(parse_focal_length_mm)
-                });
-                let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
-                result.push(PhotoFilterInfo {
-                    path,
-                    camera,
-                    lens,
-                    focal_length_mm,
-                    date_taken,
-                });
-            }
-            Ok(result)
-        },
-    )
+    tasks::run(Priority::Normal, request_id, move |cancel| {
+        let mut result = Vec::with_capacity(requests.len());
+        for (path, resolved) in requests {
+            cancel.check()?;
+            let metadata = exif_cache::get_or_compute(&path, &resolved);
+            let camera = metadata
+                .camera_model
+                .clone()
+                .or_else(|| metadata.camera_make.clone());
+            let lens = metadata
+                .lens_model
+                .clone()
+                .or_else(|| metadata.lens_make.clone());
+            // Older cache rows predate the numeric field. Recover their
+            // value from the existing display string without forcing a
+            // second source-file parse.
+            let focal_length_mm = metadata.focal_length_mm.or_else(|| {
+                metadata
+                    .focal_length
+                    .as_deref()
+                    .and_then(parse_focal_length_mm)
+            });
+            let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
+            result.push(PhotoFilterInfo {
+                path,
+                camera,
+                lens,
+                focal_length_mm,
+                date_taken,
+            });
+        }
+        Ok(result)
+    })
     .await
 }
 

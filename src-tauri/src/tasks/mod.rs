@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 pub enum Priority {
     Urgent,
     Normal,
+    Background,
 }
 
 #[derive(Clone)]
@@ -44,6 +45,8 @@ impl CancelToken {
 }
 
 struct Job {
+    priority: Priority,
+    request_id: Option<u64>,
     cancel: CancelToken,
     work: Box<dyn FnOnce(&CancelToken) + Send + 'static>,
 }
@@ -102,6 +105,8 @@ impl TaskPool {
 
         let requests = Arc::clone(&self.requests);
         let job = Job {
+            priority,
+            request_id,
             cancel,
             work: Box::new(move |token| {
                 work(token);
@@ -115,7 +120,14 @@ impl TaskPool {
         let mut queue = lock.lock().unwrap();
         match priority {
             Priority::Urgent => queue.push_front(job),
-            Priority::Normal => queue.push_back(job),
+            Priority::Normal => {
+                let index = queue
+                    .iter()
+                    .position(|queued| queued.priority == Priority::Background)
+                    .unwrap_or(queue.len());
+                queue.insert(index, job);
+            }
+            Priority::Background => queue.push_back(job),
         }
         wake.notify_one();
     }
@@ -130,6 +142,33 @@ impl TaskPool {
         if requests.pre_cancelled.len() > 4096 {
             requests.pre_cancelled.clear();
         }
+    }
+
+    pub fn promote(&self, request_id: u64, priority: Priority) {
+        let (lock, wake) = &*self.queue;
+        let mut queue = lock.lock().unwrap();
+        let Some(index) = queue
+            .iter()
+            .position(|queued| queued.request_id == Some(request_id))
+        else {
+            return;
+        };
+        let Some(mut job) = queue.remove(index) else {
+            return;
+        };
+        job.priority = priority;
+        match priority {
+            Priority::Urgent => queue.push_front(job),
+            Priority::Normal => {
+                let index = queue
+                    .iter()
+                    .position(|queued| queued.priority == Priority::Background)
+                    .unwrap_or(queue.len());
+                queue.insert(index, job);
+            }
+            Priority::Background => queue.push_back(job),
+        }
+        wake.notify_one();
     }
 
     fn run(&self) {
@@ -154,11 +193,7 @@ pub fn pool() -> &'static Arc<TaskPool> {
     POOL.get_or_init(TaskPool::new)
 }
 
-pub async fn run<F, T>(
-    priority: Priority,
-    request_id: Option<u64>,
-    work: F,
-) -> Result<T, String>
+pub async fn run<F, T>(priority: Priority, request_id: Option<u64>, work: F) -> Result<T, String>
 where
     F: FnOnce(&CancelToken) -> Result<T, String> + Send + 'static,
     T: Send + 'static,

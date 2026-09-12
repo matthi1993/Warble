@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { cancelTaskRequest, nextRequestId } from "./task-manager";
+import {
+  beginTask,
+  cancelTaskRequest,
+  isTaskCancellation,
+  nextRequestId,
+} from "./task-manager";
 import type { RawImageSource } from "@ui/photos/canvas/raw-source";
 
 const MAGIC = "WRAW16\0\0";
@@ -86,6 +91,12 @@ function startLoad(
   maxLongSide: number | undefined,
 ): PendingEntry {
   const requestId = nextRequestId();
+  const task = beginTask({
+    kind: "raw-image",
+    label: "Opening RAW image",
+    priority: "urgent",
+    target: path,
+  });
   const entry: PendingEntry = {
     promise: undefined as unknown as Promise<RawImageSource>,
     requestId,
@@ -106,7 +117,11 @@ function startLoad(
         cache.delete(oldest);
       }
       return image;
+    } catch (error) {
+      task.finish(isTaskCancellation(error) ? "cancelled" : "failed");
+      throw error;
     } finally {
+      task.finish();
       if (pending.get(key) === entry) pending.delete(key);
     }
   })();
