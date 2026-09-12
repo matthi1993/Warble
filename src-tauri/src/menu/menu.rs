@@ -17,16 +17,12 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::app_state::AppState;
 use crate::imaging::{full_image, hd_image, thumbnails};
-use crate::tasks;
 
 /// Menu IDs are namespaced so the event handler can route by prefix.
 const ID_THUMB_PREFIX: &str = "cache.thumb.";
 const ID_HD_PREFIX: &str = "cache.hd.";
 const ID_FULL_MEM_PREFIX: &str = "cache.full_mem.";
 const ID_FULL_BITMAP_PREFIX: &str = "cache.full_bitmap.";
-const ID_BG_PREFIX: &str = "cache.bg.";
-const ID_BG_THUMBS_TOGGLE: &str = "cache.bg_thumbs.toggle";
-const ID_BG_HD_TOGGLE: &str = "cache.bg_hd.toggle";
 const ID_FULL_RES_TOGGLE: &str = "cache.full_res.toggle";
 const ID_THUMB_CLEAR: &str = "cache.thumb.clear";
 const ID_HD_CLEAR: &str = "cache.hd.clear";
@@ -34,10 +30,6 @@ const ID_FULL_MEM_CLEAR: &str = "cache.full_mem.clear";
 const ID_REVEAL_THUMB: &str = "cache.reveal.thumb";
 const ID_REVEAL_HD: &str = "cache.reveal.hd";
 const ID_REFRESH_USAGE: &str = "cache.usage.refresh";
-const ID_DEBUG_STATS_TOGGLE: &str = "window.debug_stats";
-
-const ID_FILE_SAVE: &str = "file.save";
-const ID_FILE_LOAD: &str = "file.load";
 
 /// Preset choices surfaced as check items in the menu. Values are entry
 /// counts; conservative on the low end, generous on the high end so users
@@ -46,10 +38,6 @@ const THUMB_PRESETS: &[usize] = &[0, 1_000, 5_000, 10_000, 25_000, 50_000];
 const HD_PRESETS: &[usize] = &[0, 500, 1_000, 2_000, 5_000, 10_000];
 const FULL_MEM_PRESETS: &[usize] = &[0, 4, 8, 16, 32];
 const FULL_BITMAP_PRESETS: &[usize] = &[1, 2, 4, 8, 16];
-/// Background-pool concurrency presets. Filtered down to those `<=
-/// bg_thread_capacity` at menu build time so we never offer a setting
-/// the pool can't honour.
-const BG_PRESETS: &[usize] = &[1, 2, 4, 6, 8, 12, 16];
 
 /// Registry of CheckMenuItem handles, keyed by menu id, populated at menu
 /// build time. Used by `sync_group_check_state` to flip the radio tick.
@@ -66,13 +54,11 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
     let edit_submenu = build_edit_submenu(app)?;
     let view_submenu = build_view_submenu(app)?;
     let cache_submenu = build_cache_submenu(app, &settings)?;
-    let file_submenu = build_file_submenu(app)?;
     let window_submenu = build_window_submenu(app)?;
 
     MenuBuilder::new(app)
         .items(&[
             &app_submenu,
-            &file_submenu,
             &edit_submenu,
             &view_submenu,
             &cache_submenu,
@@ -137,22 +123,9 @@ fn build_view_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
 }
 
 fn build_window_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
-    let debug_stats =
-        MenuItemBuilder::with_id(ID_DEBUG_STATS_TOGGLE, "Show Task Debug Stats").build(app)?;
     SubmenuBuilder::new(app, "Window")
         .item(&PredefinedMenuItem::minimize(app, None)?)
         .item(&PredefinedMenuItem::close_window(app, None)?)
-        .separator()
-        .item(&debug_stats)
-        .build()
-}
-
-fn build_file_submenu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
-    let load_file = MenuItemBuilder::with_id(ID_FILE_LOAD, "Load Library ...").build(app)?;
-    let save_file = MenuItemBuilder::with_id(ID_FILE_SAVE, "Save Library As ...").build(app)?;
-    SubmenuBuilder::new(app, "File")
-        .item(&load_file)
-        .item(&save_file)
         .build()
 }
 
@@ -217,40 +190,8 @@ fn build_cache_submenu(
         |n| format!("{n} bitmaps"),
     )?;
 
-    // Background-pool concurrency: clamp the preset list to the
-    // number of OS threads the pool actually spawned.
-    let bg_cap = tasks::pool().bg_thread_capacity().max(1);
-    let bg_presets: Vec<usize> = BG_PRESETS
-        .iter()
-        .copied()
-        .filter(|&n| n <= bg_cap)
-        .collect();
-    let bg_group = build_preset_group(
-        app,
-        "Background Job Concurrency",
-        ID_BG_PREFIX,
-        &bg_presets,
-        settings.background_pool_workers,
-        |n| {
-            if n == 1 {
-                "1 job".to_string()
-            } else {
-                format!("{n} jobs")
-            }
-        },
-    )?;
-
     let usage_submenu = build_disk_usage_submenu(app)?;
 
-    let bg_thumbs = CheckMenuItemBuilder::with_id(
-        ID_BG_THUMBS_TOGGLE,
-        "Generate Folder Thumbnails in Background",
-    )
-    .checked(settings.background_thumbnails_enabled)
-    .build(app)?;
-    let bg_hd = CheckMenuItemBuilder::with_id(ID_BG_HD_TOGGLE, "Pre-generate Folder HD Previews")
-        .checked(settings.background_hd_previews_enabled)
-        .build(app)?;
     let full_res =
         CheckMenuItemBuilder::with_id(ID_FULL_RES_TOGGLE, "Load Full Resolution After Pause")
             .checked(settings.full_resolution_enabled)
@@ -266,10 +207,7 @@ fn build_cache_submenu(
         .item(&hd_group)
         .item(&full_mem_group)
         .item(&full_bitmap_group)
-        .item(&bg_group)
         .separator()
-        .item(&bg_thumbs)
-        .item(&bg_hd)
         .item(&full_res)
         .separator()
         .item(&usage_submenu)
@@ -399,10 +337,6 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
         rebuild_and_install(app);
         return;
     }
-    if id == ID_DEBUG_STATS_TOGGLE {
-        let _ = app.emit("debug-stats:toggle", ());
-        return;
-    }
     if id == ID_HD_CLEAR {
         hd_image::clear_disk_cache();
         let _ = app.emit("cache-cleared", "hd_image_disk");
@@ -428,14 +362,6 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
     }
     if id == ID_REFRESH_USAGE {
         rebuild_and_install(app);
-        return;
-    }
-    if id == ID_BG_THUMBS_TOGGLE {
-        toggle_feature(app, |s| &mut s.background_thumbnails_enabled);
-        return;
-    }
-    if id == ID_BG_HD_TOGGLE {
-        toggle_feature(app, |s| &mut s.background_hd_previews_enabled);
         return;
     }
     if id == ID_FULL_RES_TOGGLE {
@@ -464,19 +390,6 @@ pub fn handle_event(app: &AppHandle<Wry>, event: MenuEvent) {
         if let Ok(n) = rest.parse::<usize>() {
             apply_full_bitmap_max(app, n);
         }
-        return;
-    }
-    if let Some(rest) = id.strip_prefix(ID_BG_PREFIX) {
-        if let Ok(n) = rest.parse::<usize>() {
-            apply_bg_concurrency(app, n);
-        }
-    }
-    if id == ID_FILE_LOAD {
-        let _ = app.emit("library:load-requested", ());
-        return;
-    }
-    if id == ID_FILE_SAVE {
-        let _ = app.emit("library:save-requested", ());
         return;
     }
 }
@@ -519,18 +432,6 @@ fn apply_full_bitmap_max(app: &AppHandle<Wry>, n: usize) {
     sync_group_check_state(ID_FULL_BITMAP_PREFIX, FULL_BITMAP_PRESETS, n);
     // Frontend listens to `cache-settings-changed` and resizes its own
     // ImageBitmap LRU.
-    let _ = app.emit("cache-settings-changed", snapshot);
-}
-
-fn apply_bg_concurrency(app: &AppHandle<Wry>, n: usize) {
-    let state = app.state::<AppState>();
-    let cap = tasks::pool().bg_thread_capacity().max(1);
-    let clamped = n.clamp(1, cap);
-    let snapshot = state.settings.update(&state.device_storage, |s| {
-        s.background_pool_workers = clamped
-    });
-    tasks::pool().set_bg_concurrency(clamped);
-    sync_group_check_state(ID_BG_PREFIX, BG_PRESETS, clamped);
     let _ = app.emit("cache-settings-changed", snapshot);
 }
 

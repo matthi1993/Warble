@@ -10,6 +10,7 @@ export default defineConfig(async () => ({
     alias: {
       "@ui": fileURLToPath(new URL("./src/ui", import.meta.url)),
       "@app": fileURLToPath(new URL("./src/app", import.meta.url)),
+      "@features": fileURLToPath(new URL("./src/features", import.meta.url)),
       "@domain": fileURLToPath(new URL("./src/domain", import.meta.url)),
       "@services": fileURLToPath(new URL("./src/services", import.meta.url)),
     },

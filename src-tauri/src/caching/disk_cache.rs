@@ -118,7 +118,9 @@ impl DiskCache {
             return;
         }
         let target = self.path_for(key);
-        let Some(parent) = target.parent() else { return };
+        let Some(parent) = target.parent() else {
+            return;
+        };
         if fs::create_dir_all(parent).is_err() {
             return;
         }
@@ -200,7 +202,9 @@ impl DiskCache {
 /// Walk shard subdirectories and collect (mtime, path) for every file
 /// matching `extension`. Best-effort; unreadable entries are skipped.
 fn collect_entries(root: &Path, extension: &str, out: &mut Vec<(SystemTime, PathBuf)>) {
-    let Ok(shards) = fs::read_dir(root) else { return };
+    let Ok(shards) = fs::read_dir(root) else {
+        return;
+    };
     for shard in shards.flatten() {
         let shard_path = shard.path();
         if !shard_path.is_dir() {

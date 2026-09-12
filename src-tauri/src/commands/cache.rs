@@ -6,7 +6,6 @@ use tauri::{Emitter, State};
 use crate::app_state::AppState;
 use crate::imaging::{full_image, hd_image, thumbnails};
 use crate::settings::CacheSettings;
-use crate::tasks;
 
 #[tauri::command]
 pub fn get_cache_settings(state: State<'_, AppState>) -> CacheSettings {
@@ -19,9 +18,9 @@ pub fn set_thumbnail_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.thumbnail_disk_max_entries = max);
+    let snapshot = state.settings.update(&state.device_storage, |s| {
+        s.thumbnail_disk_max_entries = max
+    });
     thumbnails::set_disk_cache_max_entries(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -47,9 +46,9 @@ pub fn set_full_image_memory_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.full_image_memory_max_entries = max);
+    let snapshot = state.settings.update(&state.device_storage, |s| {
+        s.full_image_memory_max_entries = max
+    });
     full_image::set_memory_cache_capacity(max);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
@@ -61,9 +60,9 @@ pub fn set_full_image_bitmap_cache_max(
     state: State<'_, AppState>,
     max: usize,
 ) -> Result<CacheSettings, String> {
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.full_image_bitmap_max_entries = max.max(1));
+    let snapshot = state.settings.update(&state.device_storage, |s| {
+        s.full_image_bitmap_max_entries = max.max(1)
+    });
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
 }
@@ -86,22 +85,6 @@ pub fn clear_full_image_memory_cache(app: tauri::AppHandle) {
     let _ = app.emit("cache-cleared", "full_image_memory");
 }
 
-#[tauri::command]
-pub fn set_background_pool_workers(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    workers: usize,
-) -> Result<CacheSettings, String> {
-    let cap = tasks::pool().bg_thread_capacity().max(1);
-    let clamped = workers.clamp(1, cap);
-    let snapshot = state
-        .settings
-        .update(&state.device_storage, |s| s.background_pool_workers = clamped);
-    tasks::pool().set_bg_concurrency(clamped);
-    let _ = app.emit("cache-settings-changed", snapshot);
-    Ok(snapshot)
-}
-
 /// Apply the settings sheet in one device-local write. This is also used on
 /// iPad, where there is no native macOS application menu.
 #[tauri::command]
@@ -111,16 +94,12 @@ pub fn set_cache_settings(
     mut settings: CacheSettings,
 ) -> Result<CacheSettings, String> {
     settings.full_image_bitmap_max_entries = settings.full_image_bitmap_max_entries.max(1);
-    settings.background_pool_workers = settings
-        .background_pool_workers
-        .clamp(1, tasks::pool().bg_thread_capacity().max(1));
     let snapshot = state.settings.update(&state.device_storage, |current| {
         *current = settings;
     });
     thumbnails::set_disk_cache_max_entries(snapshot.thumbnail_disk_max_entries);
     hd_image::set_disk_cache_max_entries(snapshot.hd_image_disk_max_entries);
     full_image::set_memory_cache_capacity(snapshot.full_image_memory_max_entries);
-    tasks::pool().set_bg_concurrency(snapshot.background_pool_workers);
     let _ = app.emit("cache-settings-changed", snapshot);
     Ok(snapshot)
 }
@@ -140,8 +119,6 @@ pub struct CacheDiskUsageEntry {
 pub struct CacheDiskUsage {
     pub thumbnail: CacheDiskUsageEntry,
     pub hd_image: CacheDiskUsageEntry,
-    /// Maximum value `set_background_pool_workers` will accept.
-    pub bg_thread_capacity: usize,
 }
 
 #[tauri::command]
@@ -153,18 +130,15 @@ pub async fn get_cache_disk_usage() -> Result<CacheDiskUsage, String> {
         let (hd_bytes, hd_files) = hd_image::cache_disk_usage().unwrap_or((0, 0));
         CacheDiskUsage {
             thumbnail: CacheDiskUsageEntry {
-                path: thumbnails::cache_root_path()
-                    .map(|p| p.to_string_lossy().into_owned()),
+                path: thumbnails::cache_root_path().map(|p| p.to_string_lossy().into_owned()),
                 bytes: thumb_bytes,
                 files: thumb_files,
             },
             hd_image: CacheDiskUsageEntry {
-                path: hd_image::cache_root_path()
-                    .map(|p| p.to_string_lossy().into_owned()),
+                path: hd_image::cache_root_path().map(|p| p.to_string_lossy().into_owned()),
                 bytes: hd_bytes,
                 files: hd_files,
             },
-            bg_thread_capacity: tasks::pool().bg_thread_capacity(),
         }
     })
     .await

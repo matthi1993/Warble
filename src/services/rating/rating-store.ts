@@ -49,8 +49,7 @@ export function loadPhotoRatings(): Promise<void> {
   return loadPromise;
 }
 
-/** Drop all in-memory ratings and re-fetch from the backend. Used
- *  after a library hot-swap. */
+/** Drop all in-memory ratings and re-fetch after a folder-sidecar rescan. */
 export function reloadPhotoRatings(): Promise<void> {
   ratings.clear();
   loaded = false;

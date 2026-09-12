@@ -1,8 +1,8 @@
 //! Tauri commands for non-destructive photo edits.
 //!
-//! Edits are persisted as JSON in the SQLite `photo_edits` table and
-//! applied on the fly when the frontend requests a full-resolution
-//! image. The original file on disk is never modified.
+//! Edits are persisted in an adjacent Warble JSON sidecar and indexed in the
+//! SQLite `photo_edits` table. They are applied on the fly when the frontend
+//! requests a full-resolution image; the original image is never modified.
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -30,8 +30,7 @@ pub fn get_photo_edits(state: State<'_, AppState>) -> Result<Vec<PhotoEditDto>, 
     let rows = repo.all_photo_edits()?;
     let mut out = Vec::with_capacity(rows.len());
     for (path, json) in rows {
-        let edits: PhotoEdits =
-            serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        let edits: PhotoEdits = serde_json::from_str(&json).map_err(|e| e.to_string())?;
         out.push(PhotoEditDto {
             path,
             crop: edits.crop,
@@ -53,7 +52,14 @@ pub fn set_photo_edit(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let repo = state.repository()?;
-    let edits = PhotoEdits { crop, tone, curve, color };
+    let edits = PhotoEdits {
+        crop,
+        tone,
+        curve,
+        color,
+    };
+    let source = state.resolve_library_path(&path)?;
+    crate::sidecar::write_edits(&source, &edits)?;
     if edits.is_empty() {
         repo.delete_photo_edit(&path)
     } else {
@@ -63,10 +69,9 @@ pub fn set_photo_edit(
 }
 
 #[tauri::command]
-pub fn clear_photo_edit(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn clear_photo_edit(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let repo = state.repository()?;
+    let source = state.resolve_library_path(&path)?;
+    crate::sidecar::write_edits(&source, &PhotoEdits::default())?;
     repo.delete_photo_edit(&path)
 }

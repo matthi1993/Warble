@@ -8,7 +8,6 @@ use tauri::Manager;
 
 #[cfg(desktop)]
 use crate::menu;
-use crate::tasks;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,14 +16,12 @@ use imaging::{exif_cache, full_image, hd_image, thumbnails};
 
 /// Canonical on-disk location of the active library database.
 pub fn library_db_path(app: &tauri::AppHandle) -> PathBuf {
-    app.path()
+    let mut path = app
+        .path()
         .app_data_dir()
-        .ok()
-        .map(|mut p| {
-            p.push("active-library.warble");
-            p
-        })
-        .unwrap_or_else(|| PathBuf::from("./library.warble"))
+        .expect("app data directory is unavailable");
+    path.push("active-library.warble");
+    path
 }
 
 pub fn init_library_repository(app: &tauri::App) {
@@ -42,45 +39,10 @@ pub fn init_library_repository(app: &tauri::App) {
             eprintln!("failed to initialise device state: {e}");
         }
     }
-    // One-time move from the pre-v8 canonical location in Pictures.
-    if !db_path.exists() && state.device_storage.last_library_path().is_none() {
-        if let Ok(mut legacy_path) = app.path().picture_dir() {
-            legacy_path.push("library.warble");
-            if legacy_path.is_file() {
-                let _ = state
-                    .device_storage
-                    .set_last_library_path(Some(&legacy_path));
-            }
-        }
-    }
-    // The canonical app-local DB is the working copy. Never overwrite it on
-    // every launch from an external source: that can block iOS file-provider
-    // access before the webview appears and can also discard newer local
-    // edits. The remembered source is only used to seed a missing working DB.
-    if !db_path.exists() {
-        #[cfg(target_os = "ios")]
-        {
-            // Resolving an external file-provider bookmark can itself block
-            // the iOS launch thread. A missing local working copy therefore
-            // always starts empty; the user can explicitly open/import later.
-            if state.device_storage.last_library_path().is_some()
-                || state.device_storage.library_bookmark().is_some()
-            {
-                eprintln!("local working library is missing; skipping external auto-open on iOS");
-                clear_remembered_library(&state);
-            }
-        }
-        #[cfg(not(target_os = "ios"))]
-        restore_last_library(&state, &db_path);
-    }
-
     match open_or_reset_repository(&db_path) {
         Ok((repo, library_id, reset)) => {
             if reset {
-                clear_remembered_library(&state);
-            }
-            if let Err(error) = repo.enable_autosave(library_id.clone()) {
-                eprintln!("failed to enable library autosave: {error}");
+                eprintln!("created a fresh local library catalog");
             }
             let arc = Arc::new(repo);
             state.set_active_library_id(library_id.clone());
@@ -90,13 +52,9 @@ pub fn init_library_repository(app: &tauri::App) {
                 let mut guard = state.repository.lock().expect("repository mutex poisoned");
                 *guard = Some(Arc::clone(&arc));
             }
-            let autosave_library_id = library_id.clone();
             hydrate_media_roots_after_startup(app, arc, library_id);
-            crate::autosave::mark_dirty(autosave_library_id);
         }
-        Err(e) => eprintln!(
-            "failed to initialise both the saved and fallback libraries at {db_path:?}: {e}"
-        ),
+        Err(e) => eprintln!("failed to initialise the local library catalog at {db_path:?}: {e}"),
     }
 }
 
@@ -112,16 +70,18 @@ fn open_or_reset_repository(path: &Path) -> Result<(LibraryRepository, String, b
                 remove_sqlite_sidecars(path);
                 std::fs::rename(path, &quarantine).map_err(|error| {
                     format!(
-                        "saved library is invalid ({original_error}) and could not be moved to {}: {error}",
+                        "local library catalog is invalid ({original_error}) and could not be moved to {}: {error}",
                         quarantine.display()
                     )
                 })?;
                 eprintln!(
-                    "saved library is invalid ({original_error}); moved it to {} and starting empty",
+                    "local library catalog is invalid ({original_error}); moved it to {} and starting empty",
                     quarantine.display()
                 );
             } else {
-                eprintln!("could not open saved library ({original_error}); starting empty");
+                eprintln!(
+                    "could not open local library catalog ({original_error}); starting empty"
+                );
             }
             let (repo, id) = open_valid_repository(path)
                 .map_err(|error| format!("failed to create empty fallback library: {error}"))?;
@@ -138,72 +98,6 @@ fn open_valid_repository(path: &Path) -> Result<(LibraryRepository, String), Str
 
 fn quarantine_path(path: &Path) -> PathBuf {
     path.with_extension(format!("warble.invalid-{}", uuid::Uuid::new_v4()))
-}
-
-fn clear_remembered_library(state: &AppState) {
-    if let Err(error) = state.device_storage.set_library_source(None, None, None) {
-        eprintln!("failed to clear invalid last-library bookmark: {error}");
-    }
-}
-
-/// If the active DB has a `last_library_path` setting pointing to an
-/// existing file different from the active DB, copy that file over
-/// the active DB. If the file is gone, clear the setting.
-#[cfg(not(target_os = "ios"))]
-fn restore_last_library(state: &AppState, db_path: &std::path::Path) {
-    let Some(source) = state.device_storage.last_library_path() else {
-        return;
-    };
-    if !source.is_file() {
-        eprintln!(
-            "last library file no longer exists: {} — starting with existing library",
-            source.display()
-        );
-        clear_remembered_library(state);
-        return;
-    }
-    let staged = db_path.with_extension("warble.startup.tmp");
-    let _ = std::fs::remove_file(&staged);
-    if let Err(e) = std::fs::copy(&source, &staged) {
-        eprintln!(
-            "failed to restore last library from {}: {e} — starting empty",
-            source.display()
-        );
-        clear_remembered_library(state);
-        return;
-    }
-    if let Err(error) = open_valid_repository(&staged) {
-        eprintln!(
-            "last library {} is invalid ({error}) — starting empty",
-            source.display()
-        );
-        let _ = std::fs::remove_file(staged);
-        clear_remembered_library(state);
-        return;
-    }
-    remove_sqlite_sidecars(db_path);
-    if let Err(error) = std::fs::rename(&staged, db_path) {
-        eprintln!(
-            "failed to install last library from {}: {error} — starting empty",
-            source.display()
-        );
-        let _ = std::fs::remove_file(staged);
-        clear_remembered_library(state);
-        return;
-    }
-    match crate::commands::file_fingerprint(&source) {
-        Ok(fingerprint) => {
-            if let Err(error) =
-                state
-                    .device_storage
-                    .set_library_source(Some(&source), None, Some(fingerprint))
-            {
-                eprintln!("failed to remember restored library fingerprint: {error}");
-            }
-        }
-        Err(error) => eprintln!("failed to fingerprint restored library: {error}"),
-    }
-    eprintln!("restored last library from {}", source.display());
 }
 
 fn remove_sqlite_sidecars(db_path: &Path) {
@@ -242,7 +136,6 @@ pub fn init_settings_and_caches(app: &tauri::App) {
     thumbnails::set_disk_cache_max_entries(s.thumbnail_disk_max_entries);
     hd_image::set_disk_cache_max_entries(s.hd_image_disk_max_entries);
     full_image::set_memory_cache_capacity(s.full_image_memory_max_entries);
-    tasks::pool().set_bg_concurrency(s.background_pool_workers);
 }
 
 #[cfg(desktop)]
@@ -262,8 +155,60 @@ pub fn init_menu(_app: &tauri::App) {}
 
 pub fn rehydrate_media_roots(repo: &LibraryRepository, state: &AppState) {
     let catalog = scan_media_roots(repo, state);
+    sync_portable_photo_index(repo, state, &catalog);
     if let Ok(mut active) = state.catalog.lock() {
         *active = catalog;
+    }
+}
+
+/// Rebuild the local per-photo index from files which travel with the image.
+/// Errors are intentionally isolated to one photo: a read-only or temporarily
+/// unavailable item must not hide the rest of the media root.
+fn sync_portable_photo_index(repo: &LibraryRepository, state: &AppState, catalog: &LibraryCatalog) {
+    let mut effects = repo
+        .get_setting("photo_effects_v1")
+        .ok()
+        .flatten()
+        .and_then(|raw| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()
+        })
+        .unwrap_or_default();
+    let original_effects = effects.clone();
+    for key in catalog.photo_keys() {
+        let result = state.resolve_library_path(&key).and_then(|source| {
+            let portable_effects = crate::sidecar::read_effects(&source);
+            crate::sidecar::sync_photo_index(repo, &key, &source)?;
+            match portable_effects {
+                Some(Some(value)) => {
+                    effects.insert(key.clone(), value);
+                }
+                Some(None) => {
+                    effects.remove(&key);
+                }
+                None => {
+                    // Do not create an empty file for every photo at startup.
+                    // An actual effect, edit, or metadata read will create the
+                    // portable sidecar when that image needs one.
+                    if let Some(effect) = effects.get(&key) {
+                        crate::sidecar::write_effects(&source, Some(effect))?;
+                    }
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            eprintln!("failed to sync portable photo state for {key}: {error}");
+        }
+    }
+    if effects != original_effects {
+        match serde_json::to_string(&effects) {
+            Ok(raw) => {
+                if let Err(error) = repo.set_setting("photo_effects_v1", &raw) {
+                    eprintln!("failed to update local photo-effects index: {error}");
+                }
+            }
+            Err(error) => eprintln!("failed to serialize local photo-effects index: {error}"),
+        }
     }
 }
 
@@ -315,13 +260,14 @@ fn hydrate_media_roots_after_startup(
             }
             restore_security_scoped_roots(&queued_app, &state, &library_id);
             let catalog = scan_media_roots(repo.as_ref(), &state);
+            sync_portable_photo_index(repo.as_ref(), &state, &catalog);
             if state.active_library_id().ok().as_deref() != Some(library_id.as_str()) {
                 return;
             }
             if let Ok(mut active) = state.catalog.lock() {
                 *active = catalog;
             }
-            let _ = queued_app.emit("library-reloaded", ());
+            let _ = queued_app.emit("folders-rehydrated", ());
         });
     });
 }

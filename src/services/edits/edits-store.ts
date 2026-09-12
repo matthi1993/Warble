@@ -56,8 +56,7 @@ export function loadPhotoEdits(): Promise<void> {
   return loadPromise;
 }
 
-/** Drop all in-memory edits and re-fetch from the backend. Used
- *  after a library hot-swap so the new DB's edits are loaded. */
+/** Drop all in-memory edits and re-fetch after a folder-sidecar rescan. */
 export function reloadPhotoEdits(): Promise<void> {
   edits.clear();
   loaded = false;
@@ -158,7 +157,7 @@ export async function flushPhotoEdit(path: string): Promise<void> {
   if (failedPersists.has(path)) await runPersist(path);
 }
 
-/** Flush every photo's pending edit before a library is copied or replaced. */
+/** Flush every pending edit before a media root is disconnected. */
 export async function flushAllPhotoEdits(): Promise<void> {
   if (loadPromise) await loadPromise;
   const paths = new Set(pendingPersists.keys());

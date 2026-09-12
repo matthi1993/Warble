@@ -8,25 +8,9 @@
 //! to hand the canvas the original decoded bytes (or, for RAW, the
 //! developed preview bytes).
 //!
-//! ## Priority + cancellation
-//!
-//! All image work is dispatched through [`crate::tasks`], a two-tier
-//! priority pool:
-//!
-//! * `urgent` / `foreground` jobs land on a dedicated foreground pool
-//!   reserved for the photo the user is actively viewing and the
-//!   thumbnails currently on screen.
-//! * `background` jobs (folder-wide thumbnail batches, neighbour
-//!   prefetches) run on a separate pool so they cannot block a
-//!   foreground decode.
-//!
-//! The frontend supplies an optional `request_id`; calling
-//! [`cancel_image_request`] with that id flips a cooperative cancel
-//! flag. Jobs that haven't yet started skip their work entirely;
-//! running jobs poll the flag at every step they can and bail out
-//! with `Err("cancelled")` so the worker is freed for the next
-//! request — essential for the hot navigation case where the user
-//! flicks past a still-decoding photo.
+//! Image reads use a small worker queue. The active photo is urgent;
+//! visible thumbnails and filter metadata use normal priority. The frontend
+//! can cancel stale image requests during rapid navigation.
 
 use serde::Serialize;
 use tauri::ipc::Response;
@@ -40,20 +24,17 @@ use crate::tasks::{self, Priority};
 pub async fn get_thumbnail(
     photo_path: String,
     request_id: Option<u64>,
-    priority: Option<String>,
+    urgent: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    // Thumbnails default to background — folder batches and offscreen
-    // cards both come through here, and the only call sites that
-    // matter for latency (active photo's preview thumbnail and
-    // visible thumbnail cards) explicitly upgrade priority.
-    let prio = match priority.as_deref() {
-        Some(s) => Priority::parse(Some(s)),
-        None => Priority::Background,
+    let priority = if urgent.unwrap_or(false) {
+        Priority::Urgent
+    } else {
+        Priority::Normal
     };
-    let bytes = tasks::run(prio, request_id, "thumbnail", move |cancel| {
+    let bytes = tasks::run(priority, request_id, move |cancel| {
         thumbnails::render(&resolved, &photo_path, cancel)
     })
     .await?;
@@ -64,18 +45,11 @@ pub async fn get_thumbnail(
 pub async fn get_full_image_bytes(
     photo_path: String,
     request_id: Option<u64>,
-    priority: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    // Default to urgent: the only consumer is the active canvas, and
-    // prefetch explicitly downgrades to `background`.
-    let prio = match priority.as_deref() {
-        Some(s) => Priority::parse(Some(s)),
-        None => Priority::Urgent,
-    };
-    let bytes = tasks::run(prio, request_id, "full_image", move |cancel| {
+    let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
         full_image::load_bytes(&resolved, cancel)
     })
     .await?;
@@ -89,17 +63,12 @@ pub async fn get_full_image_bytes(
 pub async fn get_raw_image_bytes(
     photo_path: String,
     request_id: Option<u64>,
-    priority: Option<String>,
     max_long_side: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    let prio = match priority.as_deref() {
-        Some(s) => Priority::parse(Some(s)),
-        None => Priority::Urgent,
-    };
-    let bytes = tasks::run(prio, request_id, "raw_image", move |cancel| {
+    let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
         let limit = max_long_side
             .filter(|value| *value > 0)
             .map(|value| value as usize);
@@ -114,18 +83,11 @@ pub async fn get_raw_image_bytes(
 pub async fn get_hd_image_bytes(
     photo_path: String,
     request_id: Option<u64>,
-    priority: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    // Default to urgent: the only consumer is the active canvas, and
-    // prefetch explicitly downgrades to `background`.
-    let prio = match priority.as_deref() {
-        Some(s) => Priority::parse(Some(s)),
-        None => Priority::Urgent,
-    };
-    let bytes = tasks::run(prio, request_id, "hd_image", move |cancel| {
+    let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
         hd_image::load_bytes(&resolved, &photo_path, cancel)
     })
     .await?;
@@ -153,9 +115,7 @@ pub async fn get_exif_metadata(
     state: State<'_, AppState>,
 ) -> Result<crate::imaging::exif::ExifMetadata, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
-    // EXIF reads are short and only fired for the active photo, so
-    // run them on the foreground pool.
-    tasks::run(Priority::Foreground, None, "exif", move |_cancel| {
+    tasks::run(Priority::Urgent, None, move |_cancel| {
         Ok::<_, String>(exif_cache::get_or_compute(&photo_path, &resolved))
     })
     .await
@@ -174,9 +134,8 @@ pub struct PhotoFilterInfo {
     pub date_taken: Option<String>,
 }
 
-/// Read filter metadata for a folder in one background task. Each item is
-/// served by the same fingerprinted EXIF cache used by image rendering and
-/// the detail panel, so subsequent consumers do not parse the source again.
+/// Read filter metadata for a requested batch. Each item is served by the
+/// same fingerprinted EXIF cache used by image rendering and the detail panel.
 #[tauri::command]
 pub async fn get_photo_filter_metadata(
     photo_paths: Vec<String>,
@@ -190,9 +149,8 @@ pub async fn get_photo_filter_metadata(
     }
 
     tasks::run(
-        Priority::Background,
+        Priority::Normal,
         request_id,
-        "filter_metadata",
         move |cancel| {
             let mut result = Vec::with_capacity(requests.len());
             for (path, resolved) in requests {

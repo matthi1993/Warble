@@ -30,7 +30,6 @@ import {
   setVariantOverride,
   subscribeVariantOverrides,
 } from "@app/variant-store";
-import { prefetchHdImages } from "@app/hd-image-cache";
 import { getCacheSettings, subscribeCacheSettings } from "@app/cache-settings";
 import { applyRatingShortcut } from "@services/rating/rating-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
@@ -59,7 +58,7 @@ import type {
 } from "@ui/photos/pf-image-canvas";
 import "./views/full-view/pf-info-card";
 import "./views/full-view/pf-edit-side-panel";
-import "./views/full-view/pf-post-process-card";
+import "@features/editor/post-panel";
 import {
   getPostProcess,
   setPostProcessEnabled,
@@ -72,13 +71,8 @@ import {
   renderToolbar,
   type FullViewMenu,
 } from "./views/full-view/chrome";
-import type { EditTool, ToolHost } from "./views/full-view/tools/edit-tool";
-import { CropTool } from "./views/full-view/tools/crop-tool";
-import { ToneTool } from "./views/full-view/tools/tone-tool";
-import { CurveTool } from "./views/full-view/tools/curve-tool";
-import { ColorTool } from "./views/full-view/tools/color-tool";
-import { SharpenTool } from "./views/full-view/tools/sharpen-tool";
-import { GrainTool } from "./views/full-view/tools/grain-tool";
+import type { EditTool, ToolHost } from "@features/editor/tool";
+import { createEditorTools } from "@features/editor/registry";
 import {
   currentSelection,
   isEditableSelection,
@@ -146,7 +140,6 @@ export class PfFullView extends LitElement {
   private unsubscribeEdits: (() => void) | null = null;
   private unsubscribePostProcess: (() => void) | null = null;
   private unsubscribeCacheSettings: (() => void) | null = null;
-  private focusedPrefetch: { cancel(): void } | null = null;
 
   @state()
   private fullResolutionEnabled = getCacheSettings().full_resolution_enabled;
@@ -182,29 +175,7 @@ export class PfFullView extends LitElement {
   private openingIn = false;
 
   // --- Edit tools ----------------------------------------------------
-  private cropTool = new CropTool();
-  private toneTool = new ToneTool();
-  private colorTool = new ColorTool();
-  private curveTool = new CurveTool();
-  private sharpenTool = new SharpenTool();
-  private grainTool = new GrainTool();
-  private tools: EditTool[] = [
-   this.cropTool,
-   this.toneTool,
-   this.colorTool,
-   this.curveTool,
-   this.sharpenTool,
-   this.grainTool,
- ];
- /** Tools rendered under the "Edit" tab in the side panel. */
- private editTabTools: EditTool[] = [
-   this.cropTool,
-   this.toneTool,
-   this.colorTool,
-   this.curveTool,
-   this.sharpenTool,
-   this.grainTool,
- ];
+  private readonly tools: EditTool[] = createEditorTools("photo");
  /** The tool currently in foreground/interactive mode. Crop is the
   *  only one that takes over the canvas; tone runs passively. */
  @state()
@@ -263,14 +234,8 @@ export class PfFullView extends LitElement {
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
-    this.unsubscribeEdits = subscribePhotoEdits((path) => {
+    this.unsubscribeEdits = subscribePhotoEdits(() => {
       this.editsTick++;
-      // Empty path = store-wide "everything cleared" wildcard.
-      if (path === "") {
-        this.toneTool.invalidateMirror();
-        this.curveTool.invalidateMirror();
-        this.colorTool.invalidateMirror();
-      }
     });
     // Reflect global post-process toggle in the footer label.
     this.unsubscribePostProcess = subscribePostProcess(() => {
@@ -278,7 +243,6 @@ export class PfFullView extends LitElement {
     });
     this.unsubscribeCacheSettings = subscribeCacheSettings((settings) => {
       this.fullResolutionEnabled = settings.full_resolution_enabled;
-      this.schedulePrefetch();
     });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
@@ -303,8 +267,6 @@ export class PfFullView extends LitElement {
     this.unsubscribePostProcess = null;
     this.unsubscribeCacheSettings?.();
     this.unsubscribeCacheSettings = null;
-    this.focusedPrefetch?.cancel();
-    this.focusedPrefetch = null;
   }
 
   willUpdate(changed: Map<string, unknown>): void {
@@ -330,7 +292,6 @@ export class PfFullView extends LitElement {
     if (changed.has("photos") || changed.has("index")) {
       const prevTarget = this.editTargetPath();
       if (prevTarget) void flushPhotoEdit(prevTarget);
-      this.schedulePrefetch();
       // Navigating cancels any active tool (crop hijack). Tool state
       // was already flushed above; we just close the canvas takeover.
       if (this.activeToolId) {
@@ -356,31 +317,6 @@ export class PfFullView extends LitElement {
   private syncToolsFromStore() {
     const target = this.editTargetPath();
     for (const t of this.tools) t.syncFromStore(target);
-  }
-
-  /**
-   * Keep the next swipe targets warm in the shared HD LRU. This focused
-   * prefetch is always enabled and is separate from the optional folder-wide
-   * HD pre-generation setting. Forward navigation wins each distance tier.
-   */
-  private schedulePrefetch() {
-    // Navigation invalidates the previous prediction. Cancelling before
-    // re-queueing prevents rapid swipes from accumulating stale neighbours.
-    this.focusedPrefetch?.cancel();
-    this.focusedPrefetch = null;
-    const total = this.photos.length;
-    if (total === 0) return;
-    const i = this.index;
-    if (i < 0 || i >= total) return;
-    const order: string[] = [];
-    for (let d = 1; d < total && order.length < 20; d++) {
-      const fwd = i + d;
-      if (fwd < total) order.push(this.photos[fwd].path);
-      if (order.length >= 20) break;
-      const back = i - d;
-      if (back >= 0) order.push(this.photos[back].path);
-    }
-    this.focusedPrefetch = prefetchHdImages(order);
   }
 
   private bgCss(bg: BgColor): string {
@@ -410,6 +346,10 @@ export class PfFullView extends LitElement {
 
   private activeTool(): EditTool | null {
     return this.tools.find((t) => t.id === this.activeToolId) ?? null;
+  }
+
+  private tool(id: string): EditTool | null {
+    return this.tools.find((tool) => tool.id === id) ?? null;
   }
 
   /** The path the canvas is actually displaying — i.e. the resolved
@@ -663,10 +603,16 @@ export class PfFullView extends LitElement {
     }
   }
 
+  toggleToolById(id: string) {
+    const tool = this.tool(id);
+    if (tool) this.toggleTool(tool);
+  }
+
   /** Tone card: passive, no canvas takeover. Shortcut B. */
   toggleToneCard() {
     this.openTab("edit");
-    this.toneTool.cardOpen = !this.toneTool.cardOpen;
+    const tool = this.tool("tone");
+    if (tool) tool.cardOpen = !tool.cardOpen;
     this.requestUpdate();
   }
 
@@ -676,7 +622,8 @@ export class PfFullView extends LitElement {
    */
   toggleCurveCard() {
     this.openTab("edit");
-    this.curveTool.cardOpen = !this.curveTool.cardOpen;
+    const tool = this.tool("curve");
+    if (tool) tool.cardOpen = !tool.cardOpen;
     this.requestUpdate();
   }
 
@@ -685,7 +632,8 @@ export class PfFullView extends LitElement {
    */
   toggleColorCard() {
     this.openTab("edit");
-    this.colorTool.cardOpen = !this.colorTool.cardOpen;
+    const tool = this.tool("color");
+    if (tool) tool.cardOpen = !tool.cardOpen;
     this.requestUpdate();
   }
 
@@ -1004,7 +952,7 @@ export class PfFullView extends LitElement {
           ?open=${true}
         ></pf-info-card>`;
       case "edit":
-       return this.editTabTools.map((t) => t.renderCard(this.toolHost));
+       return this.tools.map((t) => t.renderCard(this.toolHost));
      case "post":
         return html`<pf-post-process-card></pf-post-process-card>`;
       default:

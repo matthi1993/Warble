@@ -32,16 +32,7 @@ import {
   getRawImage,
   loadRawImage,
 } from "../../app/raw-image-cache";
-import {
-  isColorZero,
-  isCurveZero,
-  isToneZero,
-  defaultTone,
-  type ColorEdit,
-  type CropEdit,
-  type CurveEdit,
-  type ToneEdit,
-} from "@domain/edits";
+import type { CropEdit } from "@domain/edits";
 import {
   getPhotoEdit,
   subscribePhotoEdits,
@@ -51,20 +42,19 @@ import {
   subscribePostProcess,
   type PostProcessSettings,
 } from "@services/post-process/post-process-store";
-import {
-  getPhotoGrain,
-  getPhotoSharpen,
-  defaultSharpenForFormat,
-  isGrainZero,
-  subscribePhotoEffects,
-  type GrainSettings,
-  type SharpenSettings,
-} from "@services/effects/effects-store";
+import { subscribePhotoEffects } from "@services/effects/effects-store";
 import { classifyFormat } from "@domain/photo";
 // Side-effect import: wires the worker-backed decoder into both
 // image caches and exports the binary thumbnail decoder.
 import { decodeJpegBytes } from "./canvas/decoder-bootstrap";
-import { TonePipeline, type ToneSource } from "./canvas/tone-pipeline";
+import {
+  EditorRenderPipeline,
+  type EditorSource,
+} from "@features/editor/rendering/render-pipeline";
+import {
+  hasActiveEditorToolValues,
+  readEditorToolValues,
+} from "@features/editor/registry";
 import type { RawImageSource } from "./canvas/raw-source";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
 import type {
@@ -358,36 +348,17 @@ export class PfImageCanvas extends LitElement {
    * edit store. Applied at draw time when NOT in crop mode. */
   @state()
   private savedCrop: CropEdit | null = null;
-  /** Saved (persisted) tonal adjustments for the current photo. Applied
-   * at draw time as a `ctx.filter` chain on the bitmap. */
-  @state()
-  private savedTone: ToneEdit | null = null;
-  /** Saved (persisted) tone curve for the current photo. Applied
-   * after the basic tone math by the WebGL pipeline. */
-  @state()
-  private savedCurve: CurveEdit | null = null;
-  /** Saved (persisted) per-photo color (HSL) adjustments. */
-  @state()
-  private savedColor: ColorEdit | null = null;
   /** Snapshot of the global post-process settings (color + curve).
    * Updated via {@link subscribePostProcess}; redraws on change. */
   @state()
   private postProcess: PostProcessSettings = getPostProcess();
- /** Effective per-photo sharpening — either the explicitly stored
-  *  value (which may have strength=0 if the user disabled the
-   *  format default) or the format default (some for RAW, none for
-   *  JPG). Never null while {@link path} is set. */
-  @state()
-  private savedSharpen: SharpenSettings | null = null;
-  @state()
-  private savedGrain: GrainSettings | null = null;
   private editsUnsubscribe: (() => void) | null = null;
   private postProcessUnsubscribe: (() => void) | null = null;
   private effectsUnsubscribe: (() => void) | null = null;
   /** GPU pipeline for tone (brightness/contrast/saturation) adjustments.
    * Lazy-initialised on first use so photos with no edits never pay for
    * WebGL context creation. */
-  private tonePipeline = new TonePipeline();
+  private renderPipeline = new EditorRenderPipeline();
 
   /** rAF guard: coalesces multiple `scheduleDraw()` calls within a
    * single frame into one paint. Critical for slider drags, which
@@ -439,7 +410,7 @@ export class PfImageCanvas extends LitElement {
           (prevCrop?.rotation ?? 0) !== (this.savedCrop?.rotation ?? 0)
         ) {
           this.rotatedCache = null;
-          this.tonePipeline.invalidate();
+          this.renderPipeline.invalidate();
         }
         this.recomputeFit();
         // If the saved crop just got cleared (e.g. user hit revert)
@@ -472,41 +443,19 @@ export class PfImageCanvas extends LitElement {
     // and the WebGL pipeline can absorb them without a re-upload.
     this.effectsUnsubscribe = subscribePhotoEffects((path) => {
       if (path && path !== this.path) return;
-      this.refreshSavedEffects();
       this.scheduleDraw();
     });
   }
 
-  /** Pull the latest persisted crop + tone for the current photo into
-   * `savedCrop` / `savedTone`. Cheap (synchronous map lookup). */
+  /** Pull the persisted crop for the current photo into the canvas. */
   private refreshSavedCrop() {
     if (!this.path) {
       this.savedCrop = null;
-      this.savedTone = null;
-      this.savedCurve = null;
-      this.savedColor = null;
       return;
     }
     const edit = getPhotoEdit(this.path);
     this.savedCrop = edit?.crop ?? null;
-    this.savedTone = edit?.tone ?? null;
-    this.savedCurve = edit?.curve ?? null;
-    this.savedColor = edit?.color ?? null;
-    this.refreshSavedEffects();
   }
-
-  private refreshSavedEffects() {
-   if (!this.path) {
-     this.savedSharpen = null;
-     this.savedGrain = null;
-     return;
-   }
-   const ext = this.path.split(".").pop() ?? "";
-   const fmt = classifyFormat(ext);
-   this.savedSharpen =
-     getPhotoSharpen(this.path) ?? defaultSharpenForFormat(fmt);
-   this.savedGrain = getPhotoGrain(this.path);
- }
 
   /**
    * Pin the canvas to the HD bitmap for {@link EDIT_SETTLE_MS} so a
@@ -533,7 +482,7 @@ export class PfImageCanvas extends LitElement {
       // here forced a multi-megabyte texture upload on the first slider tick.
       if (!rawActive) {
         this.rotatedCache = null;
-        this.tonePipeline.invalidate();
+        this.renderPipeline.invalidate();
         if (this.userInteracted && prevW > 0) {
           const newSrc = this.effectiveSource();
           const newW = newSrc?.width ?? 0;
@@ -560,7 +509,7 @@ export class PfImageCanvas extends LitElement {
       const prevSrc = this.effectiveSource();
       const prevW = prevSrc?.width ?? 0;
       this.rotatedCache = null;
-      this.tonePipeline.invalidate();
+      this.renderPipeline.invalidate();
       if (this.userInteracted && prevW > 0) {
         const newSrc = this.effectiveSource();
         const newW = newSrc?.width ?? 0;
@@ -597,7 +546,7 @@ export class PfImageCanvas extends LitElement {
     this.postProcessUnsubscribe = null;
     this.effectsUnsubscribe?.();
     this.effectsUnsubscribe = null;
-    this.tonePipeline.dispose();
+    this.renderPipeline.dispose();
   }
 
   willUpdate(changed: Map<string, unknown>) {
@@ -654,7 +603,7 @@ export class PfImageCanvas extends LitElement {
       // `this.rotation` vs persisted `savedCrop.rotation`); drop the
       // rotated cache and tone texture so the next render rebakes.
       this.rotatedCache = null;
-      this.tonePipeline.invalidate();
+      this.renderPipeline.invalidate();
       requestAnimationFrame(() => this.onResize());
     }
     if (changed.has("horizonMode")) {
@@ -669,7 +618,7 @@ export class PfImageCanvas extends LitElement {
       this.offsetY = 0;
       // Rebuild rotation cache lazily; tone pipeline texture is
       // identity-keyed so the next render() will re-upload.
-      this.tonePipeline.invalidate();
+      this.renderPipeline.invalidate();
       // Re-derive a centred frame around the current aspect so we
       // don't end up with a frame partially outside the rotated
       // bitmap's bounds.
@@ -760,7 +709,6 @@ export class PfImageCanvas extends LitElement {
         once: true,
       });
       void loadRawImage(path, {
-        priority: "urgent",
         signal: rawAc.signal,
         maxLongSide: RAW_EDIT_PREVIEW_LONG_SIDE,
       })
@@ -799,7 +747,7 @@ export class PfImageCanvas extends LitElement {
     if (!source) return;
     const run = () => {
       if (!this.editing || this.effectiveSource()?.source !== source) return;
-      this.tonePipeline.warmup(source);
+      this.renderPipeline.warmup(source);
     };
     const ric = (window as unknown as {
       requestIdleCallback?: (cb: () => void) => number;
@@ -877,9 +825,10 @@ export class PfImageCanvas extends LitElement {
 
     // Phase 1: thumbnail (cached → near-instant). Always kick this off
     // immediately so even rapid arrow-key navigation shows something.
-    // Tagged `urgent` because this is the photo the user is looking at
-    // right now — it must jump ahead of any folder-wide batch.
-    const thumbHandle = requestThumbnail(path, "urgent");
+    // The current photo's thumbnail should jump ahead of visible grid work.
+    const thumbHandle = requestThumbnail(path, true);
+    const cancelThumbnail = () => thumbHandle.cancel();
+    ac.signal.addEventListener("abort", cancelThumbnail, { once: true });
     void thumbHandle.promise
       .then((bytes) => decodeJpegBytes(bytes))
       .then((bm) => {
@@ -900,14 +849,15 @@ export class PfImageCanvas extends LitElement {
       })
       .catch((err) => {
         if (!isCancellation(err)) console.warn("thumbnail preview failed", err);
-      });
+      })
+      .finally(() => ac.signal.removeEventListener("abort", cancelThumbnail));
 
     // Phase 2: HD encoded bytes → createImageBitmap. Issued immediately
     // so navigation feels snappy. The HD pipeline produces a 1920px-
     // long-side JPEG (cached on disk after the first hit), so the
     // decode is cheap enough that we don't need to defer it the way we
     // would for full-resolution decodes. Rapid arrow-key navigation is
-    // still safe: the priority pool drops queued jobs whose request id
+    // still safe: the worker queue drops queued jobs whose request id
     // is cancelled by `loadAbort`.
     void this.loadFullImage(path, ac);
 
@@ -984,7 +934,6 @@ export class PfImageCanvas extends LitElement {
         const onParentAbort = () => fullAc.abort();
         parent.signal.addEventListener("abort", onParentAbort, { once: true });
         void loadRawImage(path, {
-          priority: "urgent",
           signal: fullAc.signal,
         })
           .then((raw) => {
@@ -1009,7 +958,6 @@ export class PfImageCanvas extends LitElement {
       parent.signal.addEventListener("abort", onParentAbort, { once: true });
 
       void loadFullImage(path, {
-        priority: "urgent",
         signal: fullAc.signal,
       })
         .then((bm) => {
@@ -1044,7 +992,7 @@ export class PfImageCanvas extends LitElement {
     // The rotated cache and tone texture are keyed on the underlying
     // source bitmap; swapping in a new one must drop both.
     this.rotatedCache = null;
-    this.tonePipeline.invalidate();
+    this.renderPipeline.invalidate();
     if (this.userInteracted && prevW > 0) {
       const newSrc = this.effectiveSource();
       const newW = newSrc?.width ?? 0;
@@ -1063,7 +1011,7 @@ export class PfImageCanvas extends LitElement {
     this.fullRaw = raw;
     this.fullRawForPath = path;
     this.rotatedCache = null;
-    this.tonePipeline.invalidate();
+    this.renderPipeline.invalidate();
     if (this.userInteracted && prevW > 0) {
       const newSrc = this.effectiveSource();
       const newW = newSrc?.width ?? 0;
@@ -1082,9 +1030,8 @@ export class PfImageCanvas extends LitElement {
       // and stores the result for future hits / neighbour preloads.
       // Passing the abort signal lets the cache cancel the backend
       // byte fetch when the user navigates away before the decode
-      // starts running on the priority pool.
+      // starts running in the worker queue.
       const bm = await loadHdImage(path, {
-        priority: "urgent",
         signal: ac.signal,
       });
       if (ac.signal.aborted || this.path !== path) return;
@@ -1146,13 +1093,13 @@ export class PfImageCanvas extends LitElement {
    * `rotation` is 0 this is the original bitmap; otherwise we lazily
    * render a rotated offscreen canvas and hand that back. */
   private effectiveSource(): {
-    source: ToneSource;
+    source: EditorSource;
     width: number;
     height: number;
   } | null {
     const raw = this.currentRawSource;
     const bm = this.currentBitmap;
-    const base: ToneSource | null = raw ?? bm;
+    const base: EditorSource | null = raw ?? bm;
     if (!base) return null;
     // RAW working images are already in display orientation and are kept as
     // integer textures. Rotation remains supported for the bitmap path; the
@@ -1379,32 +1326,23 @@ export class PfImageCanvas extends LitElement {
       // omit multi-tap sharpening during a slider burst, then restore it on
       // the settle redraw; tone controls remain visually live at full rate.
       const interactiveRaw = rawSource && this.editingActive;
-      const postCurveActive = ppEnabled && !isCurveZero(pp.curve);
-      const postColorActive = ppEnabled && !isColorZero(pp.color);
-      const editColorActive =
-       !!this.savedColor && !isColorZero(this.savedColor);
-     const sharpenActive =
-       !interactiveRaw &&
-       !!this.savedSharpen &&
-       this.savedSharpen.strength > 0;
-     const postSharpenActive =
-       !interactiveRaw && ppEnabled && pp.sharpen.strength > 0;
-     const editGrainActive =
-       !interactiveRaw && !isGrainZero(this.savedGrain);
-     const grainActive =
-       !interactiveRaw && ppEnabled && !isGrainZero(pp.grain);
+      const photoValues: Record<string, unknown> = this.previewOriginal
+        ? {}
+        : { ...readEditorToolValues("photo", this.path) };
+      const postValues: Record<string, unknown> =
+        ppEnabled && !this.previewOriginal
+          ? { ...readEditorToolValues("post", this.path) }
+          : {};
+      if (interactiveRaw) {
+        photoValues.sharpen = null;
+        photoValues.grain = null;
+        postValues.sharpen = null;
+        postValues.grain = null;
+      }
       const applyPipeline =
-       rawSource ||
-       (!this.previewOriginal &&
-       (!isToneZero(this.savedTone) ||
-         !isCurveZero(this.savedCurve) ||
-         editColorActive ||
-         postCurveActive ||
-         postColorActive ||
-         sharpenActive ||
-         editGrainActive ||
-         postSharpenActive ||
-         grainActive));
+        rawSource
+        || hasActiveEditorToolValues(photoValues)
+        || hasActiveEditorToolValues(postValues);
       if (applyPipeline) {
         const visX0 = Math.max(0, x);
         const visY0 = Math.max(0, y);
@@ -1441,22 +1379,12 @@ export class PfImageCanvas extends LitElement {
             outW = Math.max(1, Math.round(outW * previewScale));
             outH = Math.max(1, Math.round(outH * previewScale));
           }
-          const toned = this.tonePipeline.render(
+          const toned = this.renderPipeline.render(
             src.source,
-            this.savedTone ?? defaultTone(),
+            { photo: photoValues, post: postValues },
             { sx: subSx, sy: subSy, sw: subSw, sh: subSh },
             outW,
             outH,
-            {
-              curve: this.savedCurve,
-              postCurve: postCurveActive ? pp.curve : null,
-              editColor: editColorActive ? this.savedColor : null,
-             postColor: postColorActive ? pp.color : null,
-             sharpen: sharpenActive ? this.savedSharpen : null,
-             editGrain: editGrainActive ? this.savedGrain : null,
-             postSharpen: postSharpenActive ? pp.sharpen : null,
-             grain: grainActive ? pp.grain : null,
-            }
           );
           if (toned) {
             ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
@@ -1983,17 +1911,17 @@ export class PfImageCanvas extends LitElement {
     if (!path) throw new Error("no photo is loaded");
 
     const ext = path.split(".").pop() ?? "";
-    let source: ToneSource;
+    let source: EditorSource;
     let sourceWidth: number;
     let sourceHeight: number;
 
     if (classifyFormat(ext) === "raw") {
-      const raw = await loadRawImage(path, { priority: "urgent" });
+      const raw = await loadRawImage(path);
       source = raw;
       sourceWidth = raw.width;
       sourceHeight = raw.height;
     } else {
-      const bitmap = await loadFullImage(path, { priority: "urgent" });
+      const bitmap = await loadFullImage(path);
       const rotation = this.previewOriginal ? 0 : this.normalizedRotation();
       if (rotation !== 0) {
         const rotated = this.buildRotatedCache(bitmap, rotation);
@@ -2010,7 +1938,6 @@ export class PfImageCanvas extends LitElement {
 
     if (this.path !== path) throw new Error("photo changed during export");
 
-    const edit = this.previewOriginal ? null : getPhotoEdit(path);
     const crop = this.previewOriginal ? null : this.savedCrop;
     const sx = crop ? clamp(crop.x, 0, 1) * sourceWidth : 0;
     const sy = crop ? clamp(crop.y, 0, 1) * sourceHeight : 0;
@@ -2022,28 +1949,19 @@ export class PfImageCanvas extends LitElement {
       : sourceHeight;
     const outW = Math.max(1, Math.round(sw));
     const outH = Math.max(1, Math.round(sh));
-    const editColor = edit?.color && !isColorZero(edit.color)
-      ? edit.color
-      : null;
-    const editCurve = edit?.curve && !isCurveZero(edit.curve)
-      ? edit.curve
-      : null;
-    const rendered = this.tonePipeline.render(
+    const photoValues: Record<string, unknown> = this.previewOriginal
+      ? {}
+      : { ...readEditorToolValues("photo", path) };
+    const rendered = this.renderPipeline.render(
       source,
-      edit?.tone ?? defaultTone(),
+      { photo: photoValues, post: {} },
       { sx, sy, sw, sh },
       outW,
       outH,
-      {
-        curve: editCurve,
-        editColor,
-        sharpen: this.previewOriginal ? null : this.savedSharpen,
-        editGrain: this.previewOriginal ? null : this.savedGrain,
-      },
     );
     if (!rendered) throw new Error("could not render edited image");
 
-    // TonePipeline's WebGL canvas does not preserve its drawing buffer, so
+    // The WebGL render canvas does not preserve its drawing buffer, so
     // copy the rendered pixels to a normal 2D canvas before encoding.
     const output = document.createElement("canvas");
     output.width = outW;

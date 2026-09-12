@@ -82,7 +82,7 @@ export function buildShortcuts(): readonly ShortcutDef[] {
       keys: ["c", "C"],
       description: "Crop tool",
       editModeOnly: true,
-      run: (h) => call(h, "toggleTool", (h as any).cropTool),
+      run: (h) => call(h, "toggleToolById", "crop"),
     },
     {
       label: "B",

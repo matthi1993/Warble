@@ -55,8 +55,7 @@ export function loadVariantOverrides(): Promise<void> {
   return loadPromise;
 }
 
-/** Drop all in-memory overrides and re-fetch from the backend. Used
- *  after a library hot-swap. */
+/** Drop all in-memory overrides and re-fetch after a folder-sidecar rescan. */
 export function reloadVariantOverrides(): Promise<void> {
   overrides.clear();
   lastJpegOverrides.clear();

@@ -19,6 +19,8 @@ import {
   normalizeColor,
   type ColorEdit,
   type CurveEdit,
+  type ToneEdit,
+  defaultTone,
 } from "@domain/edits";
 import {
   defaultGrain,
@@ -36,6 +38,7 @@ export interface PostProcessSettings {
    *  remain editable so users can audition a look without seeing
    *  it applied. */
   enabled: boolean;
+  tone: ToneEdit;
   color: ColorEdit;
   curve: CurveEdit;
   /** Global sharpening pass applied AFTER per-photo edits and the
@@ -46,11 +49,13 @@ export interface PostProcessSettings {
   grain: GrainSettings;
 }
 
-const STORAGE_KEY = "warble.postProcess.v3";
+const STORAGE_KEY = "warble.postProcess.v4";
+const LEGACY_STORAGE_KEY = "warble.postProcess.v3";
 
 function defaultSettings(): PostProcessSettings {
   return {
     enabled: true,
+    tone: defaultTone(),
     color: defaultColor(),
     curve: defaultCurve(),
     sharpen: defaultSharpen(),
@@ -60,12 +65,16 @@ function defaultSettings(): PostProcessSettings {
 
 function load(): PostProcessSettings {
   if (typeof localStorage === "undefined") return defaultSettings();
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = localStorage.getItem(STORAGE_KEY)
+    ?? localStorage.getItem(LEGACY_STORAGE_KEY);
   if (!raw) return defaultSettings();
   try {
     const parsed = JSON.parse(raw) as Partial<PostProcessSettings>;
     return {
       enabled: parsed.enabled ?? true,
+      tone: parsed.tone
+        ? { ...defaultTone(), ...parsed.tone }
+        : defaultTone(),
       color: parsed.color ? normalizeColor(parsed.color) : defaultColor(),
       curve: parsed.curve ?? defaultCurve(),
       sharpen: parsed.sharpen
@@ -143,6 +152,14 @@ export function setPostProcessEnabled(enabled: boolean): void {
 
 export function setPostColor(color: ColorEdit): void {
   commit({ ...getCommittedPostProcess(), color });
+}
+
+export function setPostTone(tone: ToneEdit): void {
+  commit({ ...getCommittedPostProcess(), tone });
+}
+
+export function resetPostTone(): void {
+  commit({ ...getCommittedPostProcess(), tone: defaultTone() });
 }
 
 export function setPostCurve(curve: CurveEdit): void {

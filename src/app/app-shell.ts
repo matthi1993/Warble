@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
 import type { Photo, PhotoFilterInfo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
@@ -15,31 +15,16 @@ import {
   reloadPhotoEffects,
   removePhotoEffectsUnderRoot,
 } from "@services/effects/effects-store";
-import { flushPostProcessPresets, reloadPostProcessPresets } from "@services/post-process/post-process-presets-store";
 import {
   applyRatingShortcut,
   loadPhotoRatings,
   reloadPhotoRatings,
 } from "@services/rating/rating-store";
-import {
-  clearThumbnailBatch,
-  dropAllThumbnailState,
-  getThumbnailProgress,
-  onThumbnailProgress,
-  startThumbnailBatch,
-  type ThumbnailBatchProgress,
-} from "./thumbnail-service";
-import { prewarmHdImageBytesForFolder } from "./hd-image-cache";
-import {
-  getHdPrewarmProgress,
-  onHdPrewarmProgress,
-  type HdPrewarmProgress,
-} from "./hd-image-cache";
+import { dropAllThumbnailState } from "./thumbnail-service";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
 import { beginAppBusy, subscribeAppBusy } from "./app-busy";
-import { getCacheSettings, subscribeCacheSettings } from "./cache-settings";
 import { cancelTaskRequest, nextRequestId } from "./task-manager";
 import "./pf-cache-settings";
 
@@ -61,11 +46,8 @@ interface PhotoFilterInfoResult extends PhotoFilterInfo {
   path: string;
 }
 
-// Small chunks form cancellation/preemption points between cold EXIF reads.
-// A short delay lets the first visible thumbnail requests reach the pool first;
-// those thumbnail reads also warm the same EXIF cache from bytes already read.
+// Small chunks form cancellation points between cold EXIF reads.
 const FILTER_METADATA_BATCH_SIZE = 32;
-const FILTER_METADATA_DELAY_MS = 120;
 const APP_ICON_URL = new URL("../../app-icon.png", import.meta.url).href;
 
 function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
@@ -285,16 +267,6 @@ export class WarbleApp extends LitElement {
       border-top: 1px solid var(--pf-border);
       background: var(--pf-surface-2);
     }
-    .library-actions {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: var(--pf-space-2);
-      padding-top: var(--pf-space-2);
-    }
-    .library-actions pf-button {
-      min-width: 0;
-      width: 100%;
-    }
     .empty-content-header {
       display: flex;
       align-items: center;
@@ -327,41 +299,6 @@ export class WarbleApp extends LitElement {
       margin: 0;
       accent-color: var(--pf-accent);
       cursor: pointer;
-    }
-    .library-card {
-      padding: var(--pf-space-2);
-      border: 1px solid var(--pf-border);
-      border-radius: var(--pf-radius-md);
-      background: var(--pf-surface);
-    }
-    .library-card-title {
-      display: flex;
-      align-items: center;
-      gap: var(--pf-space-2);
-      color: var(--pf-text-muted);
-      font-size: var(--pf-text-xs);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .library-path {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--pf-space-2);
-      min-width: 0;
-      padding: var(--pf-space-1) var(--pf-space-1) 0;
-      color: var(--pf-text-subtle);
-      font-size: var(--pf-text-xs);
-      line-height: 1.35;
-    }
-    .library-path pf-icon {
-      margin-top: 2px;
-    }
-    .library-path span {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
     .app-busy-overlay {
       position: fixed;
@@ -504,32 +441,8 @@ export class WarbleApp extends LitElement {
     .footer-label {
       flex-shrink: 0;
     }
-    .footer-bar {
-      flex: 1;
-      height: 4px;
-      background: var(--pf-surface-2);
-      border-radius: 999px;
-      overflow: hidden;
-      max-width: 320px;
-    }
-    .footer-bar-fill {
-      height: 100%;
-      background: var(--pf-accent);
-      transition: width 120ms ease-out;
-    }
-    .footer-count {
-      flex-shrink: 0;
-      font-variant-numeric: tabular-nums;
-    }
-    .footer-failed {
-      color: var(--pf-danger);
-    }
     .footer-spacer {
       flex: 1;
-    }
-    .footer-restart {
-      flex-shrink: 0;
-      margin-left: auto;
     }
 
     .ctx-menu-backdrop {
@@ -605,9 +518,6 @@ export class WarbleApp extends LitElement {
   private selectedFolderName: string | null = null;
 
   @state()
-  private libraryPath = "";
-
-  @state()
   private busyLabel: string | null = null;
 
   @state()
@@ -643,12 +553,6 @@ export class WarbleApp extends LitElement {
  @state()
  private fsLeftReveal = false;
 
- @state()
- private thumbProgress: ThumbnailBatchProgress = getThumbnailProgress();
-
-  @state()
-  private hdProgress: HdPrewarmProgress = getHdPrewarmProgress();
-
   @state()
   private contextMenu: {
     path: string;
@@ -668,36 +572,16 @@ export class WarbleApp extends LitElement {
     y: number;
   } | null = null;
 
-  private unsubscribeProgress: (() => void) | null = null;
-  private unsubscribeHdProgress: (() => void) | null = null;
   private unsubscribeCacheCleared: UnlistenFn | null = null;
   private unsubscribeAppBusy: (() => void) | null = null;
-  private unsubscribeCacheSettings: (() => void) | null = null;
-
-  /** Active HD-image disk-cache prewarm for the currently selected
-   * folder. Replaced (and the previous one cancelled) every time the
-   * user picks a new folder or restarts the thumbnail batch, so we
-   * never accumulate background HD jobs across folders. */
-  private hdPrewarmHandle: { cancel(): void } | null = null;
-  /** Batch id of the most recent thumbnail batch we kicked off HD
-   * prewarm for. Prevents firing prewarm twice for the same batch as
-   * progress events stream in. */
-  private hdPrewarmedBatchId: number = 0;
 
   /** Invalidates filter metadata requests when the active photo set changes. */
   private filterMetadataRequest = 0;
-  private filterMetadataTimer: number | null = null;
   private filterMetadataTaskId: number | null = null;
   private filterInfoByPath = new Map<string, PhotoFilterInfo>();
 
   @state()
   private filterMetadataLoading = false;
-
-  @state()
-  private autosaveError: string | null = null;
-
-  private backgroundWorkRequest = 0;
-  private backgroundWorkTimer: number | null = null;
 
   /** Suppresses the persistence side-effect during the initial restore
    * pass so we don't immediately write back what we just read. */
@@ -714,23 +598,12 @@ export class WarbleApp extends LitElement {
    this.unsubscribeAppBusy = subscribeAppBusy((label) => {
      this.busyLabel = label;
    });
-   this.unsubscribeCacheSettings = subscribeCacheSettings(() => this.startBackgroundWork());
-   this.unlistenLibraryReload = await listen("library-reloaded", () => {
-     void this.reloadLibraryWithSpinner();
+   this.unlistenFoldersRehydrated = await listen("folders-rehydrated", () => {
+     void this.onFoldersRehydrated();
    });
-   this.unlistenAutosaveError = await listen<string>("library-autosave-error", (event) => {
-     this.autosaveError = event.payload || null;
-   });
-   this.unsubscribeProgress = onThumbnailProgress((state) => {
-      this.thumbProgress = state;
-      this.maybeStartHdPrewarm(state);
-    });
-    this.unsubscribeHdProgress = onHdPrewarmProgress((state) => {
-      this.hdProgress = state;
-    });
     // Menu-driven "Clear Thumbnail Cache" wipes the disk cache; here we
-    // also drop the renderer-side binary JPEG LRU and re-issue the active
-    // batch so on-screen cards re-decode from source.
+    // also drop the renderer-side binary JPEG LRU so on-screen cards
+    // re-decode from source.
     void listen<string>("cache-cleared", (event) => {
       if (event.payload === "thumbnail_disk") {
         this.refreshAfterThumbnailCacheClear();
@@ -746,8 +619,6 @@ export class WarbleApp extends LitElement {
     } catch (err) {
       console.error("Failed to load imported folders", err);
     }
-
-    await this.loadLibraryPath();
 
     // Hydrate per-photo variant preferences before any thumbnail or
     // detail panel asks for an effective selection.
@@ -794,7 +665,6 @@ export class WarbleApp extends LitElement {
                 folderPath: this.selectedFolderId,
                 recursive: true,
               }));
-              this.startBackgroundWork();
             } catch (err) {
               console.error("Failed to refresh photos with subfolders", err);
             }
@@ -817,19 +687,15 @@ export class WarbleApp extends LitElement {
     }
   }
 
-  private unlistenLibraryReload: UnlistenFn | null = null;
-  private unlistenAutosaveError: UnlistenFn | null = null;
+  private unlistenFoldersRehydrated: UnlistenFn | null = null;
 
   private setPhotos(photos: Photo[]): void {
     this.pausePhotoFilterInfo();
-    // Reuse metadata that was already prepared while the user was in another
-    // folder. This makes a return visit immediately filterable; the background
-    // pass below then fills only the entries not already in memory.
+    // Reuse metadata that was prepared for filtering in another folder.
     this.photos = sortPhotosOldestFirst(photos.map((photo) => {
       const filterInfo = photo.filterInfo ?? this.filterInfoByPath.get(photo.path);
       return filterInfo ? { ...photo, filterInfo } : photo;
     }));
-    this.schedulePhotoFilterInfo();
   }
 
   private pausePhotoFilterInfo(): void {
@@ -838,30 +704,21 @@ export class WarbleApp extends LitElement {
       cancelTaskRequest(this.filterMetadataTaskId);
       this.filterMetadataTaskId = null;
     }
-    if (this.filterMetadataTimer !== null) {
-      window.clearTimeout(this.filterMetadataTimer);
-      this.filterMetadataTimer = null;
-    }
+    this.filterMetadataLoading = false;
   }
 
-  private schedulePhotoFilterInfo(): void {
+  /** Load folder metadata only when a metadata-based filter is used. */
+  private requestPhotoFilterInfo = (): void => {
+    if (this.fullViewIndex !== null || this.filterMetadataLoading) return;
     this.pausePhotoFilterInfo();
     const unprepared = this.photos.filter(
       (photo) => !this.filterInfoByPath.has(photo.path)
     );
     this.filterMetadataLoading = unprepared.length > 0;
-    // While full view is open, every background slot belongs to likely swipe
-    // targets. Resume the remaining folder metadata when the grid returns.
-    if (!this.filterMetadataLoading || this.fullViewIndex !== null) return;
+    if (!this.filterMetadataLoading) return;
     const request = this.filterMetadataRequest;
-    // Let the folder header and first visible thumbnails reach the pool before
-    // starting cold metadata reads. Thumbnail decoding warms the same EXIF
-    // cache, so this delay often turns the first metadata chunk into DB hits.
-    this.filterMetadataTimer = window.setTimeout(() => {
-      this.filterMetadataTimer = null;
-      void this.loadPhotoFilterInfo(unprepared, request);
-    }, FILTER_METADATA_DELAY_MS);
-  }
+    void this.loadPhotoFilterInfo(unprepared, request);
+  };
 
   private async loadPhotoFilterInfo(
     photos: Photo[],
@@ -903,8 +760,7 @@ export class WarbleApp extends LitElement {
             if (sortedIndex >= 0) this.fullViewIndex = sortedIndex;
           }
         }
-        // Yield between batches: filtering and scrolling stay responsive while
-        // a cold library's EXIF cache is populated.
+        // Yield between batches so the UI can update as metadata arrives.
         if (start + FILTER_METADATA_BATCH_SIZE < photos.length) {
           await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
         }
@@ -924,92 +780,17 @@ export class WarbleApp extends LitElement {
 
   disconnectedCallback(): void {
    super.disconnectedCallback();
-   this.unlistenLibraryReload?.();
-   this.unlistenAutosaveError?.();
+   this.unlistenFoldersRehydrated?.();
    window.removeEventListener("keydown", this.onGlobalKey);
    window.removeEventListener("mousemove", this.onMouseMove);
-   this.unsubscribeProgress?.();
-    this.unsubscribeProgress = null;
-    this.unsubscribeHdProgress?.();
-    this.unsubscribeHdProgress = null;
     this.unsubscribeCacheCleared?.();
     this.unsubscribeCacheCleared = null;
     this.unsubscribeAppBusy?.();
     this.unsubscribeAppBusy = null;
-    this.unsubscribeCacheSettings?.();
-    this.unsubscribeCacheSettings = null;
-    this.hdPrewarmHandle?.cancel();
-    this.hdPrewarmHandle = null;
-    if (this.filterMetadataTimer !== null) {
-      window.clearTimeout(this.filterMetadataTimer);
-    }
     if (this.filterMetadataTaskId !== null) {
       cancelTaskRequest(this.filterMetadataTaskId);
       this.filterMetadataTaskId = null;
     }
-    if (this.backgroundWorkTimer !== null) {
-      window.clearTimeout(this.backgroundWorkTimer);
-    }
-    clearThumbnailBatch();
-  }
-
-  /**
-   * Once the active thumbnail batch has finished running every job,
-   * kick off a folder-wide HD-image disk-cache prewarm at background
-   * priority. Idempotent across progress events for the same batch
-   * (we only fire it once per `batchId`) and cancels itself
-   * automatically when the user switches folders (which starts a new
-   * batch and thus advances `batchId`).
-   */
-  private maybeStartHdPrewarm(state: ThumbnailBatchProgress): void {
-    if (state.batchId === 0) return;
-    if (state.inProgress) return;
-    if (state.batchId === this.hdPrewarmedBatchId) return;
-    if (this.photos.length === 0) return;
-    this.hdPrewarmedBatchId = state.batchId;
-    this.hdPrewarmHandle?.cancel();
-    this.hdPrewarmHandle = prewarmHdImageBytesForFolder(
-      this.photos.map((p) => p.path)
-    );
-  }
-
-  /** Start only the folder-wide work enabled on this device. */
-  private startBackgroundWork(): void {
-    clearThumbnailBatch();
-    this.hdPrewarmHandle?.cancel();
-    this.hdPrewarmHandle = null;
-    this.hdPrewarmedBatchId = 0;
-    const request = ++this.backgroundWorkRequest;
-    if (this.backgroundWorkTimer !== null) {
-      window.clearTimeout(this.backgroundWorkTimer);
-    }
-    if (this.fullViewIndex !== null) {
-      this.backgroundWorkTimer = null;
-      return;
-    }
-    this.backgroundWorkTimer = window.setTimeout(() => {
-      this.backgroundWorkTimer = null;
-      if (request !== this.backgroundWorkRequest || this.photos.length === 0) return;
-      const settings = getCacheSettings();
-      const paths = this.photos.map((photo) => photo.path);
-      const thumbnailBatch = startThumbnailBatch(paths);
-      if (thumbnailBatch === 0 && settings.background_hd_previews_enabled) {
-        this.hdPrewarmHandle = prewarmHdImageBytesForFolder(paths);
-      }
-    }, 0);
-  }
-
-  /** Suspend folder-wide work while the full viewer owns the screen. */
-  private pauseBackgroundWork(): void {
-    this.backgroundWorkRequest++;
-    if (this.backgroundWorkTimer !== null) {
-      window.clearTimeout(this.backgroundWorkTimer);
-      this.backgroundWorkTimer = null;
-    }
-    clearThumbnailBatch();
-    this.hdPrewarmHandle?.cancel();
-    this.hdPrewarmHandle = null;
-    this.hdPrewarmedBatchId = 0;
   }
 
   private refreshAfterThumbnailCacheClear(): void {
@@ -1027,9 +808,6 @@ export class WarbleApp extends LitElement {
       .forEach((card) => {
         (card as HTMLElement & { reload?: () => void }).reload?.();
       });
-    if (this.photos.length > 0) {
-      this.startBackgroundWork();
-    }
   }
 
   /**
@@ -1216,7 +994,6 @@ export class WarbleApp extends LitElement {
     try {
       const selections = await invoke<FolderSelection[]>("select_folders_dialog");
       if (!selections || selections.length === 0) return;
-      await this.flushLibraryWrites();
       const imported: Folder[] = [];
       // Keep imports ordered so the backend can reliably reject nested or
       // otherwise overlapping roots selected in the same dialog. A parent
@@ -1261,7 +1038,7 @@ export class WarbleApp extends LitElement {
       const selections = await invoke<FolderSelection[]>("select_folders_dialog");
       const selection = selections?.[0];
       if (!selection) return;
-      await this.flushLibraryWrites();
+      await this.flushPendingPhotoWrites();
       this.imports = await invoke<Folder[]>("bind_media_root", {
         rootId: e.detail.rootId,
         path: selection.path,
@@ -1291,89 +1068,11 @@ export class WarbleApp extends LitElement {
     }
   }
 
-  private async flushLibraryWrites() {
+  private async flushPendingPhotoWrites() {
     await Promise.all([
       flushAllPhotoEdits(),
       flushPhotoEffects(),
-      flushPostProcessPresets(),
     ]);
-  }
-
-  private async openLibrary() {
-    const endBusy = beginAppBusy("Opening library…");
-    try {
-      const selection = await invoke<FolderSelection | null>("select_library_dialog");
-      if (!selection) return;
-      await this.flushLibraryWrites();
-      await invoke("load_library", {
-        path: selection.path,
-        bookmark: selection.bookmark,
-      });
-    } catch (err) {
-      console.error("Failed to open library", err);
-      void message(`Failed to open library: ${err}`, {
-        title: "Open Library",
-        kind: "error",
-      });
-    } finally {
-      endBusy();
-    }
-  }
-
-  private async newLibrary() {
-    const confirmed = await ask(
-      "Create a new empty library? Unsaved changes in the current library will be discarded.",
-      { title: "New Library", kind: "warning" },
-    );
-    if (!confirmed) return;
-
-    const endBusy = beginAppBusy("Creating library…");
-    try {
-      await this.flushLibraryWrites();
-      await invoke("create_new_library");
-    } catch (err) {
-      console.error("Failed to create library", err);
-      void message(`Failed to create library: ${err}`, {
-        title: "New Library",
-        kind: "error",
-      });
-    } finally {
-      endBusy();
-    }
-  }
-
-  private async saveLibrary() {
-    const endBusy = beginAppBusy("Saving library…");
-    try {
-      await this.flushLibraryWrites();
-      await invoke("save_open_library");
-      await this.loadLibraryPath();
-    } catch (err) {
-      console.error("Failed to save library", err);
-      void message(`Failed to save library: ${err}`, {
-        title: "Save Library",
-        kind: "error",
-      });
-    } finally {
-      endBusy();
-    }
-  }
-
-  private async saveLibraryAs() {
-    const endBusy = beginAppBusy("Saving library…");
-    try {
-      await this.flushLibraryWrites();
-      const path = await invoke<string | null>("save_library_as");
-      if (path) this.libraryPath = path;
-    } catch (err) {
-      console.error("Failed to save library", err);
-      void message(`Failed to save library: ${err}`, {
-        title: "Save Library As",
-        kind: "error",
-      });
-    } finally {
-      endBusy();
-    }
   }
 
   /** Re-walk every imported root from disk. The Rust side clears its
@@ -1397,7 +1096,6 @@ export class WarbleApp extends LitElement {
             folderPath: path,
             recursive: this.includeSubfolders,
           }));
-          this.startBackgroundWork();
         } catch (err) {
           console.error("Failed to refresh active folder", err);
         }
@@ -1421,7 +1119,6 @@ export class WarbleApp extends LitElement {
     this.selectedPhoto = null;
     this.fullViewIndex = null;
     this.setPhotos([]);
-    this.pauseBackgroundWork();
     void invoke("set_last_folder", { path: "" }).catch((err) =>
       console.error("Failed to clear last folder", err)
     );
@@ -1461,11 +1158,6 @@ export class WarbleApp extends LitElement {
     } else {
       this.selectedPhoto = null;
     }
-    // Cancel any in-flight HD prewarm for the previous folder so its
-    // background jobs don't keep running once the user has moved on.
-    this.hdPrewarmHandle?.cancel();
-    this.hdPrewarmHandle = null;
-    this.startBackgroundWork();
     void invoke("set_last_folder", { path }).catch((err) =>
       console.error("Failed to persist last folder", err)
     );
@@ -1529,7 +1221,6 @@ export class WarbleApp extends LitElement {
           if (this.fullViewIndex !== null) this.fullViewIndex = idx;
         }
       }
-      this.startBackgroundWork();
     } catch (error) {
       console.error("Failed to refresh after changing photo files", error);
     }
@@ -1601,7 +1292,7 @@ export class WarbleApp extends LitElement {
     this.folderContextMenu = null;
     try {
       removePhotoEffectsUnderRoot(rootId);
-      await this.flushLibraryWrites();
+      await this.flushPendingPhotoWrites();
       this.imports = await invoke<Folder[]>("remove_imported_folder", { rootId });
       const selectedIsInsideRoot =
         this.selectedFolderId === rootId ||
@@ -1612,7 +1303,6 @@ export class WarbleApp extends LitElement {
         this.selectedPhoto = null;
         this.fullViewIndex = null;
         this.setPhotos([]);
-        clearThumbnailBatch();
         void invoke("set_last_folder", { path: "" });
       }
     } catch (err) {
@@ -1664,12 +1354,6 @@ export class WarbleApp extends LitElement {
     void (this.renderRoot.querySelector("pf-cache-settings") as import("./pf-cache-settings").PfCacheSettings | null)?.open();
   };
 
-  private openTaskPool = () => {
-    (this.renderRoot.querySelector("pf-debug-overlay") as
-      | import("@ui/pf-debug-overlay").PfDebugOverlay
-      | null)?.show();
-  };
-
   private toggleIncludeSubfolders = async () => {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
@@ -1678,14 +1362,9 @@ export class WarbleApp extends LitElement {
           folderPath: this.selectedFolderId,
           recursive: this.includeSubfolders,
         }));
-        // Reset selection + restart background work so progress
-        // matches the new photo set.
+        // Reset selection for the new photo set.
         this.selectedPhoto = null;
         this.fullViewIndex = null;
-        this.hdPrewarmHandle?.cancel();
-        this.hdPrewarmHandle = null;
-        this.hdPrewarmedBatchId = 0;
-        this.startBackgroundWork();
       } catch (err) {
         console.error("Failed to toggle subfolder inclusion", err);
       }
@@ -1713,10 +1392,6 @@ export class WarbleApp extends LitElement {
       const isOpen = this.fullViewIndex !== null;
       if (!wasOpen && isOpen) {
         this.pausePhotoFilterInfo();
-        this.pauseBackgroundWork();
-      } else if (wasOpen && !isOpen) {
-        this.schedulePhotoFilterInfo();
-        this.startBackgroundWork();
       }
     }
     if (
@@ -1747,51 +1422,23 @@ export class WarbleApp extends LitElement {
     }
   }
 
-  /** Called when the backend hot-swaps the library DB. Re-fetches
-   *  everything from the new DB so the UI reflects the new library. */
-  private async onLibraryReloaded(): Promise<void> {
+  /** iOS finishes restoring folder permissions after the shell is visible. */
+  private async onFoldersRehydrated(): Promise<void> {
     await Promise.all([
       reloadPhotoEdits(),
       reloadPhotoEffects(),
-      reloadPostProcessPresets(),
       reloadPhotoRatings(),
       reloadVariantOverrides(),
     ]);
-    dropAllThumbnailState();
     try {
       this.imports = await invoke<Folder[]>("list_imported_folders");
     } catch (err) {
-      console.error("Failed to reload folders after library swap", err);
+      console.error("Failed to load restored folders", err);
+      return;
     }
-    await this.loadLibraryPath();
-    this.selectedPhoto = null;
-    this.fullViewIndex = null;
-    const first = this.imports.find((folder) => folder.available);
-    if (first) {
-      await this.selectFolder(first.id, first.path);
-    } else {
-      this.setPhotos([]);
-      this.selectedFolderId = null;
-      this.selectedFolderName = null;
-    }
-    this.requestUpdate();
-  }
-
-  private async reloadLibraryWithSpinner(): Promise<void> {
-    const endBusy = beginAppBusy("Opening library…");
-    try {
-      await this.onLibraryReloaded();
-    } finally {
-      endBusy();
-    }
-  }
-
-  private async loadLibraryPath(): Promise<void> {
-    try {
-      this.libraryPath = await invoke<string>("get_open_library_path");
-    } catch (err) {
-      console.error("Failed to load current library path", err);
-      this.libraryPath = "";
+    if (this.selectedFolderId === null) {
+      const first = this.imports.find((folder) => folder.available);
+      if (first) await this.selectFolder(first.id, first.path);
     }
   }
 
@@ -1850,33 +1497,6 @@ export class WarbleApp extends LitElement {
               Performance &amp; Caches
             </pf-button>
           </div>
-          <div class="library-card">
-            <div class="library-card-title">
-              <pf-icon name="save"></pf-icon>
-              Library
-            </div>
-            <div class="library-actions">
-              <pf-button @click=${this.newLibrary}>
-                <pf-icon name="file-plus"></pf-icon>
-                New
-              </pf-button>
-              <pf-button @click=${this.openLibrary}>
-                <pf-icon name="folder"></pf-icon>
-                Open
-              </pf-button>
-              <pf-button @click=${this.saveLibrary}>
-                <pf-icon name="save"></pf-icon>
-                Save
-              </pf-button>
-              <pf-button @click=${this.saveLibraryAs}>Save As…</pf-button>
-            </div>
-          </div>
-          ${this.libraryPath
-            ? html`<div class="library-path" title=${this.libraryPath}>
-                <pf-icon name="folder"></pf-icon>
-                <span>${this.libraryPath}</span>
-              </div>`
-            : null}
         </div>
       </aside>
     `;
@@ -1900,13 +1520,14 @@ export class WarbleApp extends LitElement {
         @photo-open=${this.onPhotoOpen}
         @photo-context-menu=${this.onPhotoContextMenu}
         @toggle-include-subfolders=${this.toggleIncludeSubfolders}
+        @filter-metadata-request=${this.requestPhotoFilterInfo}
       >
-        ${!this.libraryPath || this.selectedFolderId === null
+        ${this.selectedFolderId === null
           ? html`<div class="welcome">
               <div class="welcome-inner">
                 <img src=${APP_ICON_URL} alt="Warble" />
                 <h1>Warble</h1>
-                <p>Open a library or add a folder to get started.</p>
+                <p>Add a folder to get started.</p>
               </div>
             </div>`
           : this.photos.length === 0
@@ -1995,8 +1616,7 @@ export class WarbleApp extends LitElement {
       ${this.renderFooter()}
       ${this.renderContextMenu()}
       ${this.renderFolderContextMenu()}
-      <pf-debug-overlay></pf-debug-overlay>
-      <pf-cache-settings @task-pool-open=${this.openTaskPool}></pf-cache-settings>
+      <pf-cache-settings></pf-cache-settings>
       ${this.busyLabel
         ? html`
             <div class="app-busy-overlay" aria-hidden="false">
@@ -2089,63 +1709,6 @@ export class WarbleApp extends LitElement {
   }
 
   private renderFooter() {
-    const t = this.thumbProgress;
-    const h = this.hdProgress;
-
-    if (this.autosaveError) {
-      return html`
-        <footer class="app-footer" role="status" aria-live="polite">
-          <span class="footer-failed" title=${this.autosaveError}>
-            Library autosave failed: ${this.autosaveError}
-          </span>
-          <span class="footer-spacer"></span>
-        </footer>
-      `;
-    }
-
-    // Thumbnail batch wins as long as it's running — it's the
-    // user-visible work that gates the grid showing pictures.
-    if (t.total > 0 && t.inProgress) {
-      const done = t.loaded + t.failed;
-      const pct = t.total === 0 ? 0 : Math.round((done / t.total) * 100);
-      return html`
-        <footer class="app-footer" role="status" aria-live="polite">
-          <span class="footer-label">Generating thumbnails…</span>
-          <div class="footer-bar">
-            <div class="footer-bar-fill" style="width: ${pct}%"></div>
-          </div>
-          <span class="footer-count">${done} / ${t.total}</span>
-          ${t.failed > 0
-            ? html`<span class="footer-failed">${t.failed} failed</span>`
-            : null}
-          ${this.renderRestartButton()}
-        </footer>
-      `;
-    }
-
-    // Once thumbnails are done, surface the HD-disk-cache prewarm
-    // progress in the same slot. Same visual treatment, different
-    // label, so the user knows there's still background work
-    // happening (and roughly how far along it is) without it being
-    // mistaken for a stalled grid.
-    if (h.total > 0 && h.inProgress) {
-      const done = h.loaded + h.failed;
-      const pct = h.total === 0 ? 0 : Math.round((done / h.total) * 100);
-      return html`
-        <footer class="app-footer" role="status" aria-live="polite">
-          <span class="footer-label">Building HD cache…</span>
-          <div class="footer-bar">
-            <div class="footer-bar-fill" style="width: ${pct}%"></div>
-          </div>
-          <span class="footer-count">${done} / ${h.total}</span>
-          ${h.failed > 0
-            ? html`<span class="footer-failed">${h.failed} failed</span>`
-            : null}
-          ${this.renderRestartButton()}
-        </footer>
-      `;
-    }
-
     return html`
       <footer class="app-footer" role="status" aria-live="polite">
         <span class="footer-label">Ready</span>
@@ -2153,47 +1716,6 @@ export class WarbleApp extends LitElement {
       </footer>
     `;
   }
-
-  /** Inline icon button shown next to the active progress bar. Cancels
-   * every queued + running task in the backend pool, drops the
-   * frontend's batch state, and re-kicks off thumbnail generation +
-   * HD prewarm for the active folder. Useful when the queue gets
-   * stuck or the user wants a clean retry without changing folders. */
-  private renderRestartButton() {
-    if (this.photos.length === 0) return null;
-    return html`
-      <pf-icon-button
-        class="footer-restart"
-        icon="rotate-cw"
-        label="Restart caching"
-        @click=${this.restartCaching}
-      ></pf-icon-button>
-    `;
-  }
-
-  private restartCaching = async () => {
-    if (this.photos.length === 0) return;
-    // Stop everything in flight first: the backend pool flips every
-    // CancelToken so workers bail out at their next checkpoint, then
-    // the frontend forgets the current thumbnail batch + HD prewarm
-    // so the next start() doesn't see stale progress.
-    try {
-      await invoke<number>("cancel_all_tasks");
-    } catch (err) {
-      console.warn("cancel_all_tasks failed", err);
-    }
-    this.hdPrewarmHandle?.cancel();
-    this.hdPrewarmHandle = null;
-    this.hdPrewarmedBatchId = 0;
-    clearThumbnailBatch();
-    // Re-issue the thumbnail batch. Already-cached entries return
-    // instantly from the disk cache and the bar will jump near 100%
-    // — that's expected: nothing remains to do for them. Anything
-    // missing or invalidated since last time is what the user
-    // actually wants to see refilled. `maybeStartHdPrewarm` re-fires
-    // HD prewarm once thumbnails settle.
-    this.startBackgroundWork();
-  };
 }
 
 declare global {

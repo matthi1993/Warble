@@ -25,6 +25,7 @@
     "paths": {
       "@ui/*": ["src/ui/*"],
       "@app/*": ["src/app/*"],
+      "@features/*": ["src/features/*"],
       "@domain/*": ["src/domain/*"],
       "@services/*": ["src/services/*"]
     }

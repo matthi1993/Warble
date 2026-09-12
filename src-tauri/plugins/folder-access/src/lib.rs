@@ -24,11 +24,6 @@ struct PickResponse {
 }
 
 #[derive(Deserialize)]
-struct LibraryResponse {
-    selection: Option<FolderGrant>,
-}
-
-#[derive(Deserialize)]
 struct ActionResponse {
     success: bool,
 }
@@ -83,42 +78,6 @@ pub fn prepare_folder<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-pub fn pick_library<R: Runtime>(app: &AppHandle<R>) -> Result<Option<FolderGrant>, String> {
-    app.state::<FolderAccess<R>>()
-        .0
-        .run_mobile_plugin::<LibraryResponse>("pickLibrary", ())
-        .map(|response| response.selection)
-        .map_err(|e| e.to_string())
-}
-
-pub fn export_library<R: Runtime>(
-    app: &AppHandle<R>,
-    source: &str,
-) -> Result<Option<FolderGrant>, String> {
-    app.state::<FolderAccess<R>>()
-        .0
-        .run_mobile_plugin::<LibraryResponse>("exportLibrary", ExportPayload { source })
-        .map(|response| response.selection)
-        .map_err(|e| e.to_string())
-}
-
-pub fn replace_library<R: Runtime>(
-    app: &AppHandle<R>,
-    source: &str,
-    destination: &str,
-) -> Result<FolderGrant, String> {
-    app.state::<FolderAccess<R>>()
-        .0
-        .run_mobile_plugin::<FolderGrant>(
-            "replaceLibrary",
-            ReplacePayload {
-                source,
-                destination,
-            },
-        )
-        .map_err(|e| e.to_string())
-}
-
 pub fn trash_files<R: Runtime>(app: &AppHandle<R>, paths: &[String]) -> Result<(), String> {
     let response = app
         .state::<FolderAccess<R>>()
@@ -154,17 +113,6 @@ fn serde_payload(multiple: bool) -> PickPayload {
 #[derive(Serialize)]
 struct BookmarkPayload<'a> {
     bookmark: &'a str,
-}
-
-#[derive(Serialize)]
-struct ReplacePayload<'a> {
-    source: &'a str,
-    destination: &'a str,
-}
-
-#[derive(Serialize)]
-struct ExportPayload<'a> {
-    source: &'a str,
 }
 
 #[derive(Serialize)]

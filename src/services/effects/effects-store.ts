@@ -206,7 +206,7 @@ export function loadPhotoEffects(): Promise<void> {
   return loadPromise;
 }
 
-/** Replace the in-memory effects with those in a newly opened library. */
+/** Replace in-memory effects after a folder-sidecar rescan. */
 export function reloadPhotoEffects(): Promise<void> {
   loadGeneration += 1;
   loaded = false;
@@ -217,8 +217,7 @@ export function reloadPhotoEffects(): Promise<void> {
   return loadPromise;
 }
 
-/** Flush the slider debounce and wait for SQLite before a library snapshot or
- * hot-swap. */
+/** Flush the slider debounce before a media root is disconnected. */
 export async function flushPhotoEffects(): Promise<void> {
   if (loadPromise) await loadPromise;
   if (persistTimer !== null) {

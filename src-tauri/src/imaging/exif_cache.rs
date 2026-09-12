@@ -67,12 +67,32 @@ pub fn init(repo: Arc<LibraryRepository>) {
 pub fn get(key: &str, path: &Path) -> Option<(u32, ExifMetadata)> {
     let repo = repo_slot().lock().ok()?.clone()?;
     let (mtime, size) = file_fingerprint(path)?;
-    let (cached_mtime, cached_size, orientation, metadata_json) =
-        repo.get_photo_exif(key).ok().flatten()?;
-    if cached_mtime != mtime || cached_size != size {
-        return None;
+    if let Some((cached_mtime, cached_size, orientation, metadata_json)) =
+        repo.get_photo_exif(key).ok().flatten()
+    {
+        if cached_mtime == mtime && cached_size == size {
+            if let Ok(metadata) = serde_json::from_str::<ExifMetadata>(&metadata_json) {
+                // Migrate an existing local EXIF cache lazily, only when the
+                // photo is actually used for a filter/detail/image request.
+                if crate::sidecar::read_metadata(path).is_none() {
+                    if let Err(error) = crate::sidecar::write_metadata(path, orientation, &metadata)
+                    {
+                        eprintln!(
+                            "failed to write EXIF sidecar for {}: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                return Some((orientation, metadata));
+            }
+        }
     }
-    let metadata = serde_json::from_str::<ExifMetadata>(&metadata_json).ok()?;
+    // A new device can answer its first filter/detail request from the small
+    // adjacent sidecar, then rebuild its private SQLite query index without
+    // opening the source image at all.
+    let (orientation, metadata) = crate::sidecar::read_metadata(path)?;
+    let json = serde_json::to_string(&metadata).ok()?;
+    let _ = repo.set_photo_exif(key, mtime, size, orientation, &json);
     Some((orientation, metadata))
 }
 
@@ -156,6 +176,12 @@ fn store(key: &str, path: &Path, orientation: u32, metadata: &ExifMetadata) {
         IDENTITY
     };
     let _ = repo.set_photo_exif(key, mtime, size, orient, &json);
+    if let Err(error) = crate::sidecar::write_metadata(path, orient, metadata) {
+        eprintln!(
+            "failed to write EXIF sidecar for {}: {error}",
+            path.display()
+        );
+    }
 }
 
 fn file_fingerprint(path: &Path) -> Option<(i64, i64)> {

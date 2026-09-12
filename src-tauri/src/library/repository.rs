@@ -1,4 +1,4 @@
-//! SQLite-backed persistence for the portable library catalog.
+//! SQLite-backed persistence for the device-local library catalog.
 //!
 //! The database stores only metadata — image files themselves stay on disk
 //! and are referenced by `<media-root UUID>/<relative path>` keys.
@@ -30,28 +30,6 @@ impl LibraryRepository {
         };
         repo.migrate()?;
         Ok(repo)
-    }
-
-    /// Notify the debounced snapshot worker after user-meaningful library
-    /// rows change. Cached EXIF is deliberately excluded: warming metadata
-    /// must not repeatedly rewrite a user-selected library file.
-    pub fn enable_autosave(&self, library_id: String) -> Result<(), String> {
-        self.install_change_hook(library_id, crate::autosave::mark_dirty)
-    }
-
-    fn install_change_hook<F>(&self, library_id: String, mut on_dirty: F) -> Result<(), String>
-    where
-        F: FnMut(String) + Send + 'static,
-    {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.update_hook(Some(
-            move |_action, database: &str, table: &str, _row_id| {
-                if database == "main" && is_autosave_table(table) {
-                    on_dirty(library_id.clone());
-                }
-            },
-        ));
-        Ok(())
     }
 
     fn migrate(&self) -> Result<(), String> {
@@ -229,6 +207,20 @@ impl LibraryRepository {
         Ok(())
     }
 
+    pub fn photo_rating(&self, path: &str) -> Result<Option<(i64, String, i64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT rating, label, rated_at FROM photo_ratings WHERE path = ?1",
+            params![path],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other.to_string()),
+        })
+    }
+
     /// Read a cached EXIF row (if any) along with the file fingerprint
     /// it was captured for.
     pub fn get_photo_exif(&self, path: &str) -> Result<Option<(i64, i64, u32, String)>, String> {
@@ -286,6 +278,13 @@ impl LibraryRepository {
         Ok(())
     }
 
+    pub fn delete_photo_exif(&self, path: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM photo_exif WHERE path = ?1", params![path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Return every persisted (path → edits-json) row.
     pub fn all_photo_edits(&self) -> Result<Vec<(String, String)>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -320,6 +319,20 @@ impl LibraryRepository {
         conn.execute("DELETE FROM photo_edits WHERE path = ?1", params![path])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn photo_edit(&self, path: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT edits FROM photo_edits WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other.to_string()),
+        })
     }
 
     /// Return every persisted (path → format, variant) override.
@@ -533,31 +546,6 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-
-    /// Write a clean, defragmented copy of the live database to `dest`
-    /// using SQLite's `VACUUM INTO`. Safe to call while the source DB
-    /// is open and being read/written; produces a single self-contained
-    /// file at `dest` (no WAL/SHM sidecars). The destination must not
-    /// already exist.
-    pub fn vacuum_into(&self, dest: &Path) -> Result<(), String> {
-        let dest_str = dest
-            .to_str()
-            .ok_or_else(|| "destination path is not valid UTF-8".to_string())?;
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // `VACUUM INTO` does not accept bound parameters; quote the
-        // path by doubling single quotes (SQLite identifier rule).
-        let quoted = dest_str.replace('\'', "''");
-        conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-}
-
-fn is_autosave_table(table: &str) -> bool {
-    matches!(
-        table,
-        "media_roots" | "photo_variants" | "photo_edits" | "photo_ratings" | "app_settings"
-    )
 }
 
 fn rewrite_root_paths(
@@ -776,12 +764,6 @@ fn migrate_to_v8(conn: &mut Connection) -> Result<(), String> {
         )?;
     }
 
-    // This value used to leak a device path into the shared library.
-    tx.execute(
-        "DELETE FROM app_settings WHERE key = 'last_library_path'",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
     tx.execute("DROP TABLE imported_folders", [])
         .map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO schema_version (version) VALUES (8)", [])
@@ -853,30 +835,6 @@ fn write_setting(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn autosave_hook_tracks_library_changes_but_not_exif_cache_writes() {
-        let dir = std::env::temp_dir().join(format!("warble-autosave-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
-        let changes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let observed = std::sync::Arc::clone(&changes);
-        repo.install_change_hook("library-a".to_string(), move |library_id| {
-            observed.lock().unwrap().push(library_id);
-        })
-        .unwrap();
-
-        repo.set_photo_exif("root/photo.jpg", 1, 2, 1, "{}")
-            .unwrap();
-        assert!(changes.lock().unwrap().is_empty());
-
-        repo.set_photo_rating_row("root/photo.jpg", 5, "green", 3)
-            .unwrap();
-        assert_eq!(changes.lock().unwrap().as_slice(), ["library-a"]);
-
-        drop(repo);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 
     #[test]
     fn migrates_legacy_absolute_paths_to_portable_keys() {

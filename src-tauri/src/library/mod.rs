@@ -16,6 +16,4 @@ pub use loader::init_library_repository;
 pub use loader::init_menu;
 pub use loader::init_settings_and_caches;
 pub use loader::init_thumbnail_cache;
-pub use loader::library_db_path;
 pub use loader::rehydrate_media_roots;
-pub use loader::restore_security_scoped_roots;

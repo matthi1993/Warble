@@ -12,7 +12,6 @@ interface UsageEntry { path: string | null; bytes: number; files: number }
 interface CacheUsage {
   thumbnail: UsageEntry;
   hd_image: UsageEntry;
-  bg_thread_capacity: number;
 }
 
 @customElement("pf-cache-settings")
@@ -45,7 +44,6 @@ export class PfCacheSettings extends LitElement {
     button:disabled { opacity: .55; cursor: default; }
     .usage { padding: 10px 12px; border-radius: var(--pf-radius-md); background: var(--pf-surface-2);
       color: var(--pf-text-muted); font-size: var(--pf-text-xs); line-height: 1.5; overflow-wrap: anywhere; }
-    .diagnostics { justify-content: flex-start; }
     .error { color: var(--pf-danger); font-size: var(--pf-text-xs); }
     @media (pointer: coarse) { select, button { min-height: 46px; } .row { min-height: 50px; } }
   `;
@@ -71,13 +69,6 @@ export class PfCacheSettings extends LitElement {
   }
 
   private close = () => { if (!this.saving) this.visible = false; };
-  private openTaskPool = () => {
-    this.visible = false;
-    this.dispatchEvent(new CustomEvent("task-pool-open", {
-      bubbles: true,
-      composed: true,
-    }));
-  };
   private setNumber(key: keyof CacheSettings, event: Event) {
     this.draft = { ...this.draft, [key]: Number((event.target as HTMLSelectElement).value) };
   }
@@ -108,23 +99,14 @@ export class PfCacheSettings extends LitElement {
         <header><h2 id="cache-title">Performance & Caches</h2><button @click=${this.close} aria-label="Close">Close</button></header>
         <main>
           <p class="note">These choices and all generated cache files stay on this device. They are never stored in or exported with a .warble library. Caches are off by default to protect memory and battery on iPad.</p>
-          <section><h3>Background work</h3>
-            ${this.toggle("background_thumbnails_enabled", "Generate off-screen thumbnails", "Processes the whole folder instead of only visible photos.", s.background_thumbnails_enabled)}
-            ${this.toggle("background_hd_previews_enabled", "Pre-generate HD previews", "Builds a 1920px preview for every photo in the folder.", s.background_hd_previews_enabled)}
+          <section><h3>Image quality</h3>
             ${this.toggle("full_resolution_enabled", "Load full resolution after a pause", "Best quality, but a single large photo can require 100 MB or more.", s.full_resolution_enabled)}
-            <div class="row"><label>Parallel background jobs<small>Keep this at 1 on iPad.</small></label><select .value=${String(s.background_pool_workers)} @change=${(e: Event) => this.setNumber("background_pool_workers", e)}>${this.options([1,2,4,8].filter(n => n <= (this.usage?.bg_thread_capacity ?? 8)), "jobs")}</select></div>
           </section>
           <section><h3>Device cache limits</h3>
             ${this.select("thumbnail_disk_max_entries", "Thumbnail disk cache", "Generated JPEG files", [0,1000,5000,10000,25000], "files")}
             ${this.select("hd_image_disk_max_entries", "HD preview disk cache", "Generated 1920px JPEG files", [0,500,1000,2000,5000], "files")}
             ${this.select("full_image_memory_max_entries", "Full-image byte cache", "Encoded originals retained in app memory", [0,2,4,8,16], "images")}
-            ${this.select("full_image_bitmap_max_entries", "Full-resolution bitmap cache", "The lightweight active + next HD previews are always retained separately; each full-resolution bitmap can be 100 MB+.", [1,2,4,8], "images")}
-          </section>
-          <section><h3>Diagnostics</h3>
-            <div class="row diagnostics">
-              <button type="button" @click=${this.openTaskPool}>Show Task Pool</button>
-            </div>
-            <p class="note">Shows queued, running, and recently completed image work.</p>
+            ${this.select("full_image_bitmap_max_entries", "Full-resolution bitmap cache", "Recently viewed HD previews are retained separately; each full-resolution bitmap can be 100 MB+.", [1,2,4,8], "images")}
           </section>
           ${this.usage ? html`<div class="usage">Currently on this device: ${this.usage.thumbnail.files} thumbnails (${this.formatBytes(this.usage.thumbnail.bytes)}) and ${this.usage.hd_image.files} HD previews (${this.formatBytes(this.usage.hd_image.bytes)}).<br>${this.usage.thumbnail.path ?? "Cache directory unavailable"}</div>` : nothing}
           ${this.error ? html`<div class="error">${this.error}</div>` : nothing}

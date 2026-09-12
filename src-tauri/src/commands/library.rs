@@ -328,6 +328,13 @@ pub fn refresh_folder(
         .ok_or_else(|| "media root needs reconnecting on this device".to_string())?;
     let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
     catalog.refresh_folder(&folder_path, &root_path)?;
+    for key in catalog.photo_keys() {
+        if !key.starts_with(root_id) {
+            continue;
+        }
+        let source = state.resolve_library_path(&key)?;
+        crate::sidecar::sync_photo_index(repo.as_ref(), &key, &source)?;
+    }
     Ok(catalog.roots())
 }
 

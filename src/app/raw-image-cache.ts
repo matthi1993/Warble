@@ -1,9 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  cancelTaskRequest,
-  nextRequestId,
-  type TaskPriority,
-} from "./task-manager";
+import { cancelTaskRequest, nextRequestId } from "./task-manager";
 import type { RawImageSource } from "@ui/photos/canvas/raw-source";
 
 const MAGIC = "WRAW16\0\0";
@@ -15,22 +11,13 @@ const HOST_IS_LITTLE_ENDIAN =
 interface PendingEntry {
   promise: Promise<RawImageSource>;
   requestId: number;
-  priority: TaskPriority;
   refcount: number;
 }
 
 const cache = new Map<string, RawImageSource>();
 const pending = new Map<string, PendingEntry>();
 const MAX_RAW_IMAGES = 1;
-const PRIORITY_RANK: Record<TaskPriority, number> = {
-  urgent: 0,
-  foreground: 1,
-  nearby: 2,
-  background: 3,
-};
-
 export interface LoadOptions {
-  priority?: TaskPriority;
   signal?: AbortSignal;
   /** Optional reduced working image for future thumbnail/edit previews. */
   maxLongSide?: number;
@@ -48,7 +35,6 @@ export function loadRawImage(
   path: string,
   options: LoadOptions = {},
 ): Promise<RawImageSource> {
-  const priority = options.priority ?? "urgent";
   const signal = options.signal;
   if (signal?.aborted) {
     return Promise.reject(new DOMException("aborted", "AbortError"));
@@ -61,11 +47,8 @@ export function loadRawImage(
   if (cached) return Promise.resolve(cached);
 
   let entry = pending.get(key);
-  if (
-    !entry ||
-    PRIORITY_RANK[entry.priority] > PRIORITY_RANK[priority]
-  ) {
-    entry = startLoad(key, path, priority, options.maxLongSide);
+  if (!entry) {
+    entry = startLoad(key, path, options.maxLongSide);
   } else {
     entry.refcount += 1;
   }
@@ -100,14 +83,12 @@ export function loadRawImage(
 function startLoad(
   key: string,
   path: string,
-  priority: TaskPriority,
   maxLongSide: number | undefined,
 ): PendingEntry {
   const requestId = nextRequestId();
   const entry: PendingEntry = {
     promise: undefined as unknown as Promise<RawImageSource>,
     requestId,
-    priority,
     refcount: 1,
   };
   entry.promise = (async () => {
@@ -115,7 +96,6 @@ function startLoad(
       const buffer = await invoke<ArrayBuffer>("get_raw_image_bytes", {
         photoPath: path,
         requestId,
-        priority,
         maxLongSide: maxLongSide ?? null,
       });
       const image = parseRawImage(buffer);

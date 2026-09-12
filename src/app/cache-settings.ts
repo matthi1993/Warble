@@ -6,9 +6,6 @@ export interface CacheSettings {
   hd_image_disk_max_entries: number;
   full_image_memory_max_entries: number;
   full_image_bitmap_max_entries: number;
-  background_pool_workers: number;
-  background_thumbnails_enabled: boolean;
-  background_hd_previews_enabled: boolean;
   full_resolution_enabled: boolean;
 }
 
@@ -17,9 +14,6 @@ export const SAFE_CACHE_DEFAULTS: CacheSettings = {
   hd_image_disk_max_entries: 0,
   full_image_memory_max_entries: 0,
   full_image_bitmap_max_entries: 1,
-  background_pool_workers: 1,
-  background_thumbnails_enabled: false,
-  background_hd_previews_enabled: false,
   full_resolution_enabled: false,
 };
 

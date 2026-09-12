@@ -1,5 +1,5 @@
-//! Non-destructive edit data types persisted in the SQLite
-//! `photo_edits` table.
+//! Non-destructive edit data types persisted beside the image in a Warble
+//! JSON sidecar and indexed in SQLite's `photo_edits` table.
 //!
 //! Edits are applied at render time on the frontend canvas (see
 //! `pf-image-canvas`) by sub-region drawing of the decoded

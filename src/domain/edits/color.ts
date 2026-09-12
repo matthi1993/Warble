@@ -7,7 +7,7 @@
  * "Color Mixer" layout). Each one carries hue / saturation /
  * luminance shifts in [-100, 100]. Three global sliders apply on top.
  *
- * The shader (`tone-pipeline.ts`) blends each channel into its immediate
+ * The color tool shader blends each channel into its immediate
  * neighbours with complementary smoothstep falloffs. The weights form a
  * continuous partition across the hue wheel without long tails into distant
  * colors. A chroma-confidence ramp suppresses unstable hue classification in

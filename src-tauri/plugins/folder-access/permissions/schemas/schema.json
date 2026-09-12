@@ -295,18 +295,6 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "Enables the exportLibrary command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-exportLibrary",
-          "markdownDescription": "Enables the exportLibrary command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the exportLibrary command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-exportLibrary",
-          "markdownDescription": "Denies the exportLibrary command without any pre-configured scope."
-        },
-        {
           "description": "Enables the openIn command without any pre-configured scope.",
           "type": "string",
           "const": "allow-openIn",
@@ -331,18 +319,6 @@
           "markdownDescription": "Denies the pickFolders command without any pre-configured scope."
         },
         {
-          "description": "Enables the pickLibrary command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-pickLibrary",
-          "markdownDescription": "Enables the pickLibrary command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the pickLibrary command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-pickLibrary",
-          "markdownDescription": "Denies the pickLibrary command without any pre-configured scope."
-        },
-        {
           "description": "Enables the prepareFolder command without any pre-configured scope.",
           "type": "string",
           "const": "allow-prepareFolder",
@@ -353,18 +329,6 @@
           "type": "string",
           "const": "deny-prepareFolder",
           "markdownDescription": "Denies the prepareFolder command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the replaceLibrary command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-replaceLibrary",
-          "markdownDescription": "Enables the replaceLibrary command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the replaceLibrary command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-replaceLibrary",
-          "markdownDescription": "Denies the replaceLibrary command without any pre-configured scope."
         },
         {
           "description": "Enables the resolveBookmark command without any pre-configured scope.",

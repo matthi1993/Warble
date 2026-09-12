@@ -10,18 +10,12 @@
  * Concurrency:
  *   - `get(path)` returns a cached bitmap synchronously if present,
  *     otherwise null. It also marks the entry as most-recently-used.
- *   - `loadFullImage(path, priority)` resolves to a bitmap, fetching +
- *     decoding only if the entry is missing. Concurrent loads for the
- *     same path share one in-flight decode (deduped via `pending`),
- *     unless a higher-priority caller arrives — in that case a fresh
- *     `urgent` request is issued so the active photo isn't stuck
- *     behind a low-priority neighbour prefetch.
- *   - `prefetchFullImages(paths)` is a fire-and-forget that touches
- *     existing entries (so they're protected by recency) and kicks
- *     off background decodes for the missing ones, in priority order.
+ *   - `loadFullImage(path)` resolves to a bitmap, fetching + decoding only
+ *     if the entry is missing. Concurrent loads for the same path share one
+ *     in-flight decode.
  *
  * Cancellation:
- *   The byte-fetch step is dispatched through the backend priority
+ *   The byte-fetch step is dispatched through the backend worker
  *   pool with a per-request id. When a caller no longer needs the
  *   result (typically because the user navigated to a different
  *   photo), it can pass an `AbortSignal` to `loadFullImage`; on abort
@@ -38,11 +32,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  cancelTaskRequest,
-  nextRequestId,
-  type TaskPriority,
-} from "./task-manager";
+import type { CacheSettings } from "./cache-settings";
+import { cancelTaskRequest, nextRequestId } from "./task-manager";
 
 /** Fallback used until the persisted setting is loaded from the backend. */
 const DEFAULT_MAX_ENTRIES = 1;
@@ -52,7 +43,6 @@ const cache = new Map<string, ImageBitmap>();
 
 interface PendingEntry {
   promise: Promise<ImageBitmap>;
-  priority: TaskPriority;
   /** Backend request id, used to cancel the byte fetch if every
    * caller has aborted. */
   requestId: number;
@@ -64,20 +54,7 @@ interface PendingEntry {
 const pending = new Map<string, PendingEntry>();
 let maxEntries = DEFAULT_MAX_ENTRIES;
 
-const PRIORITY_RANK: Record<TaskPriority, number> = {
-  urgent: 0,
-  foreground: 1,
-  nearby: 2,
-  background: 3,
-};
-
 let decodeBytes: ((buf: ArrayBuffer) => Promise<ImageBitmap>) | null = null;
-
-interface CacheSettings {
-  thumbnail_disk_max_entries: number;
-  full_image_memory_max_entries: number;
-  full_image_bitmap_max_entries: number;
-}
 
 /** Apply a new cap and evict oldest entries down to it. */
 function setMaxEntries(n: number): void {
@@ -128,15 +105,7 @@ export function getFullImage(path: string): ImageBitmap | null {
   return bm;
 }
 
-export function hasFullImage(path: string): boolean {
-  return cache.has(path);
-}
-
 export interface LoadOptions {
-  /** Priority for this request. Defaults to `urgent` so the canvas's
-   * own loads stay snappy without every call site having to spell it
-   * out. Prefetch explicitly downgrades to `background`. */
-  priority?: TaskPriority;
   /** When the signal aborts, the caller's promise rejects with
    * `AbortError`. If this was the last live caller for the path, the
    * backend job is also cancelled. */
@@ -147,7 +116,6 @@ export function loadFullImage(
   path: string,
   options: LoadOptions = {}
 ): Promise<ImageBitmap> {
-  const priority = options.priority ?? "urgent";
   const signal = options.signal;
 
   if (signal?.aborted) {
@@ -158,17 +126,10 @@ export function loadFullImage(
   if (cached) return Promise.resolve(cached);
 
   let entry = pending.get(path);
-  if (
-    entry &&
-    PRIORITY_RANK[entry.priority] <= PRIORITY_RANK[priority]
-  ) {
+  if (entry) {
     entry.refcount += 1;
   } else {
-    // Either no in-flight load, or one at a strictly lower priority.
-    // Issue a fresh request at the higher priority. The lower-priority
-    // job keeps running but its result will be replaced by ours when
-    // both land (last writer wins, both are functionally identical).
-    entry = startLoad(path, priority);
+    entry = startLoad(path);
   }
 
   const captured = entry;
@@ -200,7 +161,7 @@ export function loadFullImage(
   });
 }
 
-function startLoad(path: string, priority: TaskPriority): PendingEntry {
+function startLoad(path: string): PendingEntry {
   const decode = decodeBytes;
   if (!decode) {
     throw new Error("full-image decoder not configured");
@@ -209,7 +170,6 @@ function startLoad(path: string, priority: TaskPriority): PendingEntry {
   const requestId = nextRequestId();
   const entry: PendingEntry = {
     promise: undefined as unknown as Promise<ImageBitmap>,
-    priority,
     requestId,
     refcount: 1,
   };
@@ -219,14 +179,11 @@ function startLoad(path: string, priority: TaskPriority): PendingEntry {
       const buf = await invoke<ArrayBuffer>("get_full_image_bytes", {
         photoPath: path,
         requestId,
-        priority,
       });
       const bm = await decode(buf);
       store(path, bm);
       return bm;
     } finally {
-      // Only clear our slot if it's still us — a higher-priority load
-      // may have replaced this entry while we were running.
       if (pending.get(path) === entry) {
         pending.delete(path);
       }
@@ -246,39 +203,6 @@ function releaseRef(path: string, entry: PendingEntry): void {
   }
 }
 
-/**
- * Ensure the given paths are (or will be) in cache, in priority order:
- * earlier entries are touched/loaded first and are protected from
- * eviction by being most-recently-used. `paths` should be ordered from
- * highest priority (current photo) to lowest (farthest neighbour the
- * caller cares about). Up to `maxEntries` paths are honoured; extras
- * are ignored to avoid evicting work we just queued.
- */
-export function prefetchFullImages(paths: readonly string[]): void {
-  const limit = Math.min(paths.length, maxEntries);
-  // Walk lowest priority → highest, so the highest-priority path ends
-  // up most-recently-used after the loop (LRU eviction will spare it).
-  for (let i = limit - 1; i >= 0; i--) {
-    const p = paths[i];
-    if (cache.has(p)) {
-      // Touch.
-      const bm = cache.get(p)!;
-      cache.delete(p);
-      cache.set(p, bm);
-      continue;
-    }
-    if (pending.has(p)) continue;
-    // Fire-and-forget background decode. The neighbour prefetch must
-    // never block the active photo, so it lands on the background
-    // pool. We don't ref-count this because there's no caller to
-    // cancel — the result either lands in the LRU (and will be picked
-    // up by `getFullImage`) or fails harmlessly.
-    void loadFullImage(p, { priority: "background" }).catch((err) => {
-      console.warn("full image prefetch failed", p, err);
-    });
-  }
-}
-
 function store(path: string, bm: ImageBitmap): void {
   if (cache.has(path)) cache.delete(path);
   cache.set(path, bm);
@@ -289,11 +213,4 @@ function store(path: string, bm: ImageBitmap): void {
     cache.delete(oldestKey);
     oldest?.close?.();
   }
-}
-
-/** For tests / hot reload. Closes every cached bitmap. */
-export function clearFullImageCache(): void {
-  for (const bm of cache.values()) bm.close?.();
-  cache.clear();
-  pending.clear();
 }

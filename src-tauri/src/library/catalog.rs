@@ -18,6 +18,13 @@ pub struct LibraryCatalog {
 }
 
 impl LibraryCatalog {
+    /// Stable portable keys for every source file currently visible through
+    /// connected media roots. Used to hydrate the local SQLite index from
+    /// portable XMP/Warble sidecars after a scan.
+    pub fn photo_keys(&self) -> Vec<String> {
+        self.photos.keys().cloned().collect()
+    }
+
     /// Walk `root` recursively, register every photo found, and return the
     /// folder tree.
     pub fn import_root(

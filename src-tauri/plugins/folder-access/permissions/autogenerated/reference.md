@@ -10,32 +10,6 @@
 <tr>
 <td>
 
-`folder-access:allow-exportLibrary`
-
-</td>
-<td>
-
-Enables the exportLibrary command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`folder-access:deny-exportLibrary`
-
-</td>
-<td>
-
-Denies the exportLibrary command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `folder-access:allow-openIn`
 
 </td>
@@ -88,32 +62,6 @@ Denies the pickFolders command without any pre-configured scope.
 <tr>
 <td>
 
-`folder-access:allow-pickLibrary`
-
-</td>
-<td>
-
-Enables the pickLibrary command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`folder-access:deny-pickLibrary`
-
-</td>
-<td>
-
-Denies the pickLibrary command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `folder-access:allow-prepareFolder`
 
 </td>
@@ -133,32 +81,6 @@ Enables the prepareFolder command without any pre-configured scope.
 <td>
 
 Denies the prepareFolder command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`folder-access:allow-replaceLibrary`
-
-</td>
-<td>
-
-Enables the replaceLibrary command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`folder-access:deny-replaceLibrary`
-
-</td>
-<td>
-
-Denies the replaceLibrary command without any pre-configured scope.
 
 </td>
 </tr>

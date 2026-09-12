@@ -12,11 +12,12 @@ own which concerns.
   `src-tauri/gen/apple`).
 - Path aliases configured in both `tsconfig.json` and
   [vite.config.ts](vite.config.ts): `@domain/*`, `@services/*`, `@ui/*`,
-  `@app/*` → `src/{domain,services,ui,app}/*`.
+  `@features/*`, `@app/*` → their corresponding `src/` folders.
 
 ## Layering
 
-Four concentric layers; imports always point **inwards**.
+The core uses four concentric layers. Cross-layer product capabilities live
+in `features/` and are composed by `app/`.
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -65,6 +66,8 @@ Subfolders:
 - `rating/rating-store.ts` — per-photo star + color label.
 - `view-state/view-state-service.ts` — persisted bg/fit/sizing.
 - `exif/exif-service.ts` — read EXIF metadata via `get_exif_metadata`.
+- `effects/effects-store.ts` — per-photo shader effects.
+- `post-process/` — global post-process values and presets.
 
 ### `src/ui/`
 
@@ -78,6 +81,15 @@ out. Each component lives in its own file and registers itself via
 - `folders/` — folder tree row.
 - `photos/` — image canvas, thumbnail card, rating overlay.
 
+### `src/features/`
+
+Vertical product features that combine domain values, services, UI, and
+runtime behavior. Tool-specific code belongs here instead of being spread
+across the generic layers.
+
+- `editor/` — tool registry, shared tool contract, Edit/Post hosts, WebGL
+  composition, and one folder per editing tool.
+
 ### `src/app/`
 
 Application shell, route views, and orchestrators. Composes services
@@ -87,15 +99,15 @@ state machines.
 - `main.ts` — bootstrap, registers `pf-app-shell`.
 - `app-shell.ts` — top-level shell + router host.
 - `router.ts` — view stack management.
-- `views/full-view/` — modal photo viewer sub-components
-  (info / crop / basic edit cards, side panel, chrome render helpers,
-  scoped styles). Composed by [src/app/full-view.ts](src/app/full-view.ts).
+- `views/full-view/` — modal photo viewer shell components (info, side panel,
+  chrome render helpers, and scoped styles). Tool code lives in
+  `src/features/editor/`.
 - `photo-grid.ts`, `detail-panel.ts`, `folder-tree.ts`,
   `full-view.ts` — top-level views.
 - `task-manager.ts`, `thumbnail-service.ts`, `hd-image-cache.ts`,
-  `full-image-cache.ts`, `full-image-worker.ts` — orchestration of
-  image decoding and caching pipelines (live here, not in services,
-  because they coordinate workers + DOM `ImageBitmap` resources).
+  `full-image-cache.ts`, `full-image-worker.ts` — on-demand image
+  decoding and caching. The backend queue prioritises the active photo;
+  the frontend modules deduplicate requests and own `ImageBitmap` lifetimes.
 - `variant-store.ts` — file-format override store (still in `app/`
   because it sits between the variant store and on-disk preferences).
 - `types.ts`, `photo-variant.ts`, `edit-store.ts`, `rating-store.ts` —
@@ -111,10 +123,9 @@ state machines.
 - **Hard cap:** 500 lines, _except_ for genuinely cohesive units. Two
   documented exceptions exist today:
   - [src/ui/photos/pf-image-canvas.ts](src/ui/photos/pf-image-canvas.ts)
-    (~2600 lines) — WebGL tone pipeline, decoder-worker bootstrap,
-    gesture controller, crop overlay, and hit testing tangled
-    together. Splitting safely requires extracting four cooperating
-    classes; planned but deferred.
+    (~2600 lines) — image loading, gesture controller, crop overlay, and hit
+    testing remain coupled. WebGL tool rendering has moved to the editor
+    feature.
   - [src/app/full-view.ts](src/app/full-view.ts) (~1100 lines) —
     central state machine for the full-screen viewer (navigation,
     edit tool state, persistence flush, cursor idle, EXIF sync). The
@@ -136,7 +147,9 @@ never call `invoke` directly — they go through a service.
 1. **New value type or pure helper?** → `src/domain/<area>/`.
 2. **New IPC call or shared store?** → `src/services/<area>/`.
 3. **New visual widget reused in >1 place?** → `src/ui/<category>/`.
-4. **New view or shell logic?** → `src/app/` (or `src/app/views/...`
+4. **New editing tool?** → `src/features/editor/tools/<tool>/`, then register
+   it in `src/features/editor/registry.ts`.
+5. **New view or shell logic?** → `src/app/` (or `src/app/views/...`
    for sub-components of a specific view).
 
 Always import via the alias closest to the consumer's layer, never

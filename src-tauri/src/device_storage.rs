@@ -1,4 +1,4 @@
-//! Device-only state. Nothing in this file is copied into a `.warble` file.
+//! Device-only state. It stays in the app-data directory on this device.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,12 +7,6 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::settings::CacheSettings;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FileFingerprint {
-    pub size: u64,
-    pub content_hash: String,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct RootGrant {
@@ -25,12 +19,6 @@ struct RootGrant {
 struct DeviceData {
     #[serde(default)]
     cache_settings: Option<CacheSettings>,
-    #[serde(default)]
-    last_library_path: Option<String>,
-    #[serde(default)]
-    library_bookmark: Option<String>,
-    #[serde(default)]
-    library_fingerprint: Option<FileFingerprint>,
     // Legacy v8 fields. They are migrated to `root_grants` when loaded.
     #[serde(default)]
     root_bindings: HashMap<String, HashMap<String, String>>,
@@ -66,22 +54,6 @@ impl DeviceStorage {
         persist(&inner)
     }
 
-    pub fn last_library_path(&self) -> Option<PathBuf> {
-        self.inner
-            .lock()
-            .ok()?
-            .data
-            .last_library_path
-            .as_deref()
-            .map(PathBuf::from)
-    }
-
-    pub fn set_last_library_path(&self, path: Option<&Path>) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        inner.data.last_library_path = path.map(|p| p.to_string_lossy().into_owned());
-        persist(&inner)
-    }
-
     pub fn cache_settings(&self) -> Option<CacheSettings> {
         self.inner.lock().ok()?.data.cache_settings
     }
@@ -89,28 +61,6 @@ impl DeviceStorage {
     pub fn set_cache_settings(&self, settings: CacheSettings) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         inner.data.cache_settings = Some(settings);
-        persist(&inner)
-    }
-
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-    pub fn library_bookmark(&self) -> Option<String> {
-        self.inner.lock().ok()?.data.library_bookmark.clone()
-    }
-
-    pub fn library_fingerprint(&self) -> Option<FileFingerprint> {
-        self.inner.lock().ok()?.data.library_fingerprint.clone()
-    }
-
-    pub fn set_library_source(
-        &self,
-        path: Option<&Path>,
-        bookmark: Option<&str>,
-        fingerprint: Option<FileFingerprint>,
-    ) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        inner.data.last_library_path = path.map(|path| path.to_string_lossy().into_owned());
-        inner.data.library_bookmark = bookmark.map(str::to_string);
-        inner.data.library_fingerprint = fingerprint;
         persist(&inner)
     }
 

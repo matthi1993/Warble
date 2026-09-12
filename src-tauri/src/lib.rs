@@ -1,5 +1,4 @@
 mod app_state;
-mod autosave;
 mod caching;
 mod commands;
 mod device_storage;
@@ -8,6 +7,7 @@ mod library;
 #[cfg(desktop)]
 mod menu;
 mod settings;
+mod sidecar;
 mod tasks;
 
 use app_state::AppState;
@@ -23,10 +23,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            autosave::init(app.handle().clone());
-            // Spin up the priority task pool early so worker threads
-            // are warm before the first image request.
-            let _ = tasks::pool();
             library::init_thumbnail_cache(app);
             library::init_hd_image_cache(app);
             library::init_library_repository(app);
@@ -61,11 +57,8 @@ pub fn run() {
             commands::clear_thumbnail_cache,
             commands::clear_hd_image_cache,
             commands::clear_full_image_memory_cache,
-            commands::set_background_pool_workers,
             commands::set_cache_settings,
             commands::get_cache_disk_usage,
-            commands::get_task_stats,
-            commands::cancel_all_tasks,
             commands::reveal_in_file_manager,
             commands::open_photo_in_app,
             commands::get_photo_variants,
@@ -88,13 +81,6 @@ pub fn run() {
             commands::clear_photo_edit,
             commands::get_photo_ratings,
             commands::set_photo_rating,
-            commands::get_open_library_path,
-            commands::create_new_library,
-            commands::select_library_dialog,
-            commands::save_library,
-            commands::save_library_as,
-            commands::save_open_library,
-            commands::load_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

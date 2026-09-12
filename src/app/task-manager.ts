@@ -1,29 +1,5 @@
-/**
- * Front-end side of the backend's priority task pool.
- *
- * The Rust side (`src-tauri/src/tasks/`) splits image work into two
- * worker pools:
- *
- *   - **Foreground** (`urgent` + `foreground`): the photo currently
- *     on screen, the EXIF panel for it, and any thumbnail card the
- *     user is looking at.
- *   - **Nearby** (`nearby`): previews beside the active photo, on the
- *     memory-safe background lane but ahead of folder-wide work.
- *   - **Background** (`background`): folder-wide thumbnail and EXIF batches.
- *
- * Background work can never block foreground work because the two
- * pools have disjoint workers. Foreground work tagged `urgent` jumps
- * the foreground queue so a navigation away from the active photo
- * promptly re-tasks the workers.
- *
- * This module hands out monotonically-increasing request ids and
- * exposes a thin wrapper over the backend `cancel_image_request`
- * command so the canvas can drop in-flight decodes when the user
- * navigates.
- */
+/** Request IDs and cancellation for in-flight image reads. */
 import { invoke } from "@tauri-apps/api/core";
-
-export type TaskPriority = "urgent" | "foreground" | "nearby" | "background";
 
 let nextId = 1;
 /** Generate a process-unique request id. */

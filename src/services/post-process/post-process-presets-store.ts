@@ -4,7 +4,7 @@ import {
   defaultPostProcess,
   type PostProcessSettings,
 } from "./post-process-store";
-import { normalizeColor } from "@domain/edits";
+import { defaultTone, normalizeColor } from "@domain/edits";
 
 export type PostProcessPresetValues = Omit<PostProcessSettings, "enabled">;
 
@@ -19,6 +19,7 @@ const listeners = new Set<(presets: readonly PostProcessPreset[]) => void>();
 
 function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
   return structuredClone({
+    tone: settings.tone,
     color: settings.color,
     curve: settings.curve,
     sharpen: settings.sharpen,
@@ -37,6 +38,9 @@ function parse(raw: string): PostProcessPreset[] {
         id: item.id,
         name: item.name,
         values: structuredClone({
+          tone: values.tone
+            ? { ...defaultTone(), ...values.tone }
+            : defaults.tone,
           color: values.color ? normalizeColor(values.color) : defaults.color,
           curve: values.curve ?? defaults.curve,
           sharpen: values.sharpen ?? defaults.sharpen,
@@ -59,22 +63,16 @@ function loadLegacy(): PostProcessPreset[] {
 let presets = loadLegacy();
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
-let loadGeneration = 0;
 let persistChain: Promise<void> = Promise.resolve();
-let persistError: unknown = null;
 
 function persist(): Promise<void> {
   const presetsJson = JSON.stringify(presets);
   const operation = persistChain.then(() =>
     invoke<void>("set_post_process_presets", { presetsJson })
   );
-  persistChain = operation.then(
-    () => { persistError = null; },
-    (error) => {
-      persistError = error;
-      console.warn("post-process presets: failed to persist", error);
-    }
-  );
+  persistChain = operation.catch((error) => {
+    console.warn("post-process presets: failed to persist", error);
+  });
   return operation;
 }
 
@@ -88,10 +86,8 @@ export function getPostProcessPresets(): readonly PostProcessPreset[] {
 }
 
 async function hydrate(migrateLegacy: boolean): Promise<void> {
-  const generation = loadGeneration;
   try {
     const raw = await invoke<string | null>("get_post_process_presets");
-    if (generation !== loadGeneration) return;
     if (raw !== null) {
       presets = parse(raw);
     } else if (migrateLegacy && presets.length > 0) {
@@ -105,10 +101,8 @@ async function hydrate(migrateLegacy: boolean): Promise<void> {
   } catch (error) {
     console.warn("post-process presets: failed to load", error);
   } finally {
-    if (generation === loadGeneration) {
-      loaded = true;
-      notify();
-    }
+    loaded = true;
+    notify();
   }
 }
 
@@ -118,25 +112,6 @@ export function loadPostProcessPresets(): Promise<void> {
   if (loaded) return Promise.resolve();
   if (!loadPromise) loadPromise = hydrate(true);
   return loadPromise;
-}
-
-/** Drop the previous library's presets and load the newly opened library. */
-export function reloadPostProcessPresets(): Promise<void> {
-  loadGeneration += 1;
-  loaded = false;
-  loadPromise = null;
-  presets = [];
-  notify();
-  loadPromise = hydrate(false);
-  return loadPromise;
-}
-
-/** Wait until every preset change has reached SQLite before snapshotting or
- * replacing the active library. */
-export async function flushPostProcessPresets(): Promise<void> {
-  if (loadPromise) await loadPromise;
-  await persistChain;
-  if (persistError) await persist();
 }
 
 /** Save the current tool values. Reusing a name updates that preset. */

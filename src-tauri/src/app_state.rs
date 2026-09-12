@@ -26,16 +26,6 @@ impl AppState {
             .ok_or_else(|| "library repository not initialised".to_string())
     }
 
-    /// Hot-swap the repository. Drops the old Arc (closing its
-    /// SQLite connection when the last reference is gone) and
-    /// installs a new one. Used by `load_library` to swap in a
-    /// different library DB without restarting the app.
-    pub fn swap_repository(&self, new: Arc<LibraryRepository>) {
-        if let Ok(mut guard) = self.repository.lock() {
-            *guard = Some(new);
-        }
-    }
-
     pub fn set_active_library_id(&self, id: String) {
         if let Ok(mut guard) = self.active_library_id.lock() {
             *guard = Some(id);
