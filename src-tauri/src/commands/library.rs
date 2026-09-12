@@ -338,6 +338,22 @@ pub fn refresh_folder(
     Ok(catalog.roots())
 }
 
+/// Refresh the catalog entries in the changed photo's immediate directory.
+/// Variant writes/deletes never require rebuilding the folder tree.
+#[tauri::command]
+pub fn refresh_photo_parent(photo_path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let (root_id, _) = crate::library::split_portable_key(&photo_path)?;
+    let repo = state.repository()?;
+    let library_id = repo.library_id()?;
+    let root_path = state
+        .device_storage
+        .bindings_for(&library_id)
+        .remove(root_id)
+        .ok_or_else(|| "media root needs reconnecting on this device".to_string())?;
+    let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
+    catalog.refresh_photo_parent(&photo_path, &root_path)
+}
+
 /// Remove a top-level imported folder from the library without deleting any
 /// photos from disk.
 #[tauri::command]

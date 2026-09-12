@@ -469,6 +469,7 @@ export const fullViewStyles = css`
     min-width: 0;
     align-items: center;
     gap: 6px;
+    touch-action: manipulation;
     transition: background var(--pf-transition);
   }
   .footer-btn:hover {
@@ -483,6 +484,10 @@ export const fullViewStyles = css`
     background: var(--pf-surface);
     border-color: var(--pf-border);
   }
+  .footer-btn[aria-busy="true"] {
+    opacity: 1;
+    cursor: progress;
+  }
   .footer-btn[aria-pressed="true"] {
     background: var(--pf-accent);
     color: var(--pf-on-accent);
@@ -491,6 +496,19 @@ export const fullViewStyles = css`
   .footer-btn pf-icon {
     font-size: 0.95rem;
     flex: 0 0 auto;
+  }
+  .footer-btn-spinner {
+    width: 0.8rem;
+    height: 0.8rem;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: footer-btn-spin 0.7s linear infinite;
+  }
+  @keyframes footer-btn-spin {
+    to { transform: rotate(360deg); }
   }
   .footer-btn span {
     overflow: hidden;
@@ -541,6 +559,11 @@ export const fullViewStyles = css`
     }
     :host([fullscreen]) .edit-side-rail {
       width: 44px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .footer-btn-spinner {
+      animation-duration: 1.4s;
     }
   }
 `;

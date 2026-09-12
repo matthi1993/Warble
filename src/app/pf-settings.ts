@@ -1,12 +1,19 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   configureCacheSettings,
   getCacheSettings,
   saveCacheSettings,
   type CacheSettings,
 } from "./cache-settings";
+import {
+  exportPostProcessPresets,
+  importPostProcessPresets,
+  loadPostProcessPresets,
+} from "@services/post-process/post-process-presets-store";
 
 interface UsageEntry { path: string | null; bytes: number; files: number }
 interface CacheUsage {
@@ -14,8 +21,8 @@ interface CacheUsage {
   hd_image: UsageEntry;
 }
 
-@customElement("pf-cache-settings")
-export class PfCacheSettings extends LitElement {
+@customElement("pf-settings")
+export class PfSettings extends LitElement {
   static styles = css`
     :host { position: fixed; inset: 0; z-index: 12000; pointer-events: none; }
     .backdrop { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px;
@@ -28,7 +35,7 @@ export class PfCacheSettings extends LitElement {
     header { top: 0; border-bottom: 1px solid var(--pf-border); }
     footer { bottom: 0; justify-content: flex-end; border-top: 1px solid var(--pf-border); }
     h2 { margin: 0; flex: 1; font-size: var(--pf-text-lg); }
-    main { padding: 16px 18px; display: grid; gap: 18px; }
+    main { padding: 16px 18px; display: grid; gap: 22px; }
     section { display: grid; gap: 10px; }
     h3 { margin: 0; font-size: var(--pf-text-sm); }
     .note { margin: 0; color: var(--pf-text-muted); font-size: var(--pf-text-xs); line-height: 1.45; }
@@ -39,9 +46,11 @@ export class PfCacheSettings extends LitElement {
     input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--pf-accent); }
     select, button { min-height: 38px; border: 1px solid var(--pf-border); border-radius: var(--pf-radius-md);
       background: var(--pf-surface-2); color: var(--pf-text); padding: 0 11px; font: inherit; }
-    button { cursor: pointer; }
+    button { cursor: pointer; touch-action: manipulation; }
     button.primary { background: var(--pf-accent); color: var(--pf-accent-contrast, white); border-color: transparent; }
     button:disabled { opacity: .55; cursor: default; }
+    .preset-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .feedback { margin: 0; color: var(--pf-text-muted); font-size: var(--pf-text-xs); }
     .usage { padding: 10px 12px; border-radius: var(--pf-radius-md); background: var(--pf-surface-2);
       color: var(--pf-text-muted); font-size: var(--pf-text-xs); line-height: 1.5; overflow-wrap: anywhere; }
     .error { color: var(--pf-danger); font-size: var(--pf-text-xs); }
@@ -53,15 +62,12 @@ export class PfCacheSettings extends LitElement {
   @state() private usage: CacheUsage | null = null;
   @state() private saving = false;
   @state() private error = "";
+  @state() private presetFeedback = "";
 
   async open(): Promise<void> {
     this.visible = true;
     this.error = "";
-    // `configureCacheSettings()` is a one-time startup load. Its promise can
-    // therefore still resolve to the original snapshot after settings have
-    // been saved during this session. Always take the draft from the current
-    // shared snapshot after configuration has completed so reopening the
-    // sheet cannot restore stale selections.
+    this.presetFeedback = "";
     await configureCacheSettings();
     this.draft = { ...getCacheSettings() };
     try { this.usage = await invoke<CacheUsage>("get_cache_disk_usage"); }
@@ -69,21 +75,62 @@ export class PfCacheSettings extends LitElement {
   }
 
   private close = () => { if (!this.saving) this.visible = false; };
+
   private setNumber(key: keyof CacheSettings, event: Event) {
     this.draft = { ...this.draft, [key]: Number((event.target as HTMLSelectElement).value) };
   }
+
   private setBoolean(key: keyof CacheSettings, event: Event) {
     this.draft = { ...this.draft, [key]: (event.target as HTMLInputElement).checked };
   }
+
   private async save() {
     this.saving = true; this.error = "";
     try { await saveCacheSettings(this.draft); this.visible = false; }
     catch (error) { this.error = String(error); }
     finally { this.saving = false; }
   }
+
+  private async exportPresets() {
+    this.presetFeedback = "";
+    try {
+      await loadPostProcessPresets();
+      const path = await saveFile({
+        defaultPath: "warble-presets.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await writeTextFile(path, exportPostProcessPresets());
+      this.presetFeedback = "Presets exported.";
+    } catch (error) {
+      this.presetFeedback = `Export failed: ${String(error)}`;
+    }
+  }
+
+  private async importPresets() {
+    this.presetFeedback = "";
+    try {
+      await loadPostProcessPresets();
+      const selected = await openFile({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (!path) return;
+      const count = importPostProcessPresets(await readTextFile(path));
+      this.presetFeedback = count === 0
+        ? "No presets were found in that file."
+        : `${count} preset${count === 1 ? "" : "s"} imported.`;
+    } catch (error) {
+      this.presetFeedback = `Import failed: ${String(error)}`;
+    }
+  }
+
   private options(values: number[], unit: string) {
     return values.map((value) => html`<option value=${value}>${value === 0 ? "Off" : `${value.toLocaleString()} ${unit}`}</option>`);
   }
+
   private formatBytes(bytes: number) {
     if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
     if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -95,31 +142,43 @@ export class PfCacheSettings extends LitElement {
     if (!this.visible) return nothing;
     const s = this.draft;
     return html`<div class="backdrop" @click=${(e: MouseEvent) => { if (e.target === e.currentTarget) this.close(); }}>
-      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="cache-title">
-        <header><h2 id="cache-title">Performance & Caches</h2><button @click=${this.close} aria-label="Close">Close</button></header>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header><h2 id="settings-title">Settings</h2><button @click=${this.close} aria-label="Close">Close</button></header>
         <main>
-          <p class="note">These choices and all generated cache files stay on this device. They are never stored in or exported with a .warble library. Caches are off by default to protect memory and battery on iPad.</p>
-          <section><h3>Image quality</h3>
+          <section>
+            <h3>Performance &amp; Caches</h3>
+            <p class="note">These choices and all generated cache files stay on this device. They are never stored in or exported with a .warble library. Caches are off by default to protect memory and battery on iPad.</p>
+            <h3>Image quality</h3>
             ${this.toggle("full_resolution_enabled", "Load full resolution after a pause", "Best quality, but a single large photo can require 100 MB or more.", s.full_resolution_enabled)}
-          </section>
-          <section><h3>Device cache limits</h3>
+            <h3>Device cache limits</h3>
             ${this.select("thumbnail_disk_max_entries", "Thumbnail disk cache", "Generated JPEG files", [0,1000,5000,10000,25000], "files")}
             ${this.select("hd_image_disk_max_entries", "HD preview disk cache", "Generated 1920px JPEG files", [0,500,1000,2000,5000], "files")}
             ${this.select("full_image_memory_max_entries", "Full-image byte cache", "Encoded originals retained in app memory", [0,2,4,8,16], "images")}
             ${this.select("full_image_bitmap_max_entries", "Full-resolution bitmap cache", "Recently viewed HD previews are retained separately; each full-resolution bitmap can be 100 MB+.", [1,2,4,8], "images")}
+            ${this.usage ? html`<div class="usage">Currently on this device: ${this.usage.thumbnail.files} thumbnails (${this.formatBytes(this.usage.thumbnail.bytes)}) and ${this.usage.hd_image.files} HD previews (${this.formatBytes(this.usage.hd_image.bytes)}).<br>${this.usage.thumbnail.path ?? "Cache directory unavailable"}</div>` : nothing}
           </section>
-          ${this.usage ? html`<div class="usage">Currently on this device: ${this.usage.thumbnail.files} thumbnails (${this.formatBytes(this.usage.thumbnail.bytes)}) and ${this.usage.hd_image.files} HD previews (${this.formatBytes(this.usage.hd_image.bytes)}).<br>${this.usage.thumbnail.path ?? "Cache directory unavailable"}</div>` : nothing}
+          <section>
+            <h3>Presets</h3>
+            <p class="note">Export or import all post-processing presets as a JSON file. Imported presets are added to your existing presets.</p>
+            <div class="preset-actions">
+              <button type="button" @click=${this.exportPresets}>Export presets as JSON</button>
+              <button type="button" @click=${this.importPresets}>Import presets as JSON</button>
+            </div>
+            ${this.presetFeedback ? html`<p class="feedback" role="status">${this.presetFeedback}</p>` : nothing}
+          </section>
           ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
         </main>
         <footer><button @click=${this.close}>Cancel</button><button class="primary" ?disabled=${this.saving} @click=${this.save}>${this.saving ? "Saving…" : "Save on this device"}</button></footer>
       </div></div>`;
   }
+
   private toggle(key: keyof CacheSettings, title: string, detail: string, checked: boolean) {
     return html`<div class="row"><label>${title}<small>${detail}</small></label><input type="checkbox" .checked=${checked} @change=${(e: Event) => this.setBoolean(key, e)} /></div>`;
   }
+
   private select(key: keyof CacheSettings, title: string, detail: string, values: number[], unit: string) {
     return html`<div class="row"><label>${title}<small>${detail}</small></label><select .value=${String(this.draft[key])} @change=${(e: Event) => this.setNumber(key, e)}>${this.options(values, unit)}</select></div>`;
   }
 }
 
-declare global { interface HTMLElementTagNameMap { "pf-cache-settings": PfCacheSettings; } }
+declare global { interface HTMLElementTagNameMap { "pf-settings": PfSettings; } }

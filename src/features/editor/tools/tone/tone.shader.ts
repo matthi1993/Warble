@@ -1,5 +1,12 @@
 import type { ToolShaderModule } from "../../rendering/shader-types";
-import { defaultTone, isToneZero, type ToneEdit } from "@domain/edits";
+import { glslFloat } from "../../rendering/glsl";
+import {
+  defaultTone,
+  isToneZero,
+  TONE_GLOBAL_RESPONSE,
+  TONE_REGION_FALLOFFS,
+  type ToneEdit,
+} from "@domain/edits";
 
 function bindTone(
   set: (name: string, value: number) => void,
@@ -8,15 +15,15 @@ function bindTone(
 ): void {
   const value = { ...defaultTone(), ...(input as Partial<ToneEdit> | null) };
   const name = (key: string) => `u_${prefix}${prefix ? key[0].toUpperCase() + key.slice(1) : key}`;
-  set(name("temperature"), value.temperature / 100);
-  set(name("tint"), value.tint / 100);
-  set(name("exposure"), Math.pow(2, value.exposure / 100));
-  set(name("contrast"), Math.max(0, 1 + value.contrast / 200));
-  set(name("saturation"), Math.max(0, 1 + value.saturation / 100));
-  set(name("blacks"), value.blacks / 100);
-  set(name("shadows"), value.shadows / 100);
-  set(name("highlights"), value.highlights / 100);
-  set(name("whites"), value.whites / 100);
+  set(name("temperature"), value.temperature / TONE_GLOBAL_RESPONSE.valueScale);
+  set(name("tint"), value.tint / TONE_GLOBAL_RESPONSE.valueScale);
+  set(name("exposure"), Math.pow(2, value.exposure / TONE_GLOBAL_RESPONSE.exposureScale));
+  set(name("contrast"), Math.max(0, 1 + value.contrast / TONE_GLOBAL_RESPONSE.contrastScale));
+  set(name("saturation"), Math.max(0, 1 + value.saturation / TONE_GLOBAL_RESPONSE.saturationScale));
+  set(name("blacks"), value.blacks / TONE_GLOBAL_RESPONSE.valueScale);
+  set(name("shadows"), value.shadows / TONE_GLOBAL_RESPONSE.valueScale);
+  set(name("highlights"), value.highlights / TONE_GLOBAL_RESPONSE.valueScale);
+  set(name("whites"), value.whites / TONE_GLOBAL_RESPONSE.valueScale);
 }
 
 export const toneShader: ToolShaderModule = {
@@ -66,10 +73,10 @@ export const toneShader: ToolShaderModule = {
       int linearSource
     ) {
       col *= exposure;
-      float tempGain = temperature * 0.30;
+      float tempGain = temperature * ${glslFloat(TONE_GLOBAL_RESPONSE.temperatureGain)};
       col.r *= 1.0 + tempGain;
       col.b *= 1.0 - tempGain;
-      float tintGain = tint * 0.20;
+      float tintGain = tint * ${glslFloat(TONE_GLOBAL_RESPONSE.tintGain)};
       col.g *= 1.0 + tintGain;
       col.r *= 1.0 - tintGain * 0.5;
       col.b *= 1.0 - tintGain * 0.5;
@@ -83,18 +90,31 @@ export const toneShader: ToolShaderModule = {
           ? toolLinearToSrgbTone(workingLuma)
           : workingLuma;
         float bandLuma = clamp(toneLuma, 0.0, 1.0);
-        float wBlacks = smoothstep(0.0, 0.07, bandLuma)
-          * (1.0 - smoothstep(0.20, 0.40, bandLuma));
-        float wShadows = smoothstep(0.015, 0.16, bandLuma)
-          * (1.0 - smoothstep(0.48, 0.70, bandLuma));
-        float wHighlights = smoothstep(0.30, 0.52, bandLuma)
-          * (1.0 - smoothstep(0.88, 1.0, bandLuma));
-        float wWhites = smoothstep(0.64, 0.90, bandLuma);
+        float wBlacks = 1.0 - smoothstep(
+          ${glslFloat(TONE_REGION_FALLOFFS.blacks.start)},
+          ${glslFloat(TONE_REGION_FALLOFFS.blacks.end)},
+          bandLuma
+        );
+        float wShadows = 1.0 - smoothstep(
+          ${glslFloat(TONE_REGION_FALLOFFS.shadows.start)},
+          ${glslFloat(TONE_REGION_FALLOFFS.shadows.end)},
+          bandLuma
+        );
+        float wHighlights = smoothstep(
+          ${glslFloat(TONE_REGION_FALLOFFS.highlights.start)},
+          ${glslFloat(TONE_REGION_FALLOFFS.highlights.end)},
+          bandLuma
+        );
+        float wWhites = smoothstep(
+          ${glslFloat(TONE_REGION_FALLOFFS.whites.start)},
+          ${glslFloat(TONE_REGION_FALLOFFS.whites.end)},
+          bandLuma
+        );
         float toneOffset =
-            blacks * 0.12 * wBlacks
-          + shadows * 0.22 * wShadows
-          + highlights * 0.22 * wHighlights
-          + whites * 0.16 * wWhites;
+            blacks * ${glslFloat(TONE_REGION_FALLOFFS.blacks.strength)} * wBlacks
+          + shadows * ${glslFloat(TONE_REGION_FALLOFFS.shadows.strength)} * wShadows
+          + highlights * ${glslFloat(TONE_REGION_FALLOFFS.highlights.strength)} * wHighlights
+          + whites * ${glslFloat(TONE_REGION_FALLOFFS.whites.strength)} * wWhites;
         float targetToneLuma = max(toneLuma + toneOffset, 0.0);
         float targetWorkingLuma = linearSource == 1
           ? toolSrgbToLinearTone(targetToneLuma)

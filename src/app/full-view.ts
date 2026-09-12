@@ -731,8 +731,17 @@ export class PfFullView extends LitElement {
     return !!target && (hasEdits(target) || hasEffects(target));
   }
 
+  /** Ensure a newly-set busy state reaches the screen before an expensive
+   * image or filesystem operation starts on the next frame. */
+  private async paintBusyState(): Promise<void> {
+    await this.updateComplete;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+  }
+
   private saveVariant = async () => {
-    if (this.savingVariant) return;
+    if (this.savingVariant || this.deletingVariant || this.deletingPhoto) return;
     const photo = this.currentPhoto;
     const selection = photo ? currentSelection(photo) : null;
     const sourcePath = this.editTargetPath();
@@ -741,52 +750,44 @@ export class PfFullView extends LitElement {
     if (selection.format !== "jpg" && selection.format !== "raw") return;
 
     this.savingVariant = true;
-    this.requestUpdate();
     try {
-      await flushPhotoEdit(sourcePath);
-      const jpeg = await canvas.exportJpeg();
-      const jpegBytes = Array.from(jpeg);
+      // Let WebKit paint the busy state before full-resolution rendering and
+      // JPEG encoding occupy the main thread.
+      await this.paintBusyState();
       let number = 1;
-      let savedVariant: string | null = null;
+      let variant = "Edit";
+      let overwrite = false;
 
-      while (!savedVariant) {
-        const variant = number === 1 ? "Edit" : `Edit ${number}`;
-        try {
-          await invoke("save_photo_variant", {
-            photoPath: sourcePath,
-            variant,
-            jpegBytes,
-            overwrite: false,
-          });
-          savedVariant = variant;
-        } catch (error) {
-          if (!String(error).toLowerCase().includes("already exists")) {
-            throw error;
-          }
-          const next = number === 1 ? "Edit 2" : `Edit ${number + 1}`;
-          const overwrite = await ask(
-            `${variant}.jpg already exists. Overwrite it? Choose No to save as ${next}.`,
-            { title: "Save Variant", kind: "warning" },
-          );
-          if (overwrite) {
-            await invoke("save_photo_variant", {
-              photoPath: sourcePath,
-              variant,
-              jpegBytes,
-              overwrite: true,
-            });
-            savedVariant = variant;
-          } else {
-            number += 1;
-          }
+      while (await invoke<boolean>("photo_variant_exists", {
+        photoPath: sourcePath,
+        variant,
+      })) {
+        const next = number === 1 ? "Edit 2" : `Edit ${number + 1}`;
+        overwrite = await ask(
+          `${variant}.jpg already exists. Overwrite it? Choose No to save as ${next}.`,
+          { title: "Save Variant", kind: "warning" },
+        );
+        if (overwrite) {
+          break;
         }
+        number += 1;
+        variant = `Edit ${number}`;
       }
 
+      await flushPhotoEdit(sourcePath);
+      const jpegBytes = await canvas.exportJpeg();
+      await invoke("save_photo_variant", jpegBytes, {
+        headers: {
+          "photo-path": encodeURIComponent(sourcePath),
+          variant: encodeURIComponent(variant),
+          overwrite: String(overwrite),
+        },
+      });
       setVariantOverride(photo.path, {
         format: "jpg",
-        variant: savedVariant,
+        variant,
       });
-      this.dispatchCatalogChange("save", photo);
+      await this.dispatchCatalogChange("save", photo);
     } catch (error) {
       console.error("Failed to save photo variant", error);
       void message(`Failed to save variant: ${error}`, {
@@ -824,7 +825,7 @@ export class PfFullView extends LitElement {
   }
 
   private deleteVariant = async () => {
-    if (this.deletingVariant) return;
+    if (this.deletingVariant || this.savingVariant || this.deletingPhoto) return;
     const photo = this.currentPhoto;
     const selection = photo ? currentSelection(photo) : null;
     const sourcePath = this.editTargetPath();
@@ -838,6 +839,7 @@ export class PfFullView extends LitElement {
 
     this.deletingVariant = true;
     try {
+      await this.paintBusyState();
       await invoke("trash_photo_variant", { photoPath: sourcePath });
       const fallback = this.preferredRemainingSelection(
         photo,
@@ -845,7 +847,7 @@ export class PfFullView extends LitElement {
         selection.variant,
       );
       if (fallback) setVariantOverride(photo.path, fallback);
-      this.dispatchCatalogChange(
+      await this.dispatchCatalogChange(
         fallback ? "variant-delete" : "photo-delete",
         photo,
       );
@@ -862,7 +864,7 @@ export class PfFullView extends LitElement {
 
   /** Called from both the toolbar button and Delete/Backspace shortcut. */
   deletePhoto = async () => {
-    if (this.deletingPhoto) return;
+    if (this.deletingPhoto || this.savingVariant || this.deletingVariant) return;
     const photo = this.currentPhoto;
     if (!photo) return;
     const confirmed = await ask(
@@ -874,8 +876,9 @@ export class PfFullView extends LitElement {
     this.deletingPhoto = true;
     this.openMenu = null;
     try {
+      await this.paintBusyState();
       await invoke("trash_photo_group", { photoPath: photo.path });
-      this.dispatchCatalogChange("photo-delete", photo);
+      await this.dispatchCatalogChange("photo-delete", photo);
     } catch (error) {
       console.error("Failed to delete photo", error);
       void message(`Failed to delete photo: ${error}`, {
@@ -909,8 +912,9 @@ export class PfFullView extends LitElement {
   private dispatchCatalogChange(
     kind: "save" | "variant-delete" | "photo-delete",
     photo: Photo,
-  ) {
+  ): Promise<void> {
     const memberPaths = photo.files?.map((file) => file.path) ?? [photo.path];
+    let completion = Promise.resolve();
     this.dispatchEvent(
       new CustomEvent("photo-catalog-changed", {
         detail: {
@@ -918,11 +922,15 @@ export class PfFullView extends LitElement {
           photoPath: photo.path,
           memberPaths,
           previousIndex: this.index,
+          waitUntil: (operation: Promise<void>) => {
+            completion = operation;
+          },
         },
         bubbles: true,
         composed: true,
       }),
     );
+    return completion;
   }
 
   /** Drop every tool's persisted edits on the active target. */
@@ -1061,23 +1069,33 @@ export class PfFullView extends LitElement {
           <button
             type="button"
             class="footer-btn"
-            aria-label="Save edited image as a variant"
+            aria-label=${this.savingVariant
+              ? "Saving edited image as a variant"
+              : "Save edited image as a variant"}
+            aria-busy=${this.savingVariant ? "true" : "false"}
             title="Save edited image as a JPEG variant"
-            ?disabled=${this.savingVariant || this.deletingVariant}
+            ?disabled=${this.savingVariant || this.deletingVariant || this.deletingPhoto}
             @click=${this.saveVariant}
           >
-            <pf-icon name="save"></pf-icon>
+            ${this.savingVariant
+              ? html`<span class="footer-btn-spinner" aria-hidden="true"></span>`
+              : html`<pf-icon name="save"></pf-icon>`}
             <span>${this.savingVariant ? "Saving…" : "Save Variant"}</span>
           </button>
           <button
             type="button"
             class="footer-btn danger"
-            aria-label="Delete current image"
+            aria-label=${this.deletingVariant
+              ? "Deleting current image"
+              : "Delete current image"}
+            aria-busy=${this.deletingVariant ? "true" : "false"}
             title="Move current image to the Bin"
-            ?disabled=${this.deletingVariant}
+            ?disabled=${this.savingVariant || this.deletingVariant || this.deletingPhoto}
             @click=${this.deleteVariant}
           >
-            <pf-icon name="trash"></pf-icon>
+            ${this.deletingVariant
+              ? html`<span class="footer-btn-spinner" aria-hidden="true"></span>`
+              : html`<pf-icon name="trash"></pf-icon>`}
             <span>${this.deletingVariant ? "Deleting…" : "Delete Variant"}</span>
           </button>
         </div>
@@ -1116,6 +1134,7 @@ export class PfFullView extends LitElement {
        onDeletePhoto: this.deletePhoto,
        onOpenIn: this.openIn,
        deletingPhoto: this.deletingPhoto,
+       fileActionBusy: this.savingVariant || this.deletingVariant,
        openingIn: this.openingIn,
        showFullscreenToggle: !this.isIPad(),
        onToggleFullscreen: this.toggleFullscreen,

@@ -14,6 +14,11 @@ export interface PostProcessPreset {
   values: PostProcessPresetValues;
 }
 
+export interface PresetExportFile {
+  version: 1;
+  postProcess: Array<Omit<PostProcessPreset, "id">>;
+}
+
 const LEGACY_STORAGE_KEY = "warble.postProcessPresets.v1";
 const listeners = new Set<(presets: readonly PostProcessPreset[]) => void>();
 
@@ -25,6 +30,10 @@ function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
     sharpen: settings.sharpen,
     grain: settings.grain,
   });
+}
+
+function createPresetId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function parse(raw: string): PostProcessPreset[] {
@@ -125,9 +134,7 @@ export function savePostProcessPreset(
     (preset) => preset.name.toLocaleLowerCase() === cleanName.toLocaleLowerCase()
   );
   const preset: PostProcessPreset = {
-    id: existingIndex >= 0
-      ? presets[existingIndex].id
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+    id: existingIndex >= 0 ? presets[existingIndex].id : createPresetId(),
     name: cleanName,
     values: snapshot(settings),
   };
@@ -137,6 +144,66 @@ export function savePostProcessPreset(
   void persist().catch(() => {});
   notify();
   return preset;
+}
+
+/** Serialize all currently supported preset groups for the settings export. */
+export function exportPostProcessPresets(): string {
+  const file: PresetExportFile = {
+    version: 1,
+    postProcess: presets.map(({ name, values }) => ({
+      name,
+      values: structuredClone(values),
+    })),
+  };
+  return JSON.stringify(file, null, 2);
+}
+
+/** Import post-process presets, keeping existing names and adding suffixes to
+ * collisions so importing can never overwrite a user's saved preset. */
+export function importPostProcessPresets(raw: string): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("The selected file is not valid JSON.");
+  }
+
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object" &&
+        Array.isArray((parsed as { postProcess?: unknown }).postProcess)
+      ? (parsed as { postProcess: unknown[] }).postProcess
+      : null;
+  if (!entries) throw new Error("The selected file contains no post-process presets.");
+
+  const parsedPresets = parse(JSON.stringify(entries.map((entry) => ({
+    ...(entry as object),
+    id: typeof (entry as { id?: unknown }).id === "string"
+      ? (entry as { id: string }).id
+      : createPresetId(),
+  }))));
+  const usedNames = new Set(presets.map((preset) => preset.name.toLocaleLowerCase()));
+  const imported = parsedPresets.map((preset) => {
+    const baseName = preset.name.trim();
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name.toLocaleLowerCase())) {
+      name = `${baseName} (${suffix})`;
+      suffix += 1;
+    }
+    usedNames.add(name.toLocaleLowerCase());
+    return {
+      id: createPresetId(),
+      name,
+      values: structuredClone(preset.values),
+    };
+  });
+
+  if (imported.length === 0) return 0;
+  presets = [...presets, ...imported];
+  void persist().catch(() => {});
+  notify();
+  return imported.length;
 }
 
 export function deletePostProcessPreset(id: string): void {

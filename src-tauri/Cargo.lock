@@ -5206,6 +5206,7 @@ dependencies = [
  "imagepipe",
  "jpeg-decoder",
  "kamadak-exif",
+ "percent-encoding",
  "rawler",
  "rawloader",
  "rusqlite",

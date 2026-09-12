@@ -103,6 +103,53 @@ impl LibraryCatalog {
         Ok(())
     }
 
+    /// Re-scan only the files beside one photo. Saving or deleting a variant
+    /// cannot change the folder tree, so walking every nested directory is
+    /// unnecessary and can take seconds on large or remote libraries.
+    pub fn refresh_photo_parent(&mut self, photo_key: &str, root: &Path) -> Result<(), String> {
+        let (root_id, relative) = split_portable_key(photo_key)?;
+        let relative_parent = relative.parent().unwrap_or_else(|| Path::new(""));
+        let parent_key = make_portable_key(root_id, relative_parent)?;
+        let physical_parent = root.join(relative_parent);
+        let entries = read_directory_with_retry(&physical_parent)?;
+        let mut refreshed_photos = HashMap::new();
+
+        for entry in entries {
+            let entry_path = entry.path();
+            let is_hidden = entry
+                .file_name()
+                .to_str()
+                .map(|name| name.starts_with('.'))
+                .unwrap_or(false);
+            if is_hidden {
+                continue;
+            }
+            let is_photo = entry_path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| is_photo_extension(&value.to_ascii_lowercase()))
+                .unwrap_or(false);
+            if !is_photo {
+                continue;
+            }
+            let metadata = retry_io(
+                || fs::metadata(&entry_path),
+                || format!("could not read metadata for {}", entry_path.display()),
+            )?;
+            if metadata.is_file() {
+                if let Some(photo) = photo_from_path(&entry_path, root, root_id) {
+                    refreshed_photos.insert(photo.path.clone(), photo);
+                }
+            }
+        }
+
+        let parent_path = Path::new(&parent_key);
+        self.photos
+            .retain(|key, _| Path::new(key).parent() != Some(parent_path));
+        self.photos.extend(refreshed_photos);
+        Ok(())
+    }
+
     /// Like `photos_in_folder` but also includes photos in any nested
     /// subfolder when `recursive` is true.
     pub fn photos_in_folder_filtered(&self, folder: &Path, recursive: bool) -> Vec<Photo> {

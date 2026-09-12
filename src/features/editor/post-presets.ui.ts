@@ -1,6 +1,7 @@
 /** Preset manager for global post-processing tool values. */
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
+import { ask } from "@tauri-apps/plugin-dialog";
 import {
   clearPostProcessPreview,
   getCommittedPostProcess,
@@ -58,6 +59,7 @@ export class PfPostPresetsCard extends LitElement {
       background: transparent;
       color: var(--pf-text);
       cursor: pointer;
+      touch-action: manipulation;
     }
     .select {
       min-width: 0;
@@ -114,6 +116,7 @@ export class PfPostPresetsCard extends LitElement {
       padding: 5px 9px;
       font-size: var(--pf-text-xs);
       cursor: pointer;
+      touch-action: manipulation;
     }
     .save button:hover:not(:disabled) {
       background: var(--pf-surface-hover);
@@ -174,8 +177,13 @@ export class PfPostPresetsCard extends LitElement {
     setPostProcess(this.presetSettings(preset));
   };
 
-  private removePreset = (event: Event, preset: PostProcessPreset) => {
+  private removePreset = async (event: Event, preset: PostProcessPreset) => {
     event.stopPropagation();
+    const confirmed = await ask(
+      `Delete the preset “${preset.name}”?`,
+      { title: "Delete preset", kind: "warning" },
+    );
+    if (!confirmed) return;
     clearPostProcessPreview();
     deletePostProcessPreset(preset.id);
   };

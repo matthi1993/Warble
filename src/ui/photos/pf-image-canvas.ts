@@ -1330,7 +1330,7 @@ export class PfImageCanvas extends LitElement {
         ? {}
         : { ...readEditorToolValues("photo", this.path) };
       const postValues: Record<string, unknown> =
-        ppEnabled && !this.previewOriginal
+        ppEnabled && !this.previewOriginal && !rawSource
           ? { ...readEditorToolValues("post", this.path) }
           : {};
       if (interactiveRaw) {
@@ -1961,21 +1961,34 @@ export class PfImageCanvas extends LitElement {
     );
     if (!rendered) throw new Error("could not render edited image");
 
-    // The WebGL render canvas does not preserve its drawing buffer, so
-    // copy the rendered pixels to a normal 2D canvas before encoding.
-    const output = document.createElement("canvas");
+    // The WebGL render canvas does not preserve its drawing buffer, so copy
+    // the rendered pixels to a 2D canvas before encoding. Prefer the async
+    // OffscreenCanvas encoder where WebKit exposes the complete API.
+    const useOffscreenCanvas =
+      typeof OffscreenCanvas !== "undefined" &&
+      typeof OffscreenCanvas.prototype.convertToBlob === "function";
+    const output = useOffscreenCanvas
+      ? new OffscreenCanvas(outW, outH)
+      : document.createElement("canvas");
     output.width = outW;
     output.height = outH;
     const outputContext = output.getContext("2d");
     if (!outputContext) throw new Error("could not create export canvas");
     outputContext.drawImage(rendered, 0, 0, outW, outH);
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      output.toBlob(
-        (value) => (value ? resolve(value) : reject(new Error("JPEG encoding failed"))),
-        "image/jpeg",
-        0.95,
-      );
-    });
+    const blob = useOffscreenCanvas
+      ? await (output as OffscreenCanvas).convertToBlob({
+          type: "image/jpeg",
+          quality: 0.92,
+        })
+      : await new Promise<Blob>((resolve, reject) => {
+          output.toBlob(
+            (value) => (value
+              ? resolve(value)
+              : reject(new Error("JPEG encoding failed"))),
+            "image/jpeg",
+            0.92,
+          );
+        });
     return new Uint8Array(await blob.arrayBuffer());
   }
 

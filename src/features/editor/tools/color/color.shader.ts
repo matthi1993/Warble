@@ -1,6 +1,9 @@
 import type { ToolShaderModule } from "../../rendering/shader-types";
+import { glslFloat } from "../../rendering/glsl";
 import {
   COLOR_CHANNELS,
+  COLOR_HUE_FALLOFF,
+  COLOR_SLIDER_RESPONSE,
   defaultColor,
   isColorZero,
   type ColorEdit,
@@ -18,16 +21,16 @@ function bindColor(
   set1i(`u_${prefix}BlackAndWhite`, value.blackAndWhite ? 1 : 0);
   const channels = new Float32Array(COLOR_CHANNELS.length * 3);
   COLOR_CHANNELS.forEach((key, index) => {
-    channels[index * 3] = value.channels[key].hue / 100;
-    channels[index * 3 + 1] = value.channels[key].saturation / 100;
-    channels[index * 3 + 2] = value.channels[key].luminance / 100;
+    channels[index * 3] = value.channels[key].hue / COLOR_SLIDER_RESPONSE.valueScale;
+    channels[index * 3 + 1] = value.channels[key].saturation / COLOR_SLIDER_RESPONSE.valueScale;
+    channels[index * 3 + 2] = value.channels[key].luminance / COLOR_SLIDER_RESPONSE.valueScale;
   });
   set3fv(`u_${prefix}ColorChannels[0]`, channels);
   set3f(
     `u_${prefix}ColorGlobal`,
-    value.hue / 100,
-    value.saturation / 100,
-    value.luminance / 100,
+    value.hue / COLOR_SLIDER_RESPONSE.valueScale,
+    value.saturation / COLOR_SLIDER_RESPONSE.valueScale,
+    value.luminance / COLOR_SLIDER_RESPONSE.valueScale,
   );
 }
 
@@ -82,10 +85,12 @@ export const colorShader: ToolShaderModule = {
         float rightSpan = mod(centres[nextIndex] - centres[i] + 1.0, 1.0);
         float d = mod(h - centres[i] + 0.5, 1.0) - 0.5;
         float w = 0.0;
-        if (d >= 0.0 && d <= rightSpan) {
-          w = 1.0 - smoothstep(0.0, rightSpan, d);
-        } else if (d < 0.0 && -d <= leftSpan) {
-          w = 1.0 - smoothstep(0.0, leftSpan, -d);
+        float rightFalloff = rightSpan * ${glslFloat(COLOR_HUE_FALLOFF)};
+        float leftFalloff = leftSpan * ${glslFloat(COLOR_HUE_FALLOFF)};
+        if (d >= 0.0 && d <= rightFalloff) {
+          w = 1.0 - smoothstep(0.0, rightFalloff, d);
+        } else if (d < 0.0 && -d <= leftFalloff) {
+          w = 1.0 - smoothstep(0.0, leftFalloff, -d);
         }
         acc += channels[i] * w;
         wsum += w;
@@ -95,7 +100,7 @@ export const colorShader: ToolShaderModule = {
         * smoothstep(0.015, 0.08, absoluteChroma);
       vec3 shift = (acc / max(wsum, 1e-4)) * confidence + globalShift;
       float satGate = smoothstep(0.01, 0.06, absoluteChroma);
-      float newH = fract(h + shift.x * satGate * (30.0/360.0) + 1.0);
+      float newH = fract(h + shift.x * satGate * (${glslFloat(COLOR_SLIDER_RESPONSE.hueShiftDegrees)}/360.0) + 1.0);
       float newS = clamp(s * (1.0 + shift.y * satGate), 0.0, 1.0);
       float newV = clamp(v * (1.0 + shift.z), 0.0, 1.0);
       return toolHsv2rgb(vec3(newH, newS, newV));

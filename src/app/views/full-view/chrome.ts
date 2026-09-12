@@ -47,6 +47,7 @@ export interface ToolbarOptions {
   onDeletePhoto: () => void;
   onOpenIn: () => void;
   deletingPhoto: boolean;
+  fileActionBusy: boolean;
   openingIn: boolean;
   showFullscreenToggle: boolean;
   onToggleFullscreen: () => void;
@@ -127,7 +128,8 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
           icon="trash"
           danger
           label=${opts.deletingPhoto ? "Moving photo to Bin…" : "Delete photo and all variants (Delete)"}
-          ?disabled=${opts.deletingPhoto}
+          ?loading=${opts.deletingPhoto}
+          ?disabled=${opts.deletingPhoto || opts.fileActionBusy}
           @click=${opts.onDeletePhoto}
         ></pf-icon-button>
       </div>

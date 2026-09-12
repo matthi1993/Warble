@@ -4,6 +4,11 @@ import {
   TONE_KEYS,
   type ToneEdit,
 } from "./types";
+import {
+  RAW_CONTRAST_SLIDER_RANGE,
+  TONE_GLOBAL_RESPONSE,
+  TONE_SLIDER_RANGE,
+} from "./adjustment-config";
 
 export function defaultTone(): ToneEdit {
   return {
@@ -57,13 +62,6 @@ export interface ToneControlSpec {
   toControl: (modelValue: number) => number;
 }
 
-const DEFAULT_TONE_CONTROL: Omit<ToneControlSpec, "displayValue" | "toModel" | "toControl"> = {
-  min: -100,
-  max: 100,
-  step: 1,
-  resetValue: 0,
-};
-
 /**
  * UI semantics for tone controls. JPEGs retain the original compact
  * percentage ranges. RAW exposure is expressed in EV and RAW temperature
@@ -76,7 +74,7 @@ export function toneControlSpec(
 ): ToneControlSpec {
   if (!raw) {
     return {
-      ...DEFAULT_TONE_CONTROL,
+      ...TONE_SLIDER_RANGE,
       displayValue: signedInteger,
       toModel: (value) => value,
       toControl: (value) => value,
@@ -89,9 +87,9 @@ export function toneControlSpec(
       max: 6,
       step: 0.01,
       resetValue: 0,
-      displayValue: (value) => `${formatSigned(value / 100, 2)} EV`,
-      toModel: (value) => value * 100,
-      toControl: (value) => value / 100,
+      displayValue: (value) => `${formatSigned(value / TONE_GLOBAL_RESPONSE.exposureScale, 2)} EV`,
+      toModel: (value) => value * TONE_GLOBAL_RESPONSE.exposureScale,
+      toControl: (value) => value / TONE_GLOBAL_RESPONSE.exposureScale,
     };
   }
 
@@ -107,8 +105,17 @@ export function toneControlSpec(
     };
   }
 
+  if (key === "contrast") {
+    return {
+      ...RAW_CONTRAST_SLIDER_RANGE,
+      displayValue: signedInteger,
+      toModel: (value) => value,
+      toControl: (value) => value,
+    };
+  }
+
   return {
-    ...DEFAULT_TONE_CONTROL,
+    ...TONE_SLIDER_RANGE,
     displayValue: signedInteger,
     toModel: (value) => value,
     toControl: (value) => value,

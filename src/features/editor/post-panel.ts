@@ -79,18 +79,19 @@ export class PfPostProcessCard extends LitElement {
   render() {
     const enabled = getPostProcess().enabled;
     return html`
-      <pf-post-presets-card></pf-post-presets-card>
       <div class="enable-row">
-        <span class="label">Post-Processing</span>
+        <span class="label">Post-Processing ${enabled ? "enabled" : "disabled"}</span>
         <button
           type="button"
           class="toggle"
           role="switch"
           aria-pressed=${enabled ? "true" : "false"}
-          aria-label="Toggle post-processing"
+          aria-label=${enabled ? "Disable post-processing" : "Enable post-processing"}
+          title=${enabled ? "Disable post-processing" : "Enable post-processing"}
           @click=${() => setPostProcessEnabled(!enabled)}
         ></button>
       </div>
+      <pf-post-presets-card></pf-post-presets-card>
       <div class=${enabled ? "stack" : "stack dim"}>
         ${this.tools.map((tool) => tool.renderCard(this.host))}
       </div>

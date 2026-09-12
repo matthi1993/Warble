@@ -32,7 +32,7 @@ import {
   subscribeTasks,
   type TaskRecord,
 } from "./task-manager";
-import "./pf-cache-settings";
+import "./pf-settings";
 import "./pf-task-details";
 
 function findFolderByPath(roots: Folder[], path: string): Folder | null {
@@ -1273,19 +1273,30 @@ export class WarbleApp extends LitElement {
     }
   }
 
-  private async onPhotoCatalogChanged(
+  private onPhotoCatalogChanged(
     e: CustomEvent<{
       kind: "save" | "variant-delete" | "photo-delete";
       photoPath: string;
       memberPaths: string[];
       previousIndex: number;
+      waitUntil?: (operation: Promise<void>) => void;
     }>,
   ) {
-    const { kind, photoPath, memberPaths, previousIndex } = e.detail;
+    const operation = this.refreshAfterPhotoCatalogChange(e.detail);
+    e.detail.waitUntil?.(operation);
+  }
+
+  private async refreshAfterPhotoCatalogChange(detail: {
+    kind: "save" | "variant-delete" | "photo-delete";
+    photoPath: string;
+    memberPaths: string[];
+    previousIndex: number;
+  }): Promise<void> {
+    const { kind, photoPath, memberPaths, previousIndex } = detail;
     if (!this.selectedFolderId) return;
     try {
-      this.imports = await invoke<Folder[]>("refresh_folder", {
-        folderPath: this.selectedFolderId,
+      await invoke("refresh_photo_parent", {
+        photoPath,
       });
       this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
         folderPath: this.selectedFolderId,
@@ -1449,8 +1460,8 @@ export class WarbleApp extends LitElement {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
 
-  private openCacheSettings = () => {
-    void (this.renderRoot.querySelector("pf-cache-settings") as import("./pf-cache-settings").PfCacheSettings | null)?.open();
+  private openSettings = () => {
+    void (this.renderRoot.querySelector("pf-settings") as import("./pf-settings").PfSettings | null)?.open();
   };
 
   private toggleIncludeSubfolders = async () => {
@@ -1592,9 +1603,9 @@ export class WarbleApp extends LitElement {
         </div>
         <div class="sidebar-footer">
           <div class="sidebar-settings">
-            <pf-button @click=${this.openCacheSettings}>
+            <pf-button @click=${this.openSettings}>
               <pf-icon name="settings"></pf-icon>
-              Performance &amp; Caches
+              Settings
             </pf-button>
           </div>
         </div>
@@ -1716,7 +1727,7 @@ export class WarbleApp extends LitElement {
       ${this.renderFooter()}
       ${this.renderContextMenu()}
       ${this.renderFolderContextMenu()}
-      <pf-cache-settings></pf-cache-settings>
+      <pf-settings></pf-settings>
       ${this.busyLabel
         ? html`
             <div class="app-busy-overlay" aria-hidden="false">

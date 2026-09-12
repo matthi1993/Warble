@@ -20,6 +20,15 @@ export {
   toneControlSpec,
 } from "./tone";
 export type { ToneControlSpec } from "./tone";
+export {
+  COLOR_HUE_FALLOFF,
+  COLOR_SLIDER_RESPONSE,
+  RAW_CONTRAST_SLIDER_RANGE,
+  TONE_GLOBAL_RESPONSE,
+  TONE_REGION_FALLOFFS,
+  TONE_SLIDER_RANGE,
+} from "./adjustment-config";
+export type { SliderRange } from "./adjustment-config";
 export { cropEditsEqual } from "./crop";
 export type { CurveChannel, CurveEdit, CurvePoint } from "./curve";
 export {
