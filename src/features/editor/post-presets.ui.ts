@@ -202,6 +202,7 @@ export class PfPostPresetsCard extends LitElement {
       curve: current.curve,
       sharpen: current.sharpen,
       grain: current.grain,
+      bloom: current.bloom,
     });
   }
 

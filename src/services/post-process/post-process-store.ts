@@ -25,12 +25,16 @@ import {
 import {
   defaultGrain,
   defaultSharpen,
+  defaultBloom,
+  type BloomSettings,
   type GrainSettings,
   type SharpenSettings,
 } from "@services/effects/effects-store";
 
 export { defaultGrain, isGrainZero } from "@services/effects/effects-store";
 export type { GrainSettings } from "@services/effects/effects-store";
+export { defaultBloom, isBloomZero } from "@services/effects/effects-store";
+export type { BloomSettings } from "@services/effects/effects-store";
 
 export interface PostProcessSettings {
   /** Master switch. When false, the canvas skips the post pipeline
@@ -47,6 +51,7 @@ export interface PostProcessSettings {
   sharpen: SharpenSettings;
   /** Resolution-independent film grain plus optional per-pixel noise. */
   grain: GrainSettings;
+  bloom: BloomSettings;
 }
 
 const STORAGE_KEY = "warble.postProcess.v4";
@@ -60,6 +65,7 @@ function defaultSettings(): PostProcessSettings {
     curve: defaultCurve(),
     sharpen: defaultSharpen(),
     grain: defaultGrain(),
+    bloom: defaultBloom(),
   };
 }
 
@@ -83,6 +89,9 @@ function load(): PostProcessSettings {
       grain: parsed.grain
         ? { ...defaultGrain(), ...parsed.grain }
         : defaultGrain(),
+      bloom: parsed.bloom
+        ? { ...defaultBloom(), ...parsed.bloom }
+        : defaultBloom(),
     };
   } catch (err) {
     console.warn("post-process: invalid persisted settings, resetting", err);
@@ -180,6 +189,14 @@ export function setPostGrain(grain: GrainSettings): void {
 
 export function resetPostGrain(): void {
   commit({ ...getCommittedPostProcess(), grain: defaultGrain() });
+}
+
+export function setPostBloom(bloom: BloomSettings): void {
+  commit({ ...getCommittedPostProcess(), bloom });
+}
+
+export function resetPostBloom(): void {
+  commit({ ...getCommittedPostProcess(), bloom: defaultBloom() });
 }
 
 export function resetPostProcess(): void {

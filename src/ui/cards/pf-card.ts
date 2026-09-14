@@ -73,6 +73,24 @@ export class PfCard extends LitElement {
       align-items: center;
       justify-content: center;
     }
+    .before-after {
+      flex: 0 0 auto;
+      background: transparent;
+      color: var(--pf-text-muted);
+      border: none;
+      border-left: 1px solid var(--pf-border);
+      padding: 0 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: none;
+    }
+    .before-after:hover,
+    .before-after[aria-pressed="true"] {
+      background: var(--pf-surface-hover);
+      color: var(--pf-text);
+    }
     ::slotted([slot="revert"]:hover) {
       background: var(--pf-surface-hover);
       color: var(--pf-text);
@@ -88,6 +106,51 @@ export class PfCard extends LitElement {
 
   @property({ type: Boolean, reflect: true })
   open = false;
+
+  @property({ type: Boolean, attribute: "before-after" })
+  beforeAfter = false;
+
+  private previewing = false;
+
+  private startPreview = (event: PointerEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    this.previewing = true;
+    this.requestUpdate();
+    if (event.currentTarget instanceof Element) {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is optional on older embedded WebViews.
+      }
+    }
+    window.addEventListener("pointerup", this.endPreview, { once: true });
+    window.addEventListener("pointercancel", this.endPreview, { once: true });
+    window.addEventListener("blur", this.endPreview, { once: true });
+    this.dispatchEvent(new CustomEvent("tool-preview-start", {
+      bubbles: true,
+      composed: true,
+    }));
+  };
+
+  private endPreview = (event: Event): void => {
+    if (event.currentTarget !== window) event.stopPropagation();
+    window.removeEventListener("pointerup", this.endPreview);
+    window.removeEventListener("pointercancel", this.endPreview);
+    window.removeEventListener("blur", this.endPreview);
+    if (!this.previewing) return;
+    this.previewing = false;
+    this.requestUpdate();
+    this.dispatchEvent(new CustomEvent("tool-preview-end", {
+      bubbles: true,
+      composed: true,
+    }));
+  };
+
+  disconnectedCallback(): void {
+    if (this.previewing) this.endPreview(new Event("disconnect"));
+    super.disconnectedCallback();
+  }
 
   private toggle = () => {
     this.dispatchEvent(
@@ -111,6 +174,20 @@ export class PfCard extends LitElement {
           <pf-icon class="chevron" name="chevron-down"></pf-icon>
           <span>${this.title}</span>
         </button>
+        ${this.beforeAfter ? html`
+          <button
+            type="button"
+            class="before-after"
+            title="Hold to show before"
+            aria-label="Hold to show before"
+            aria-pressed=${this.previewing}
+            @pointerdown=${this.startPreview}
+            @pointerup=${this.endPreview}
+            @pointercancel=${this.endPreview}
+            @lostpointercapture=${this.endPreview}
+            @contextmenu=${(event: Event) => event.preventDefault()}
+          ><pf-icon name="compare"></pf-icon></button>
+        ` : null}
         <slot name="revert"></slot>
       </div>
       <div class="body">

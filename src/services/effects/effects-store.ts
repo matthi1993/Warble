@@ -47,6 +47,27 @@ export interface GrainSettings {
   fine: number;
 }
 
+export interface BloomSettings {
+  /** 0..100 — final light-spill amount. */
+  strength: number;
+  /** 0..100 — luminance at which pixels begin emitting. */
+  threshold: number;
+  /** 0..100 — radius of the three-scale blur pyramid. */
+  radius: number;
+  /** 0..100 — width of the soft bright-pixel gate. */
+  softness: number;
+  /** 0..100 — balance from tight detail to broad atmosphere. */
+  spread: number;
+}
+
+export function defaultBloom(): BloomSettings {
+  return { strength: 0, threshold: 68, radius: 50, softness: 45, spread: 60 };
+}
+
+export function isBloomZero(bloom: BloomSettings | null | undefined): boolean {
+  return !bloom || bloom.strength <= 0;
+}
+
 export function defaultGrain(): GrainSettings {
   return { size: 25, amount: 0, fine: 0 };
 }

@@ -55,6 +55,11 @@ import {
   hasActiveEditorToolValues,
   readEditorToolValues,
 } from "@features/editor/registry";
+import {
+  getToolPreview,
+  subscribeToolPreview,
+  type ToolPreview,
+} from "@features/editor/tool-preview";
 import type { RawImageSource } from "./canvas/raw-source";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
 import type {
@@ -355,6 +360,8 @@ export class PfImageCanvas extends LitElement {
   private editsUnsubscribe: (() => void) | null = null;
   private postProcessUnsubscribe: (() => void) | null = null;
   private effectsUnsubscribe: (() => void) | null = null;
+  private toolPreviewUnsubscribe: (() => void) | null = null;
+  private toolPreview: ToolPreview | null = getToolPreview();
   /** GPU pipeline for tone (brightness/contrast/saturation) adjustments.
    * Lazy-initialised on first use so photos with no edits never pay for
    * WebGL context creation. */
@@ -444,6 +451,19 @@ export class PfImageCanvas extends LitElement {
     this.effectsUnsubscribe = subscribePhotoEffects((path) => {
       if (path && path !== this.path) return;
       this.scheduleDraw();
+    });
+    this.toolPreviewUnsubscribe = subscribeToolPreview((preview) => {
+      const cropChanged = this.toolPreview?.id === "crop" || preview?.id === "crop";
+      this.toolPreview = preview;
+      if (cropChanged) {
+        this.userInteracted = false;
+        this.forceFitOnNextRecompute = true;
+        this.rotatedCache = null;
+        this.renderPipeline.invalidate();
+        requestAnimationFrame(() => this.onResize());
+      } else {
+        this.scheduleDraw();
+      }
     });
   }
 
@@ -546,6 +566,8 @@ export class PfImageCanvas extends LitElement {
     this.postProcessUnsubscribe = null;
     this.effectsUnsubscribe?.();
     this.effectsUnsubscribe = null;
+    this.toolPreviewUnsubscribe?.();
+    this.toolPreviewUnsubscribe = null;
     this.renderPipeline.dispose();
   }
 
@@ -1137,6 +1159,7 @@ export class PfImageCanvas extends LitElement {
    * canvas keeps showing the straightened/rotated image after the
    * crop card is dismissed. */
   private normalizedRotation(): number {
+    if (this.isToolPreviewed("photo", "crop")) return 0;
     let r: number;
     if (this.cropMode) {
       r = this.rotation || 0;
@@ -1195,7 +1218,12 @@ export class PfImageCanvas extends LitElement {
   private effectiveCrop(): CropEdit | null {
     if (this.cropMode) return null;
     if (this.previewOriginal) return null;
+    if (this.isToolPreviewed("photo", "crop")) return null;
     return this.savedCrop;
+  }
+
+  private isToolPreviewed(scope: ToolPreview["scope"], id: string): boolean {
+    return this.toolPreview?.scope === scope && this.toolPreview.id === id;
   }
 
   /**
@@ -1329,10 +1357,19 @@ export class PfImageCanvas extends LitElement {
       const photoValues: Record<string, unknown> = this.previewOriginal
         ? {}
         : { ...readEditorToolValues("photo", this.path) };
-      const postValues: Record<string, unknown> =
-        ppEnabled && !this.previewOriginal && !rawSource
-          ? { ...readEditorToolValues("post", this.path) }
-          : {};
+      if (this.toolPreview?.scope === "photo") {
+        delete photoValues[this.toolPreview.id];
+      }
+      const configuredPostValues: Record<string, unknown> =
+        ppEnabled && !this.previewOriginal
+        ? { ...readEditorToolValues("post", this.path) }
+        : {};
+      if (this.toolPreview?.scope === "post") {
+        delete configuredPostValues[this.toolPreview.id];
+      }
+      const postValues: Record<string, unknown> = rawSource
+        ? { bloom: configuredPostValues.bloom }
+        : { ...configuredPostValues };
       if (interactiveRaw) {
         photoValues.sharpen = null;
         photoValues.grain = null;
@@ -1399,7 +1436,11 @@ export class PfImageCanvas extends LitElement {
           ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
         }
       }
-      if (this.cropMode && this.cropFrame) {
+      if (
+        this.cropMode
+        && this.cropFrame
+        && !this.isToolPreviewed("photo", "crop")
+      ) {
         this.drawCropOverlay(ctx, x, y, drawW, drawH);
       }
       if (this.horizonDrag) {

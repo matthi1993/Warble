@@ -201,7 +201,7 @@ export class PfCropCard extends LitElement {
     const base = Math.round(r / 90) * 90;
     const sliderValue = Math.max(-45, Math.min(45, r - base));
     return html`
-      <pf-card .title=${"Crop"} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card before-after .title=${"Crop"} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

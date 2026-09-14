@@ -145,7 +145,7 @@ export class PfSharpenCard extends LitElement {
     const canRevert =
       this.canRevert == null ? v.strength > 0 : this.canRevert;
     return html`
-      <pf-card .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

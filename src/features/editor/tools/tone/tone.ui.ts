@@ -118,7 +118,7 @@ export class PfBasicCard extends LitElement {
   render() {
     const canRevert = !isBaseToneZero(this.tone);
     return html`
-      <pf-card .title=${"Base Edit"} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card before-after .title=${"Base Edit"} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

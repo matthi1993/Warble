@@ -29,6 +29,7 @@ function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
     curve: settings.curve,
     sharpen: settings.sharpen,
     grain: settings.grain,
+    bloom: settings.bloom,
   });
 }
 
@@ -54,6 +55,7 @@ function parse(raw: string): PostProcessPreset[] {
           curve: values.curve ?? defaults.curve,
           sharpen: values.sharpen ?? defaults.sharpen,
           grain: values.grain ?? defaults.grain,
+          bloom: values.bloom ?? defaults.bloom,
         }),
       }];
     });

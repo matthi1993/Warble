@@ -182,6 +182,8 @@ export class CropTool extends EditTool {
     return html`
       <pf-crop-card
         ?open=${this.cardOpen}
+        @tool-preview-start=${this.startBeforePreview}
+        @tool-preview-end=${this.endBeforePreview}
         .aspect=${this.aspect}
         .orientation=${this.orientation}
         .rotation=${this.rotation}

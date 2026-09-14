@@ -76,6 +76,8 @@ export class ToneTool extends EditTool {
         .tone=${tone}
         .raw=${raw}
         ?open=${this.cardOpen}
+        @tool-preview-start=${this.startBeforePreview}
+        @tool-preview-end=${this.endBeforePreview}
         @toggle=${(event: CustomEvent<{ open: boolean }>) => {
           this.cardOpen = event.detail.open;
           host.requestUpdate();
@@ -96,6 +98,8 @@ export class ToneTool extends EditTool {
         .tone=${tone}
         .raw=${raw}
         ?open=${this.dynamicRangeCardOpen}
+        @tool-preview-start=${this.startBeforePreview}
+        @tool-preview-end=${this.endBeforePreview}
         @toggle=${(event: CustomEvent<{ open: boolean }>) => {
           this.dynamicRangeCardOpen = event.detail.open;
           host.requestUpdate();

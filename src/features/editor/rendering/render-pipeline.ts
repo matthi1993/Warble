@@ -210,6 +210,12 @@ export class EditorRenderPipeline {
         return mix(high, low, step(c, vec3(0.0031308)));
       }
 
+      vec3 srgbToLinear(vec3 c) {
+        vec3 low = c / 12.92;
+        vec3 high = pow((max(c, vec3(0.0)) + 0.055) / 1.055, vec3(2.4));
+        return mix(high, low, step(c, vec3(0.04045)));
+      }
+
       vec3 rawTexel(ivec2 point) {
         ivec2 size = ivec2(u_sourceSize);
         ivec2 samplePoint = clamp(point, ivec2(0), size - ivec2(1));

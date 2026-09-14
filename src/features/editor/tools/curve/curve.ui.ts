@@ -82,7 +82,7 @@ export class PfCurveCard extends LitElement {
   render() {
     const canRevert = !isCurveZero(this.value);
     return html`
-      <pf-card .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

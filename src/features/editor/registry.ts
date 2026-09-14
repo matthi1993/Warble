@@ -2,6 +2,7 @@ import { ColorTool, readColorToolValue } from "./tools/color/color.logic";
 import { CropTool } from "./tools/crop/crop.logic";
 import { CurveTool, readCurveToolValue } from "./tools/curve/curve.logic";
 import { GrainTool, readGrainToolValue } from "./tools/grain/grain.logic";
+import { BloomTool, readBloomToolValue } from "./tools/bloom/bloom.logic";
 import { SharpenTool, readSharpenToolValue } from "./tools/sharpen/sharpen.logic";
 import { ToneTool, readToneToolValue } from "./tools/tone/tone.logic";
 import type { ToolShaderModule } from "./rendering/shader-types";
@@ -11,6 +12,7 @@ import { curveShader } from "./tools/curve/curve.shader";
 import { grainShader } from "./tools/grain/grain.shader";
 import { sharpenShader } from "./tools/sharpen/sharpen.shader";
 import { toneShader } from "./tools/tone/tone.shader";
+import { bloomShader } from "./tools/bloom/bloom.shader";
 
 export interface EditorToolRegistration {
   readonly id: string;
@@ -66,6 +68,15 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     shader: sharpenShader,
     readValue: readSharpenToolValue,
     create: (scope) => new SharpenTool(scope),
+  },
+  {
+    id: "bloom",
+    title: "Bloom",
+    order: 15,
+    scopes: ["post"],
+    shader: bloomShader,
+    readValue: () => readBloomToolValue(),
+    create: () => new BloomTool("post"),
   },
   {
     id: "grain",

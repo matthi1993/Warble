@@ -63,6 +63,8 @@ export class SharpenTool extends EditTool {
       .title=${this.scope === "post" ? "Output Sharpening" : "Sharpen"}
       .value=${value}
       ?open=${this.cardOpen}
+      @tool-preview-start=${this.startBeforePreview}
+      @tool-preview-end=${this.endBeforePreview}
       ?can-revert=${this.scope === "post" ? value.strength > 0 : stored != null}
       @toggle=${(event: CustomEvent<{ open: boolean }>) => {
         this.cardOpen = event.detail.open;
