@@ -35,11 +35,12 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             commands::select_folders_dialog,
-            commands::import_folder,
+            commands::import_folders,
             commands::bind_media_root,
             commands::list_imported_folders,
             commands::refresh_imported_folders,
             commands::refresh_folder,
+            commands::index_folder_images,
             commands::refresh_photo_parent,
             commands::remove_imported_folder,
             commands::get_photos_in_folder,

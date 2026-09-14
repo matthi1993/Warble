@@ -1981,8 +1981,8 @@ export class PfImageCanvas extends LitElement {
           quality: 0.92,
         })
       : await new Promise<Blob>((resolve, reject) => {
-          output.toBlob(
-            (value) => (value
+          (output as HTMLCanvasElement).toBlob(
+            (value: Blob | null) => (value
               ? resolve(value)
               : reject(new Error("JPEG encoding failed"))),
             "image/jpeg",

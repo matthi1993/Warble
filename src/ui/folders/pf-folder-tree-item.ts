@@ -63,6 +63,21 @@ export class PfFolderTreeItem extends LitElement {
       font-size: var(--pf-text-xs);
       color: var(--pf-danger);
     }
+    .spinner {
+      width: 0.75rem;
+      height: 0.75rem;
+      border: 2px solid var(--pf-border);
+      border-top-color: var(--pf-accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation-duration: 1.6s; }
+    }
     .name {
       flex: 1;
       overflow: hidden;
@@ -200,6 +215,9 @@ export class PfFolderTreeItem extends LitElement {
           : html`<span class="chevron placeholder">·</span>`}
         <pf-icon class="folder-icon" name="folder"></pf-icon>
         <span class="name" title=${this.folder.path}>${label}</span>
+        ${this.folder.scanning
+          ? html`<span class="spinner" title="Scanning folder" aria-label="Scanning folder"></span>`
+          : null}
         ${this.folder.available ? null : html`<span class="status">Reconnect</span>`}
       </div>
       ${this.expanded && hasChildren

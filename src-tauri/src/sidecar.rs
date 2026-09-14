@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::{params, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::imaging::edits::PhotoEdits;
@@ -133,38 +134,67 @@ pub fn write_effects(source: &Path, effects: Option<&serde_json::Value>) -> Resu
     write_warble(source, &sidecar)
 }
 
-/// Import portable photo state into SQLite. If an existing library predates
-/// sidecars, its edits and ratings are exported once so no user work is lost.
-/// This function never parses the source image: missing EXIF is populated
-/// lazily by the existing EXIF/filter pipeline.
-pub fn sync_photo_index(repo: &LibraryRepository, key: &str, source: &Path) -> Result<(), String> {
-    sync_rating(repo, key, source)?;
+/// Import portable state for several photos in one SQLite transaction. The
+/// filesystem work remains per photo, but committing once avoids a database
+/// transaction and connection lock for every sidecar in a large library.
+pub fn sync_photo_index_batch(
+    repo: &LibraryRepository,
+    photos: &[(&str, &Path)],
+) -> Result<(), String> {
+    let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
+    repo.with_transaction(|tx| {
+        for (key, source) in photos {
+            sync_photo_index_tx(tx, key, source)?;
+        }
+        Ok(())
+    })
+}
+
+fn sync_photo_index_tx(tx: &Transaction<'_>, key: &str, source: &Path) -> Result<(), String> {
+    sync_rating_tx(tx, key, source)?;
 
     // A rescan may seed a legacy sidecar while the editor is open. Keep that
     // read-modify-write operation in the same critical section as edits and
     // effects so one valid update cannot replace another one.
-    let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
 
     if let Some(sidecar) = read_valid_warble(source) {
         if sidecar.metadata_ready {
             let fingerprint = fingerprint(source)?;
             let metadata_json =
                 serde_json::to_string(&sidecar.metadata).map_err(|e| e.to_string())?;
-            repo.set_photo_exif(
-                key,
-                fingerprint.modified_at,
-                fingerprint.size,
-                normalize_orientation(sidecar.orientation),
-                &metadata_json,
-            )?;
+            tx.execute(
+                "INSERT INTO photo_exif
+                    (path, file_mtime, file_size, orientation, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(path) DO UPDATE SET
+                    file_mtime = excluded.file_mtime,
+                    file_size = excluded.file_size,
+                    orientation = excluded.orientation,
+                    metadata = excluded.metadata",
+                params![
+                    key,
+                    fingerprint.modified_at,
+                    fingerprint.size,
+                    normalize_orientation(sidecar.orientation) as i64,
+                    metadata_json
+                ],
+            )
+            .map_err(|e| e.to_string())?;
         } else {
-            repo.delete_photo_exif(key)?;
+            tx.execute("DELETE FROM photo_exif WHERE path = ?1", params![key])
+                .map_err(|e| e.to_string())?;
         }
         if sidecar.edits.is_empty() {
-            repo.delete_photo_edit(key)?;
+            tx.execute("DELETE FROM photo_edits WHERE path = ?1", params![key])
+                .map_err(|e| e.to_string())?;
         } else {
             let edits_json = serde_json::to_string(&sidecar.edits).map_err(|e| e.to_string())?;
-            repo.set_photo_edit(key, &edits_json)?;
+            tx.execute(
+                "INSERT INTO photo_edits (path, edits) VALUES (?1, ?2)
+                 ON CONFLICT(path) DO UPDATE SET edits = excluded.edits",
+                params![key, edits_json],
+            )
+            .map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
@@ -173,8 +203,7 @@ pub fn sync_photo_index(repo: &LibraryRepository, key: &str, source: &Path) -> R
     // so eagerly turning a large existing SQLite cache into thousands of
     // sidecar writes would make startup painfully slow. The EXIF pipeline
     // writes this sidecar on first metadata/filter access instead.
-    let edits = repo
-        .photo_edit(key)?
+    let edits = tx_photo_edit(tx, key)?
         .and_then(|json| serde_json::from_str::<PhotoEdits>(&json).ok())
         .unwrap_or_default();
     if edits.is_empty() {
@@ -215,9 +244,9 @@ pub fn write_rating(
     }
 }
 
-fn sync_rating(repo: &LibraryRepository, key: &str, source: &Path) -> Result<(), String> {
+fn sync_rating_tx(tx: &Transaction<'_>, key: &str, source: &Path) -> Result<(), String> {
     if let Some(Some((rating, label))) = read_xmp_rating(source) {
-        let existing = repo.photo_rating(key)?;
+        let existing = tx_photo_rating(tx, key)?;
         let unchanged = existing
             .as_ref()
             .map(|(old_rating, old_label, _)| *old_rating == rating && *old_label == label)
@@ -226,9 +255,19 @@ fn sync_rating(repo: &LibraryRepository, key: &str, source: &Path) -> Result<(),
             .map(|(_, _, rated_at)| rated_at)
             .unwrap_or_else(now_secs);
         if rating == 0 && label.is_empty() {
-            repo.delete_photo_rating(key)?;
+            tx.execute("DELETE FROM photo_ratings WHERE path = ?1", params![key])
+                .map_err(|e| e.to_string())?;
         } else if !unchanged {
-            repo.set_photo_rating_row(key, rating, &label, rated_at)?;
+            tx.execute(
+                "INSERT INTO photo_ratings (path, rating, label, rated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(path) DO UPDATE SET
+                    rating = excluded.rating,
+                    label = excluded.label,
+                    rated_at = excluded.rated_at",
+                params![key, rating, label, rated_at],
+            )
+            .map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
@@ -236,10 +275,36 @@ fn sync_rating(repo: &LibraryRepository, key: &str, source: &Path) -> Result<(),
     // Migration path for the old SQLite-only implementation. This also
     // handles an existing XMP packet that contains unrelated fields but has
     // never carried a rating/label.
-    if let Some((rating, label, _)) = repo.photo_rating(key)? {
-        write_xmp_rating(source, rating, &label)?;
+    if let Some((rating, label, _)) = tx_photo_rating(tx, key)? {
+        write_xmp_rating_locked(source, rating, &label)?;
     }
     Ok(())
+}
+
+fn tx_photo_rating(tx: &Transaction<'_>, key: &str) -> Result<Option<(i64, String, i64)>, String> {
+    tx.query_row(
+        "SELECT rating, label, rated_at FROM photo_ratings WHERE path = ?1",
+        params![key],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .map(Some)
+    .or_else(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
+}
+
+fn tx_photo_edit(tx: &Transaction<'_>, key: &str) -> Result<Option<String>, String> {
+    tx.query_row(
+        "SELECT edits FROM photo_edits WHERE path = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .or_else(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
 }
 
 fn read_valid_warble(source: &Path) -> Option<WarbleSidecar> {
@@ -277,6 +342,10 @@ fn read_xmp_rating(source: &Path) -> Option<Option<(i64, String)>> {
 
 fn write_xmp_rating(source: &Path, rating: i64, label: &str) -> Result<(), String> {
     let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
+    write_xmp_rating_locked(source, rating, label)
+}
+
+fn write_xmp_rating_locked(source: &Path, rating: i64, label: &str) -> Result<(), String> {
     let path = xmp_path(source);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => update_xmp_packet(raw, rating, label)?,

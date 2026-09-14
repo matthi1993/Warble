@@ -24,12 +24,13 @@ import { dropAllThumbnailState, prefetchThumbnails } from "./thumbnail-service";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
-import { beginAppBusy, subscribeAppBusy } from "./app-busy";
+import { beginAppBusy, subscribeAppBusy, waitForAppBusyPaint } from "./app-busy";
 import {
   beginTask,
   cancelTaskRequest,
   nextRequestId,
   subscribeTasks,
+  type TaskHandle,
   type TaskRecord,
 } from "./task-manager";
 import "./pf-settings";
@@ -51,6 +52,27 @@ interface FolderSelection {
 
 interface PhotoFilterInfoResult extends PhotoFilterInfo {
   path: string;
+}
+
+interface FolderScanProgress {
+  phase: "queued" | "scanning" | "indexing" | "done" | "cancelled" | "error";
+  kind: "folderTree" | "folderImages";
+  rootId: string;
+  folderKey: string;
+  jobId: number;
+  message?: string;
+}
+
+interface FolderImageUpdate {
+  rootId: string;
+  folderKey: string;
+}
+
+interface FolderUpdate {
+  folders: Folder[];
+  rootId: string;
+  folderKey: string;
+  contentChanged: boolean;
 }
 
 // Small chunks form cancellation points between cold EXIF reads.
@@ -616,6 +638,12 @@ export class WarbleApp extends LitElement {
 
   private unsubscribeCacheCleared: UnlistenFn | null = null;
   private unsubscribeAppBusy: (() => void) | null = null;
+  private unsubscribeFolderScanProgress: UnlistenFn | null = null;
+  private unsubscribeFolderUpdates: UnlistenFn | null = null;
+  private unsubscribeFolderImageUpdates: UnlistenFn | null = null;
+  private folderScanTasks = new Map<number, TaskHandle>();
+  private folderImageRefreshTimer: number | null = null;
+  private pendingRestoreFolderPath: string | null = null;
 
   /** Invalidates filter metadata requests when the active photo set changes. */
   private filterMetadataRequest = 0;
@@ -656,6 +684,18 @@ export class WarbleApp extends LitElement {
    this.unlistenFoldersRehydrated = await listen("folders-rehydrated", () => {
      void this.onFoldersRehydrated();
    });
+   this.unsubscribeFolderScanProgress = await listen<FolderScanProgress>(
+     "folder-scan-progress",
+     (event) => this.onFolderScanProgress(event.payload),
+   );
+   this.unsubscribeFolderUpdates = await listen<FolderUpdate>(
+     "folders-updated",
+     (event) => void this.onFoldersUpdated(event.payload),
+   );
+   this.unsubscribeFolderImageUpdates = await listen<FolderImageUpdate>(
+     "folder-images-updated",
+     (event) => this.onFolderImagesUpdated(event.payload),
+   );
     // Menu-driven "Clear Thumbnail Cache" wipes the disk cache; here we
     // also drop the renderer-side binary JPEG LRU so on-screen cards
     // re-decode from source.
@@ -687,6 +727,8 @@ export class WarbleApp extends LitElement {
         const folder = findFolderByPath(this.folders, lastPath);
         if (folder) {
           await this.selectFolder(folder.id, folder.path);
+        } else {
+          this.pendingRestoreFolderPath = lastPath;
         }
       }
     } catch (err) {
@@ -716,6 +758,7 @@ export class WarbleApp extends LitElement {
             // Re-fetch with the restored recursive flag so the grid
             // matches the persisted toggle state.
             try {
+              this.requestFolderImageIndex(this.selectedFolderId, true);
               this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
                 folderPath: this.selectedFolderId,
                 recursive: true,
@@ -866,6 +909,18 @@ export class WarbleApp extends LitElement {
   disconnectedCallback(): void {
    super.disconnectedCallback();
    this.unlistenFoldersRehydrated?.();
+   this.unsubscribeFolderScanProgress?.();
+   this.unsubscribeFolderScanProgress = null;
+   this.unsubscribeFolderUpdates?.();
+   this.unsubscribeFolderUpdates = null;
+   this.unsubscribeFolderImageUpdates?.();
+   this.unsubscribeFolderImageUpdates = null;
+   if (this.folderImageRefreshTimer !== null) {
+     window.clearTimeout(this.folderImageRefreshTimer);
+     this.folderImageRefreshTimer = null;
+   }
+   for (const task of this.folderScanTasks.values()) task.finish("cancelled");
+   this.folderScanTasks.clear();
    window.removeEventListener("keydown", this.onGlobalKey);
    window.removeEventListener("mousemove", this.onMouseMove);
     this.unsubscribeCacheCleared?.();
@@ -1082,16 +1137,19 @@ export class WarbleApp extends LitElement {
   private async importFolder() {
     const endBusy = beginAppBusy("Adding folders…");
     try {
+      await waitForAppBusyPaint();
       const selections = await invoke<FolderSelection[]>("select_folders_dialog");
       if (!selections || selections.length === 0) return;
-      const imported: Folder[] = [];
-      // Keep imports ordered so the backend can reliably reject nested or
+      // Keep the picker order so the backend can reliably reject nested or
       // otherwise overlapping roots selected in the same dialog. A parent
-      // selected after its children consolidates them into one root.
-      for (const { path, bookmark } of selections) {
-        imported.push(await invoke<Folder>("import_folder", { path, bookmark }));
-      }
-      this.imports = await invoke<Folder[]>("list_imported_folders");
+      // selected after its children consolidates them into one root. The
+      // backend persists all selections before performing one catalog scan.
+      const result = await invoke<{
+        folders: Folder[];
+        imported: Folder[];
+      }>("import_folders", { selections });
+      this.imports = result.folders;
+      const imported = result.imported;
       await Promise.all([
         reloadPhotoEdits(),
         reloadPhotoEffects(),
@@ -1125,6 +1183,7 @@ export class WarbleApp extends LitElement {
     e.stopPropagation();
     const endBusy = beginAppBusy("Reconnecting folder…");
     try {
+      await waitForAppBusyPaint();
       const selections = await invoke<FolderSelection[]>("select_folders_dialog");
       const selection = selections?.[0];
       if (!selection) return;
@@ -1165,33 +1224,128 @@ export class WarbleApp extends LitElement {
     ]);
   }
 
-  /** Re-walk every imported root from disk. The Rust side clears its
-   *  in-memory catalog and rescans each previously imported root. We
-   *  then re-fetch the photo list for whatever folder is currently
-   *  open so files added on disk show up immediately. */
+  /** Queue an independent background scan for every connected root. */
   private async refreshFolders() {
-    const endBusy = beginAppBusy("Syncing folders…");
     try {
-      try {
-        const trees = await invoke<Folder[]>("refresh_imported_folders");
-        this.imports = trees;
-      } catch (err) {
-        console.error("Failed to refresh imported folders", err);
+      this.imports = await invoke<Folder[]>("refresh_imported_folders");
+    } catch (err) {
+      console.error("Failed to refresh imported folders", err);
+    }
+  }
+
+  private onFolderScanProgress(progress: FolderScanProgress): void {
+    let task = this.folderScanTasks.get(progress.jobId);
+    if (progress.phase === "queued") {
+      task = beginTask({
+        kind: "folder",
+        label: progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images",
+        priority: "background",
+        status: "queued",
+        target: progress.folderKey,
+      });
+      this.folderScanTasks.set(progress.jobId, task);
+      return;
+    }
+    if (progress.phase === "scanning" || progress.phase === "indexing") {
+      if (!task) {
+        task = beginTask({
+          kind: "folder",
+          label: progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images",
+          priority: "background",
+          target: progress.folderKey,
+        });
+        this.folderScanTasks.set(progress.jobId, task);
+      }
+      task.update({
+        status: "running",
+        label: progress.kind === "folderTree"
+          ? "Scan folder structure"
+          : "Index folder images",
+      });
+      return;
+    }
+    if (!task) return;
+    task.finish(
+      progress.phase === "done"
+        ? "completed"
+        : progress.phase === "error"
+          ? "failed"
+          : "cancelled",
+    );
+    this.folderScanTasks.delete(progress.jobId);
+    if (progress.phase === "error") {
+      console.error(`Failed to scan ${progress.folderKey}: ${progress.message ?? "unknown error"}`);
+    }
+  }
+
+  private async onFoldersUpdated(update: FolderUpdate): Promise<void> {
+    this.imports = update.folders;
+    if (update.contentChanged && this.pendingRestoreFolderPath) {
+      const restored = findFolderByPath(this.imports, this.pendingRestoreFolderPath);
+      if (restored) {
+        this.pendingRestoreFolderPath = null;
+        await this.selectFolder(restored.id, restored.path);
         return;
       }
-      if (this.selectedFolderId && this.selectedFolderId !== null) {
-        try {
-          const path = this.selectedFolderId;
-          this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
-            folderPath: path,
-            recursive: this.includeSubfolders,
-          }));
-        } catch (err) {
-          console.error("Failed to refresh active folder", err);
-        }
+    }
+    if (!update.contentChanged || !this.selectedFolderId) return;
+    const selectedPath = this.selectedFolderId;
+    const selectedInsideScan =
+      selectedPath === update.folderKey ||
+      selectedPath.startsWith(`${update.folderKey}/`);
+    const scanInsideRecursiveSelection =
+      this.includeSubfolders && update.folderKey.startsWith(`${selectedPath}/`);
+    if (!selectedInsideScan && !scanInsideRecursiveSelection) return;
+
+    try {
+      this.requestFolderImageIndex(selectedPath, this.includeSubfolders);
+      const selected = findFolderByPath(this.imports, selectedPath);
+      if (selected) {
+        this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
+          folderPath: selected.path,
+          recursive: this.includeSubfolders,
+        }));
+        return;
       }
-    } finally {
-      endBusy();
+      const fallback = findFolderByPath(this.imports, update.folderKey);
+      if (fallback) await this.selectFolder(fallback.id, fallback.path);
+    } catch (error) {
+      console.error("Failed to refresh photos after folder scan", error);
+    }
+  }
+
+  private requestFolderImageIndex(folderPath: string, recursive: boolean): void {
+    void invoke("index_folder_images", { folderPath, recursive }).catch((error) =>
+      console.error("Failed to queue folder image indexing", error)
+    );
+  }
+
+  private onFolderImagesUpdated(update: FolderImageUpdate): void {
+    if (!this.selectedFolderId) return;
+    const affectsSelection =
+      update.folderKey === this.selectedFolderId ||
+      (this.includeSubfolders && update.folderKey.startsWith(`${this.selectedFolderId}/`));
+    if (!affectsSelection) return;
+    if (this.folderImageRefreshTimer !== null) {
+      window.clearTimeout(this.folderImageRefreshTimer);
+    }
+    this.folderImageRefreshTimer = window.setTimeout(() => {
+      this.folderImageRefreshTimer = null;
+      void this.refreshSelectedPhotosFromIndex();
+    }, 100);
+  }
+
+  private async refreshSelectedPhotosFromIndex(): Promise<void> {
+    const folderPath = this.selectedFolderId;
+    if (!folderPath) return;
+    try {
+      const photos = await invoke<Photo[]>("get_photos_in_folder", {
+        folderPath,
+        recursive: this.includeSubfolders,
+      });
+      if (this.selectedFolderId === folderPath) this.setPhotos(photos);
+    } catch (error) {
+      console.error("Failed to load indexed folder images", error);
     }
   }
 
@@ -1223,9 +1377,11 @@ export class WarbleApp extends LitElement {
 
   private async selectFolder(id: string, path: string) {
     this.stopPhotoBackgroundWork();
+    this.pendingRestoreFolderPath = null;
     this.selectedFolderId = id;
     const name = id.split("/").filter(Boolean).pop() ?? path;
     this.selectedFolderName = name;
+    this.requestFolderImageIndex(path, this.includeSubfolders);
     const photos = await invoke<Photo[]>("get_photos_in_folder", {
       folderPath: path,
       recursive: this.includeSubfolders,
@@ -1360,39 +1516,20 @@ export class WarbleApp extends LitElement {
 
   private async syncFolder(path: string, name: string) {
     this.folderContextMenu = null;
-    const endBusy = beginAppBusy(`Syncing ${name}…`);
     try {
       this.imports = await invoke<Folder[]>("refresh_folder", {
         folderPath: path,
       });
-
-      if (!this.selectedFolderId) return;
-      const selectedIsInsideSyncedFolder =
-        this.selectedFolderId === path ||
-        this.selectedFolderId.startsWith(`${path}/`);
-      const syncedFolderIsInsideRecursiveSelection =
-        this.includeSubfolders && path.startsWith(`${this.selectedFolderId}/`);
-      if (!selectedIsInsideSyncedFolder && !syncedFolderIsInsideRecursiveSelection) {
-        return;
-      }
-
-      const selected = findFolderByPath(this.imports, this.selectedFolderId);
-      if (selected) {
-        await this.selectFolder(selected.id, selected.path);
-        return;
-      }
-      const fallback = findFolderByPath(this.imports, path);
-      if (fallback) await this.selectFolder(fallback.id, fallback.path);
     } catch (err) {
-      console.error("Failed to sync folder", err);
-    } finally {
-      endBusy();
+      console.error(`Failed to sync ${name}`, err);
     }
   }
 
   private async removeImportedFolder(rootId: string) {
     this.folderContextMenu = null;
+    const endBusy = beginAppBusy("Removing folder…");
     try {
+      await waitForAppBusyPaint();
       removePhotoEffectsUnderRoot(rootId);
       await this.flushPendingPhotoWrites();
       this.imports = await invoke<Folder[]>("remove_imported_folder", { rootId });
@@ -1409,6 +1546,8 @@ export class WarbleApp extends LitElement {
       }
     } catch (err) {
       console.error("Failed to remove imported folder", err);
+    } finally {
+      endBusy();
     }
   }
 
@@ -1468,6 +1607,7 @@ export class WarbleApp extends LitElement {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
       this.stopPhotoBackgroundWork();
+      this.requestFolderImageIndex(this.selectedFolderId, this.includeSubfolders);
       try {
         this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
           folderPath: this.selectedFolderId,

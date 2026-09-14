@@ -11,6 +11,7 @@ pub struct AppState {
     pub repository: Mutex<Option<Arc<LibraryRepository>>>,
     pub settings: SettingsStore,
     pub device_storage: DeviceStorage,
+    pub scan_coordinator: Arc<crate::library::ScanCoordinator>,
     active_library_id: Mutex<Option<String>>,
 }
 

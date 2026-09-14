@@ -6,4 +6,7 @@ pub struct Folder {
     pub name: String,
     pub children: Vec<Folder>,
     pub available: bool,
+    /// True while a background scan is building this root's tree.
+    #[serde(default)]
+    pub scanning: bool,
 }

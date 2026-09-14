@@ -9,10 +9,12 @@ use tauri::Manager;
 #[cfg(desktop)]
 use crate::menu;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::library::{LibraryCatalog, LibraryRepository};
 use imaging::{exif_cache, full_image, hd_image, thumbnails};
+
+static PORTABLE_INDEX_SYNC: Mutex<()> = Mutex::new(());
 
 /// Canonical on-disk location of the active library database.
 pub fn library_db_path(app: &tauri::AppHandle) -> PathBuf {
@@ -153,18 +155,68 @@ pub fn init_menu(app: &tauri::App) {
 #[cfg(mobile)]
 pub fn init_menu(_app: &tauri::App) {}
 
-pub fn rehydrate_media_roots(repo: &LibraryRepository, state: &AppState) {
-    let catalog = scan_media_roots(repo, state);
-    sync_portable_photo_index(repo, state, &catalog);
-    if let Ok(mut active) = state.catalog.lock() {
-        *active = catalog;
+/// Queue a connected root for a background scan and show a pending root now.
+pub fn enqueue_media_root_scan(
+    app: &tauri::AppHandle,
+    repo: &LibraryRepository,
+    state: &AppState,
+    root_id: &str,
+) {
+    let Ok(root) = repo
+        .media_roots()
+        .and_then(|roots| Ok(roots.into_iter().find(|root| root.id == root_id)))
+    else {
+        return;
+    };
+    let Some(root) = root else { return };
+    let Ok(library_id) = repo.library_id() else {
+        return;
+    };
+    let Some(path) = state
+        .device_storage
+        .bindings_for(&library_id)
+        .remove(&root.id)
+    else {
+        return;
+    };
+    if let Ok(mut catalog) = state.catalog.lock() {
+        catalog.add_pending_root(&root.id, &root.name);
+    }
+    state
+        .scan_coordinator
+        .enqueue_root(app, root.id, root.name, path);
+}
+
+/// Queue every connected media root for a background, root-scoped scan.
+pub fn enqueue_media_root_scans(
+    app: &tauri::AppHandle,
+    repo: &LibraryRepository,
+    state: &AppState,
+) {
+    let Ok(roots) = repo.media_roots() else {
+        return;
+    };
+    let Ok(library_id) = repo.library_id() else {
+        return;
+    };
+    let bindings = state.device_storage.bindings_for(&library_id);
+    for root in roots {
+        let Some(path) = bindings.get(&root.id) else {
+            continue;
+        };
+        state
+            .scan_coordinator
+            .enqueue_root(app, root.id, root.name, path.clone());
     }
 }
 
 /// Rebuild the local per-photo index from files which travel with the image.
-/// Errors are intentionally isolated to one photo: a read-only or temporarily
-/// unavailable item must not hide the rest of the media root.
-fn sync_portable_photo_index(repo: &LibraryRepository, state: &AppState, catalog: &LibraryCatalog) {
+/// Filesystem access remains isolated per photo, while the SQLite updates are
+/// committed in one batch after the scan.
+pub fn sync_portable_photo_keys(repo: &LibraryRepository, state: &AppState, keys: Vec<String>) {
+    let Ok(_sync_guard) = PORTABLE_INDEX_SYNC.lock() else {
+        return;
+    };
     let mut effects = repo
         .get_setting("photo_effects_v1")
         .ok()
@@ -174,10 +226,10 @@ fn sync_portable_photo_index(repo: &LibraryRepository, state: &AppState, catalog
         })
         .unwrap_or_default();
     let original_effects = effects.clone();
-    for key in catalog.photo_keys() {
+    let mut indexed_photos = Vec::new();
+    for key in keys {
         let result = state.resolve_library_path(&key).and_then(|source| {
             let portable_effects = crate::sidecar::read_effects(&source);
-            crate::sidecar::sync_photo_index(repo, &key, &source)?;
             match portable_effects {
                 Some(Some(value)) => {
                     effects.insert(key.clone(), value);
@@ -194,11 +246,19 @@ fn sync_portable_photo_index(repo: &LibraryRepository, state: &AppState, catalog
                     }
                 }
             }
+            indexed_photos.push((key.clone(), source));
             Ok(())
         });
         if let Err(error) = result {
             eprintln!("failed to sync portable photo state for {key}: {error}");
         }
+    }
+    let indexed_refs: Vec<(&str, &Path)> = indexed_photos
+        .iter()
+        .map(|(key, source)| (key.as_str(), source.as_path()))
+        .collect();
+    if let Err(error) = crate::sidecar::sync_photo_index_batch(repo, &indexed_refs) {
+        eprintln!("failed to commit portable photo state batch: {error}");
     }
     if effects != original_effects {
         match serde_json::to_string(&effects) {
@@ -212,33 +272,27 @@ fn sync_portable_photo_index(repo: &LibraryRepository, state: &AppState, catalog
     }
 }
 
-/// Scan without holding the shared catalog mutex. The UI can keep rendering
-/// an empty/previous catalog while slow external storage is being walked.
-fn scan_media_roots(repo: &LibraryRepository, state: &AppState) -> LibraryCatalog {
+/// Restore persisted roots as lightweight placeholders. Connected roots are
+/// scanned independently after the app shell is available.
+fn restore_media_root_placeholders(repo: &LibraryRepository, state: &AppState) {
     let mut catalog = LibraryCatalog::default();
     let Ok(roots) = repo.media_roots() else {
-        return catalog;
+        return;
     };
     let Ok(library_id) = repo.library_id() else {
-        return catalog;
+        return;
     };
     let bindings = state.device_storage.bindings_for(&library_id);
     for root in roots {
-        match bindings.get(&root.id) {
-            Some(path) => {
-                if let Err(error) = catalog.rehydrate_root(&root.id, &root.name, path) {
-                    eprintln!(
-                        "failed to scan media root {} at {}: {error}",
-                        root.id,
-                        path.display()
-                    );
-                    catalog.add_unavailable_root(&root.id, &root.name);
-                }
-            }
-            _ => catalog.add_unavailable_root(&root.id, &root.name),
+        if bindings.contains_key(&root.id) {
+            catalog.add_pending_root(&root.id, &root.name);
+        } else {
+            catalog.add_unavailable_root(&root.id, &root.name);
         }
     }
-    catalog
+    if let Ok(mut active) = state.catalog.lock() {
+        *active = catalog;
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -259,14 +313,11 @@ fn hydrate_media_roots_after_startup(
                 return;
             }
             restore_security_scoped_roots(&queued_app, &state, &library_id);
-            let catalog = scan_media_roots(repo.as_ref(), &state);
-            sync_portable_photo_index(repo.as_ref(), &state, &catalog);
             if state.active_library_id().ok().as_deref() != Some(library_id.as_str()) {
                 return;
             }
-            if let Ok(mut active) = state.catalog.lock() {
-                *active = catalog;
-            }
+            restore_media_root_placeholders(repo.as_ref(), &state);
+            enqueue_media_root_scans(&queued_app, repo.as_ref(), &state);
             let _ = queued_app.emit("folders-rehydrated", ());
         });
     });
@@ -280,7 +331,8 @@ fn hydrate_media_roots_after_startup(
 ) {
     let state = app.state::<AppState>();
     restore_security_scoped_roots(app.handle(), &state, &library_id);
-    rehydrate_media_roots(repo.as_ref(), &state);
+    restore_media_root_placeholders(repo.as_ref(), &state);
+    enqueue_media_root_scans(app.handle(), repo.as_ref(), &state);
 }
 
 fn persist_legacy_bindings(repo: &LibraryRepository, state: &AppState, library_id: &str) {

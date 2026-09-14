@@ -32,6 +32,19 @@ impl LibraryRepository {
         Ok(repo)
     }
 
+    /// Execute several related catalog updates in one SQLite transaction.
+    /// This is used when hydrating many sidecars after a filesystem scan.
+    pub fn with_transaction<T>(
+        &self,
+        operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let result = operation(&tx)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(result)
+    }
+
     fn migrate(&self) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
 
@@ -207,20 +220,6 @@ impl LibraryRepository {
         Ok(())
     }
 
-    pub fn photo_rating(&self, path: &str) -> Result<Option<(i64, String, i64)>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT rating, label, rated_at FROM photo_ratings WHERE path = ?1",
-            params![path],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map(Some)
-        .or_else(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other.to_string()),
-        })
-    }
-
     /// Read a cached EXIF row (if any) along with the file fingerprint
     /// it was captured for.
     pub fn get_photo_exif(&self, path: &str) -> Result<Option<(i64, i64, u32, String)>, String> {
@@ -278,13 +277,6 @@ impl LibraryRepository {
         Ok(())
     }
 
-    pub fn delete_photo_exif(&self, path: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM photo_exif WHERE path = ?1", params![path])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
     /// Return every persisted (path → edits-json) row.
     pub fn all_photo_edits(&self) -> Result<Vec<(String, String)>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -319,20 +311,6 @@ impl LibraryRepository {
         conn.execute("DELETE FROM photo_edits WHERE path = ?1", params![path])
             .map_err(|e| e.to_string())?;
         Ok(())
-    }
-
-    pub fn photo_edit(&self, path: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT edits FROM photo_edits WHERE path = ?1",
-            params![path],
-            |row| row.get(0),
-        )
-        .map(Some)
-        .or_else(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other.to_string()),
-        })
     }
 
     /// Return every persisted (path → format, variant) override.

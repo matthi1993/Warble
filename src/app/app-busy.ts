@@ -35,6 +35,15 @@ export function beginAppBusy(label: string): () => void {
   };
 }
 
+/** Let Lit paint the busy overlay before native filesystem work starts. */
+export function waitForAppBusyPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
 export function subscribeAppBusy(listener: BusyListener): () => void {
   listeners.add(listener);
   listener(currentLabel());
