@@ -61,8 +61,8 @@ export function buildShortcuts(): readonly ShortcutDef[] {
     {
       label: "P",
       keys: ["p", "P"],
-      description: "Cycle proof / fit",
-      run: (h) => call(h, "cycleFit"),
+      description: "Cycle frame size",
+      run: (h) => call(h, "cycleFrameSize"),
     },
     {
       label: "⌫",

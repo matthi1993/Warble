@@ -10,12 +10,6 @@
  *      browser's native `createImageBitmap` (multi-threaded, SIMD JPEG
  *      decode) and swap it in.
  *
- * Fit modes:
- *   - `contain`: largest scale that fits inside the panel, no margin.
- *   - `proof`:   `contain` minus a generous margin (96 CSS px) so the
- *                viewer can step back from the image.
- *   - `tight`:   `contain` minus a small margin (24 CSS px) for close
- *                proofing without filling every last pixel.
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -58,14 +52,12 @@ import {
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
 import type {
   CropFrame,
-  ImageFit,
   ImageSizing,
   ImageSmoothingQuality,
 } from "./canvas/types";
 
 export type {
   CropFrame,
-  ImageFit,
   ImageSizing,
   ImageSmoothingQuality,
 } from "./canvas/types";
@@ -79,16 +71,6 @@ const EDIT_SETTLE_MS = 1000;
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {
-  /**
-   * Layout strategy:
-   *   - Proof/tight margins are CSS `padding` on `:host`. The canvas
-   *     itself shrinks to the inner box, so the standard `ResizeObserver`
-   *     reflow is all we need to refit. Padding shows the bg color
-   *     (`--pf-canvas-bg`).
-   *
-   * `fit` is reflected as an attribute so CSS can branch on it
-   * (`:host([fit="proof"])` etc.).
-   */
   static styles = css`
     :host {
       display: block;
@@ -97,20 +79,6 @@ export class PfImageCanvas extends LitElement {
       background: var(--pf-canvas-bg, transparent);
       touch-action: none;
       box-sizing: border-box;
-    }
-    :host([fit="tight"]) {
-      padding: 12px;
-    }
-    :host([fit="proof"]) {
-      padding: 48px;
-    }
-    @media (pointer: coarse) {
-      :host([fit="proof"]) {
-        padding: 24px;
-      }
-      :host([fit="tight"]) {
-        padding: 8px;
-      }
     }
     canvas {
       width: 100%;
@@ -177,8 +145,14 @@ export class PfImageCanvas extends LitElement {
   @property({ type: String })
   path: string | null = null;
 
-  @property({ type: String, reflect: true })
-  fit: ImageFit = "contain";
+  @property({ type: Number })
+  frameSize = 0;
+
+  @property({ type: String })
+  frameColor = "#fff";
+
+  @property({ type: Number })
+  frameRadius = 0;
 
   @property({ type: String, reflect: true })
   sizing: ImageSizing = "fit";
@@ -363,9 +337,6 @@ export class PfImageCanvas extends LitElement {
   firstUpdated() {
     this.canvas = this.renderRoot.querySelector("canvas") as HTMLCanvasElement;
     this.ctx = this.canvas.getContext("2d") ?? undefined;
-    // Observe the canvas (not the host) so padding changes on `:host`
-    // — which keep the host's border box constant — still trigger a
-    // backing-store resize.
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(this.canvas);
     this.attachInputs();
@@ -558,16 +529,16 @@ export class PfImageCanvas extends LitElement {
       this.cropFrame = null;
       this.refreshSavedCrop();
       if (this.canvas) this.startLoad();
-    } else if (changed.has("fit") || changed.has("sizing")) {
+    } else if (changed.has("frameSize") || changed.has("sizing")) {
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
       this.scale = 1;
       this.offsetX = 0;
       this.offsetY = 0;
-      // Padding on `:host` is driven by the reflected `fit`/`sizing`
-      // attributes, so the canvas resizes on the next frame; a single
-      // onResize() pass after layout settles refits and redraws.
       requestAnimationFrame(() => this.onResize());
+    }
+    if (changed.has("frameColor") || changed.has("frameRadius")) {
+      this.scheduleDraw();
     }
     if (changed.has("smoothingQuality")) {
       this.scheduleDraw();
@@ -1110,9 +1081,6 @@ export class PfImageCanvas extends LitElement {
   private onResize() {
     if (!this.canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    // Measure the canvas itself — not the host — because CSS padding
-    // on `:host` (driven by the `fit` attribute) shrinks the canvas
-    // while the host's border box stays put.
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(1, Math.floor(rect.width * dpr));
     const h = Math.max(1, Math.floor(rect.height * dpr));
@@ -1129,8 +1097,9 @@ export class PfImageCanvas extends LitElement {
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const cw = Math.max(1, this.canvas.width);
-    const ch = Math.max(1, this.canvas.height);
+    const inset = this.frameInset();
+    const cw = Math.max(1, this.canvas.width - 2 * inset);
+    const ch = Math.max(1, this.canvas.height - 2 * inset);
     const { dispW, dispH } = this.effectiveRect(src);
     const aspect = dispW / dispH;
     let useFill = this.sizing === "fill";
@@ -1157,11 +1126,17 @@ export class PfImageCanvas extends LitElement {
   }
 
   /** Floor scale for wheel-zoom-out: never smaller than the current fit
-   * mode would produce. In `contain` mode this prevents zooming out past
-   * the full image view; in `proof`/`tight` it preserves the configured
-   * margin around the image. */
+  * mode would produce. */
   private minScale(): number {
     return this.fitScale;
+  }
+
+  private frameInset(): number {
+    if (!this.canvas) return 0;
+    return Math.min(
+      this.frameSize * (window.devicePixelRatio || 1),
+      Math.max(0, (Math.min(this.canvas.width, this.canvas.height) - 1) / 2),
+    );
   }
 
   /** Coalesce multiple repaint requests into one rAF-scheduled draw.
@@ -1194,6 +1169,24 @@ export class PfImageCanvas extends LitElement {
       const cy = cv.height / 2 + this.offsetY;
       const x = cx - drawW / 2;
       const y = cy - drawH / 2;
+      const inset = this.frameInset();
+      const left = Math.max(inset, x);
+      const top = Math.max(inset, y);
+      const right = Math.min(cv.width - inset, x + drawW);
+      const bottom = Math.min(cv.height - inset, y + drawH);
+      if (right <= left || bottom <= top) {
+        ctx.restore();
+        return;
+      }
+      const radius = this.frameRadius * (window.devicePixelRatio || 1);
+      if (inset > 0) {
+        ctx.fillStyle = this.frameColor;
+        ctx.fillRect(left - inset, top - inset, right - left + 2 * inset, bottom - top + 2 * inset);
+      }
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(left, top, right - left, bottom - top, inset > 0 ? radius : 0);
+      ctx.clip();
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = this.smoothingQuality;
       // Tone is applied in crop mode too so the user sees what their
@@ -1276,6 +1269,7 @@ export class PfImageCanvas extends LitElement {
       if (this.horizonDrag) {
         this.drawHorizonLine(ctx, x, y, drawW, drawH);
       }
+      ctx.restore();
       void bm;
     }
     ctx.restore();

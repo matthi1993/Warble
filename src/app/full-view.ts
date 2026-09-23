@@ -3,7 +3,7 @@
  *
  * Owns:
  *   - navigation (`go`, `close`, fullscreen toggle, variant menu),
- *   - view state (fit / sizing / bg, persisted via SQLite),
+ *   - view state (frame / sizing / bg, persisted via SQLite),
  *   - the three-tab right panel (Info / Edit / Post Process),
  *   - click-to-toggle fullscreen chrome,
  *   - press-and-hold before/after preview,
@@ -39,9 +39,12 @@ import {
 } from "@services/edits/edits-store";
 import {
   DEFAULT_VIEW_STATE,
+  FRAME_SIZES,
   loadViewState,
   saveViewState,
   type BgColor,
+  type FrameRadius,
+  type FrameSize,
   type SmoothingQuality,
 } from "@services/view-state/view-state-service";
 import "@ui/controls/pf-icon-button";
@@ -50,9 +53,7 @@ import "@ui/icons/pf-icon";
 import "@ui/photos/pf-image-canvas";
 import "@ui/photos/pf-rating-overlay";
 import type {
-  ImageFit,
   ImageSizing,
-  ImageSmoothingQuality,
   PfImageCanvas,
 } from "@ui/photos/pf-image-canvas";
 import "./views/full-view/pf-info-card";
@@ -79,7 +80,6 @@ import {
 } from "./views/full-view/variant-selector";
 import { ExifLoader } from "./views/full-view/exif-loader";
 import {
-  buildHintLine,
   buildShortcuts,
   dispatchShortcut,
   type ShortcutDef,
@@ -111,7 +111,13 @@ export class PfFullView extends LitElement {
   private bg: BgColor = DEFAULT_VIEW_STATE.bg;
 
   @state()
-  private fit: ImageFit = DEFAULT_VIEW_STATE.fit;
+  private frameSize: FrameSize = DEFAULT_VIEW_STATE.frameSize;
+
+  @state()
+  private frameColor: BgColor = DEFAULT_VIEW_STATE.frameColor;
+
+  @state()
+  private frameRadius: FrameRadius = DEFAULT_VIEW_STATE.frameRadius;
 
   @state()
  private sizing: ImageSizing = DEFAULT_VIEW_STATE.sizing;
@@ -121,6 +127,21 @@ export class PfFullView extends LitElement {
 
   /** Suppresses the persistence side-effect during the initial hydrate. */
   private hydrated = false;
+
+  private footerObserver: ResizeObserver | null = null;
+
+  updated(): void {
+    if (this.footerObserver) return;
+    const footer = this.renderRoot.querySelector<HTMLElement>(".bottombar-wrap");
+    if (!footer) return;
+    this.footerObserver = new ResizeObserver(() => {
+      this.style.setProperty(
+        "--pf-fv-footer-height",
+        `${footer.getBoundingClientRect().height + 12}px`,
+      );
+    });
+    this.footerObserver.observe(footer);
+  }
 
   @state()
   private openMenu: FullViewMenu | null = null;
@@ -257,6 +278,8 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.footerObserver?.disconnect();
+    this.footerObserver = null;
     this.exifLoader.syncToPath(null);
     const t = this.editTargetPath();
     if (t) void flushPhotoEdit(t);
@@ -286,10 +309,18 @@ export class PfFullView extends LitElement {
       );
     }
     if (
-      (changed.has("bg") || changed.has("fit") || changed.has("sizing") || changed.has("smoothing")) &&
+      (changed.has("bg") || changed.has("frameSize") || changed.has("frameColor") ||
+        changed.has("frameRadius") || changed.has("sizing") || changed.has("smoothing")) &&
       this.hydrated
     ) {
-      void saveViewState({ bg: this.bg, fit: this.fit, sizing: this.sizing, smoothing: this.smoothing });
+      void saveViewState({
+        bg: this.bg,
+        frameSize: this.frameSize,
+        frameColor: this.frameColor,
+        frameRadius: this.frameRadius,
+        sizing: this.sizing,
+        smoothing: this.smoothing,
+      });
     }
     if (changed.has("fullscreen")) {
       if (!this.fullscreen) {
@@ -335,11 +366,13 @@ export class PfFullView extends LitElement {
     return bg === "black" ? "#000" : bg === "white" ? "#fff" : "#808080";
   }
 
-  /** Read the persisted background + fit selection from SQLite. */
+  /** Read the persisted view preferences from SQLite. */
   private async hydrateViewState() {
     const persisted = await loadViewState();
     if (persisted.bg) this.bg = persisted.bg;
-    if (persisted.fit) this.fit = persisted.fit;
+    if (persisted.frameSize !== undefined) this.frameSize = persisted.frameSize;
+    if (persisted.frameColor) this.frameColor = persisted.frameColor;
+    if (persisted.frameRadius !== undefined) this.frameRadius = persisted.frameRadius;
     if (persisted.sizing) this.sizing = persisted.sizing;
    if (persisted.smoothing) this.smoothing = persisted.smoothing;
    this.hydrated = true;
@@ -449,10 +482,9 @@ export class PfFullView extends LitElement {
   private readonly shortcuts: readonly ShortcutDef[] = buildShortcuts();
 
   /** Called via the shortcuts registry (P). */
-  cycleFit() {
-    const order: ImageFit[] = ["contain", "tight", "proof"];
-    const idx = order.indexOf(this.fit);
-    this.fit = order[(idx + 1) % order.length];
+  cycleFrameSize() {
+    const idx = FRAME_SIZES.indexOf(this.frameSize);
+    this.frameSize = FRAME_SIZES[(idx + 1) % FRAME_SIZES.length];
     this.openMenu = null;
   }
 
@@ -549,23 +581,28 @@ export class PfFullView extends LitElement {
     this.openMenu = null;
   };
 
-  private setFit = (m: ImageFit) => {
-    const same = this.fit === m;
-    this.fit = m;
-    this.openMenu = null;
+  private setFrameSize = (size: FrameSize) => {
+    const same = this.frameSize === size;
+    this.frameSize = size;
     if (same) this.canvasEl()?.resetView();
+  };
+
+  private setFrameColor = (color: BgColor) => {
+    this.frameColor = color;
+  };
+
+  private setFrameRadius = (radius: FrameRadius) => {
+    this.frameRadius = radius;
   };
 
   private setSizing = (s: ImageSizing) => {
     const same = this.sizing === s;
     this.sizing = s;
-    this.openMenu = null;
     if (same) this.canvasEl()?.resetView();
  };
 
  private setSmoothing = (q: SmoothingQuality) => {
   this.smoothing = q;
-  this.openMenu = null;
 };
 
  private toggleMenu = (which: FullViewMenu) => {
@@ -945,18 +982,6 @@ export class PfFullView extends LitElement {
     this.activeTool()?.onCanvasHorizonLine(this.toolHost, delta);
   };
 
-  private fitLabel(m: ImageFit): string {
-    return m === "contain" ? "None" : m === "tight" ? "Tight" : "Proof";
-  }
-
-  private sizingLabel(s: ImageSizing): string {
-   return s === "fit" ? "Contain" : s === "fill" ? "Cover" : "Hybrid";
- }
-
- private smoothingLabel(q: ImageSmoothingQuality): string {
-   return q.charAt(0).toUpperCase() + q.slice(1);
- }
-
  // --- Render ---------------------------------------------------------
 
   private renderSideRail() {
@@ -1091,8 +1116,6 @@ export class PfFullView extends LitElement {
     const photo = this.currentPhoto;
     if (!photo) return html``;
     const total = this.photos.length;
-    const hasPrev = this.index > 0;
-    const hasNext = this.index < total - 1;
     const path = resolvedPath(photo);
     // Merge canvas overrides from the active tool over the shell's
     // defaults. Tools that aren't active contribute nothing.
@@ -1130,7 +1153,9 @@ export class PfFullView extends LitElement {
         <div class="stage">
           <pf-image-canvas
             .path=${path}
-            .fit=${this.fit}
+            .frameSize=${this.frameSize}
+            .frameColor=${this.bgCss(this.frameColor)}
+            .frameRadius=${this.frameRadius}
             .sizing=${sizing}
            .smoothingQuality=${this.smoothing}
            .cropMode=${cropMode}
@@ -1152,36 +1177,11 @@ export class PfFullView extends LitElement {
             ? html`<pf-rating-overlay
                 class="fv-rating-overlay"
                 .path=${path}
-                ?fullscreen=${this.fullscreen}
-                ?forceVisible=${this.fullscreen && !this.controlsHidden}
+                ?fullscreen=${true}
+                ?forceVisible=${!this.fullscreen || !this.controlsHidden}
                 style="--pf-rating-inset: 16px; --pf-rating-star-size: 14px; --pf-rating-label-size: 8px;"
               ></pf-rating-overlay>`
             : null}
-          <button
-           class="nav prev"
-           aria-label="Previous"
-           ?disabled=${!hasPrev}
-           @click=${() => this.go(-1)}
-         >
-           <pf-icon name="chevron-left"></pf-icon>
-         </button>
-         <button
-           class="nav next"
-           aria-label="Next"
-           ?disabled=${!hasNext}
-           @click=${() => this.go(1)}
-         >
-           <pf-icon name="chevron-right"></pf-icon>
-         </button>
-          <div class="hint">
-            ${buildHintLine(
-              this.shortcuts.filter(
-                (shortcut) =>
-                  shortcut.keys.includes("ArrowLeft") ||
-                  shortcut.keys.includes("ArrowRight")
-              )
-            )}
-          </div>
         </div>
         ${this.editMode
       ? this.renderSideRail() : null}
@@ -1192,18 +1192,19 @@ export class PfFullView extends LitElement {
      <div class="bottombar-wrap">
        ${renderBottombar({
       bg: this.bg,
-       fit: this.fit,
+      frameSize: this.frameSize,
+      frameColor: this.frameColor,
+      frameRadius: this.frameRadius,
        sizing: this.sizing,
        smoothing: this.smoothing,
        openMenu: this.openMenu,
        bgCss: (b) => this.bgCss(b),
        bgLabel: (b) => this.bgLabel(b),
-       fitLabel: (m) => this.fitLabel(m),
-       sizingLabel: (s) => this.sizingLabel(s),
-       smoothingLabel: (q) => this.smoothingLabel(q),
        onToggleMenu: this.toggleMenu,
        onSetBg: this.setBg,
-       onSetFit: this.setFit,
+      onSetFrameSize: this.setFrameSize,
+      onSetFrameColor: this.setFrameColor,
+      onSetFrameRadius: this.setFrameRadius,
        onSetSizing: this.setSizing,
        onSetSmoothing: this.setSmoothing,
        postProcessEnabled: getPostProcess().enabled,

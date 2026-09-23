@@ -128,6 +128,12 @@ pub fn set_last_folder(path: String, state: State<'_, AppState>) -> Result<(), S
 pub struct ViewState {
     pub bg: Option<String>,
     pub fit: Option<String>,
+    #[serde(default, rename = "frameSize")]
+    pub frame_size: Option<u32>,
+    #[serde(default, rename = "frameColor")]
+    pub frame_color: Option<String>,
+    #[serde(default, rename = "frameRadius")]
+    pub frame_radius: Option<u32>,
     #[serde(default)]
     pub sizing: Option<String>,
     #[serde(default)]

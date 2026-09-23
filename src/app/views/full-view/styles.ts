@@ -37,10 +37,13 @@ export const fullViewStyles = css`
     overflow: hidden;
   }
   .toolbar,
-  .bottombar,
-  .nav,
-  .hint {
+  .bottombar {
     transition: opacity 200ms ease;
+  }
+  .toolbar-wrap,
+  .bottombar-wrap {
+    position: relative;
+    z-index: 30;
   }
   /* In fullscreen, chrome overlays the image instead of taking
      up flex space, so the image fills the entire viewport. */
@@ -49,26 +52,14 @@ export const fullViewStyles = css`
     top: 0;
     left: 0;
     right: 0;
-    z-index: 10;
+    z-index: 30;
   }
   :host([fullscreen]) .bottombar-wrap {
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 10;
-  }
-  :host([fullscreen]) .nav {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 10;
-  }
-  :host([fullscreen]) .nav.prev {
-    left: 12px;
-  }
-  :host([fullscreen]) .nav.next {
-    right: 12px;
+    z-index: 30;
   }
   :host([fullscreen]) .stage-row {
     position: absolute;
@@ -81,9 +72,7 @@ export const fullViewStyles = css`
   }
   /* Fullscreen chrome uses explicit image clicks/taps, on every platform. */
   :host([fullscreen][controls-hidden]) .toolbar-wrap,
-  :host([fullscreen][controls-hidden]) .bottombar-wrap,
-  :host([fullscreen][controls-hidden]) .nav,
-  :host([fullscreen][controls-hidden]) .hint {
+  :host([fullscreen][controls-hidden]) .bottombar-wrap {
     opacity: 0;
     pointer-events: none;
   }
@@ -117,12 +106,11 @@ export const fullViewStyles = css`
     gap: var(--pf-space-2);
     flex: 0 0 auto;
   }
-  /* Symmetric placeholder bar at the bottom — same vertical footprint
-     as the toolbar so the stage's centre lines up with the viewport's
-     centre. */
+  /* View controls can wrap on narrow screens without clipping their menus. */
   .bottombar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--pf-space-2);
     padding: var(--pf-space-2) var(--pf-space-3);
     background: var(--pf-surface);
@@ -196,6 +184,45 @@ export const fullViewStyles = css`
     flex-direction: column;
     gap: 2px;
   }
+  .settings-menu {
+    width: min(300px, calc(100vw - 32px));
+    min-width: 0;
+    box-sizing: border-box;
+    max-height: min(360px, calc(100vh - 96px));
+    overflow-y: auto;
+    gap: var(--pf-space-2);
+    padding: var(--pf-space-2);
+  }
+  .view-menu {
+    left: auto;
+    right: 0;
+  }
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .settings-section-label {
+    color: var(--pf-text-muted);
+    font-size: var(--pf-text-xs);
+    font-weight: 600;
+  }
+  .settings-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .settings-options .menu-item {
+    background: var(--pf-surface-2);
+    border: 1px solid var(--pf-border);
+  }
+  .settings-options .menu-item:hover {
+    background: var(--pf-surface-hover);
+  }
+  .settings-options .menu-item[aria-pressed="true"] {
+    background: var(--pf-accent-soft);
+    border-color: var(--pf-accent);
+  }
   .menu-item {
     background: transparent;
     color: var(--pf-text);
@@ -255,44 +282,7 @@ export const fullViewStyles = css`
     pointer-events: none;
   }
   :host([fullscreen]:not([controls-hidden])) .fv-rating-overlay {
-    --pf-rating-bottom-offset: calc(
-      32px + var(--pf-space-2) + env(safe-area-inset-bottom, 0px)
-    );
-  }
-  .nav {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 6;
-    background: color-mix(in srgb, var(--pf-surface) 70%, transparent);
-    border: 1px solid var(--pf-border);
-    color: var(--pf-text);
-    border-radius: var(--pf-radius-full, 999px);
-    width: 36px;
-    height: 36px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    padding: 0;
-    backdrop-filter: blur(4px);
-  }
-  .nav.prev {
-    left: var(--pf-space-2);
-  }
-  .nav.next {
-    right: var(--pf-space-2);
-  }
-  .nav:hover {
-    background: var(--pf-surface-hover);
-    border-color: var(--pf-accent);
-  }
-  .nav:disabled {
-    opacity: 0.3;
-    cursor: default;
-  }
-  .nav pf-icon {
-    font-size: 1.1rem;
+    --pf-rating-bottom-offset: var(--pf-fv-footer-height, 48px);
   }
   .close-btn {
     background: var(--pf-surface-2);
@@ -317,23 +307,6 @@ export const fullViewStyles = css`
     stroke: currentColor;
     stroke-width: 2;
     fill: none;
-  }
-  .hint {
-    position: absolute;
-    bottom: var(--pf-space-3);
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.6);
-    color: rgba(255, 255, 255, 0.85);
-    font-size: var(--pf-text-xs);
-    padding: 4px 10px;
-    border-radius: var(--pf-radius-sm);
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 200ms ease;
-  }
-  .stage:hover .hint {
-    opacity: 1;
   }
   /* Right-side editor panel: in the flex flow alongside the stage
      in both windowed and fullscreen modes. */

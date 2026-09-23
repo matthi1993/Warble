@@ -42,7 +42,7 @@ The panel is defined in [`detail-panel.ts`](../src/app/detail-panel.ts).
 
 ## Full view
 
-The full view gives the photo most of the window. Previous and next controls
+The full view gives the photo most of the window. Arrow keys and swipes
 move through the current grid order. The top toolbar provides format and
 variant selection, Open In, delete, fullscreen, and close actions.
 
@@ -52,7 +52,8 @@ The side panel has three areas:
 - Edit contains adjustments for the current photo.
 - Post contains global finishing controls and presets.
 
-The bottom controls change the viewing background, fit, scale, and smoothing.
+The bottom controls offer background color, a Frame dropdown for size, color, and inner corners,
+and a View dropdown for scale, quality, and Post-Processing.
 Edits can be compared with the original, reset, or saved as a new JPEG
 variant.
 

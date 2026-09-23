@@ -5,7 +5,6 @@
  * it composes.
  */
 
-export type ImageFit = "contain" | "proof" | "tight";
 export type ImageSizing = "fit" | "fill" | "hybrid";
 export type ImageSmoothingQuality = "low" | "medium" | "high";
 
