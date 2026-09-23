@@ -31,11 +31,8 @@ letting every tool keep its shader implementation locally. The resulting
 program is managed by
 [`render-pipeline.ts`](../src/features/editor/rendering/render-pipeline.ts).
 
-JPG and RAW normally use the same tools. Source decoding and RAW texture
-sampling are handled by the rendering layer, while format-specific defaults
-or control ranges belong in tool logic. If an algorithm genuinely differs for
-RAW, both branches should remain inside that tool's shader module and select
-using the source-format uniform.
+Only JPEG variants are editable. The renderer consumes a decoded bitmap; RAW
+sensor data is never sent to the editing pipeline.
 
 To add a tool, create its UI, logic, and shader files, then add one entry to
 [`EDITOR_TOOLS`](../src/features/editor/registry.ts). Declare whether it is

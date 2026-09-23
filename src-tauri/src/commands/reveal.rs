@@ -119,7 +119,11 @@ pub async fn open_raw_in_default_app(
                 .arg(&resolved)
                 .status()
                 .map_err(|e| format!("failed to open RAW photo: {e}"))?;
-            if status.success() { Ok(()) } else { Err("could not open RAW photo".to_string()) }
+            if status.success() {
+                Ok(())
+            } else {
+                Err("could not open RAW photo".to_string())
+            }
         })
         .await
         .map_err(|e| e.to_string())?;

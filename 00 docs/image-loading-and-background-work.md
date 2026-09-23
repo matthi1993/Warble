@@ -6,8 +6,8 @@ still showing a high-quality photo when needed.
 ## Image loading
 
 The grid uses small thumbnails. The detail panel and full view can first show a
-thumbnail, then replace it with a larger preview. RAW sources are decoded when
-the full view or editor needs their image data.
+thumbnail, then replace it with a larger preview. For RAW files, Warble shows
+only a camera-embedded preview when available; it does not develop sensor data.
 
 Decoded images and generated previews are reused where possible. Cache limits
 and preview quality can be changed from Performance & Caches.

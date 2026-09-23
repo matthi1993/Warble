@@ -44,7 +44,12 @@ pub fn extract_preview_sized(
     let rgb = image.to_rgb8();
     let mut jpeg_bytes = Vec::new();
     JpegEncoder::new_with_quality(&mut jpeg_bytes, 92)
-        .encode(&rgb, rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .encode(
+            &rgb,
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
         .map_err(|e| format!("Embedded JPEG preview encode failed: {e}"))?;
     Ok(RawPreview {
         jpeg_bytes,

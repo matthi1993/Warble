@@ -17,9 +17,10 @@ Folder discovery and the library catalog live under
 ## Photos, formats, and variants
 
 Warble recognises common JPEG, PNG, TIFF, and camera RAW formats. Files with a
-shared name can appear as one photo with multiple formats or variants. The
-preferred format and variant can be changed from the detail panel and full
-view.
+shared name can appear as one photo with multiple files or JPEG variants.
+RAW files can be opened in the system's default app from the full view but
+cannot be selected as editable variants. RAW-only photos show their embedded
+JPEG preview when one exists.
 
 Edited photos can be saved as new JPEG variants. A photo or variant can also
 be moved to the system Bin from the full view.
