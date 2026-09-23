@@ -69,6 +69,8 @@ export class PfBasicCard extends LitElement {
   @property({ attribute: false })
   tone: ToneEdit = defaultTone();
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: Boolean })
   open = false;
 
@@ -117,7 +119,7 @@ export class PfBasicCard extends LitElement {
   render() {
     const canRevert = !isBaseToneZero(this.tone);
     return html`
-      <pf-card before-after .title=${"Base Edit"} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .effectDisabled=${this.effectDisabled} .title=${"Base Edit"} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

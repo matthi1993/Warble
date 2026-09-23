@@ -69,6 +69,8 @@ export class PfDynamicRangeCard extends LitElement {
   @property({ attribute: false })
   tone: ToneEdit = defaultTone();
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: Boolean })
   open = false;
 
@@ -118,7 +120,7 @@ export class PfDynamicRangeCard extends LitElement {
     const canRevert = !isDynamicRangeZero(this.tone);
     return html`
       <pf-card
-        before-after
+        .effectDisabled=${this.effectDisabled}
         .title=${"Dynamic Range"}
         ?open=${this.open}
         @toggle=${this.onToggle}

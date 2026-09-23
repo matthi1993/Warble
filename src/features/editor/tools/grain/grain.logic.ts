@@ -57,8 +57,8 @@ export class GrainTool extends EditTool {
       .value=${value}
       ?open=${this.cardOpen}
       ?can-revert=${this.scope === "post" ? !isGrainZero(value) : stored != null}
-      @tool-preview-start=${this.startBeforePreview}
-      @tool-preview-end=${this.endBeforePreview}
+      .effectDisabled=${this.effectDisabled(host)}
+      @effect-toggle=${() => this.toggleEffect(host)}
       @toggle=${(event: CustomEvent<{ open: boolean }>) => {
         this.cardOpen = event.detail.open;
         host.requestUpdate();

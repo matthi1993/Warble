@@ -179,6 +179,8 @@ export class PfColorCard extends LitElement {
   @property({ attribute: false })
   value: ColorEdit = defaultColor();
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: Boolean })
   open = false;
 
@@ -273,7 +275,7 @@ export class PfColorCard extends LitElement {
     const canRevert = !isColorZero(this.value);
     const axis = this.axis;
     return html`
-      <pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .effectDisabled=${this.effectDisabled} .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

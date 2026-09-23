@@ -44,6 +44,8 @@ export class PfCurveCard extends LitElement {
   @property({ attribute: false })
   value: CurveEdit = defaultCurve();
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: Boolean })
   open = false;
 
@@ -82,7 +84,7 @@ export class PfCurveCard extends LitElement {
   render() {
     const canRevert = !isCurveZero(this.value);
     return html`
-      <pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .effectDisabled=${this.effectDisabled} .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

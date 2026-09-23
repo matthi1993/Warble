@@ -21,9 +21,11 @@ import type {
 import {
   FRAME_RADII,
   FRAME_SIZES,
+  PROOFING_SIZES,
   type BgColor,
   type FrameSize,
   type FrameRadius,
+  type ProofingSize,
 } from "@services/view-state/view-state-service";
 
 export type FullViewMenu =
@@ -153,6 +155,7 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
 
 export interface BottombarOptions {
   bg: BgColor;
+  proofingSize: ProofingSize;
   frameSize: FrameSize;
   frameColor: BgColor;
   frameRadius: FrameRadius;
@@ -163,6 +166,7 @@ export interface BottombarOptions {
   bgLabel: (bg: BgColor) => string;
   onToggleMenu: (which: FullViewMenu) => void;
   onSetBg: (bg: BgColor) => void;
+  onSetProofingSize: (size: ProofingSize) => void;
   onSetFrameSize: (size: FrameSize) => void;
   onSetFrameColor: (color: BgColor) => void;
   onSetFrameRadius: (radius: FrameRadius) => void;
@@ -173,7 +177,7 @@ export interface BottombarOptions {
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
-  const { bg, frameSize, frameColor, frameRadius, sizing, smoothing, openMenu } = opts;
+  const { bg, proofingSize, frameSize, frameColor, frameRadius, sizing, smoothing, openMenu } = opts;
   return html`
     <div class="bottombar">
       <span class="menu-wrap">
@@ -189,21 +193,25 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
           <pf-icon name="chevron-down"></pf-icon>
         </button>
         ${openMenu === "bg"
-          ? html`<div class="menu-popup" role="menu">
-              ${(["black", "grey", "white"] as BgColor[]).map(
-                (b) => html`<button
-                  class="menu-item"
-                  role="menuitemradio"
-                  aria-pressed=${bg === b}
-                  @click=${() => opts.onSetBg(b)}
-                >
-                  <span
-                    class="swatch"
-                    style="background:${opts.bgCss(b)}"
-                  ></span>
-                  ${opts.bgLabel(b)}
-                </button>`
-              )}
+          ? html`<div class="menu-popup settings-menu" role="group" aria-label="Background settings">
+              <div class="settings-section" role="group" aria-label="Background color">
+                <span class="settings-section-label">Color</span>
+                <div class="settings-options">
+                  ${(["black", "grey", "white"] as BgColor[]).map((b) => html`<button
+                    class="menu-item" type="button" aria-pressed=${bg === b}
+                    @click=${() => opts.onSetBg(b)}
+                  ><span class="swatch" style="background:${opts.bgCss(b)}"></span>${opts.bgLabel(b)}</button>`)}
+                </div>
+              </div>
+              <div class="settings-section" role="group" aria-label="Proofing margin size">
+                <span class="settings-section-label">Proofing</span>
+                <div class="settings-options">
+                  ${PROOFING_SIZES.map((size) => html`<button
+                    class="menu-item" type="button" aria-pressed=${proofingSize === size}
+                    @click=${() => opts.onSetProofingSize(size)}
+                  >${size === 0 ? "None" : `${size}px`}</button>`)}
+                </div>
+              </div>
             </div>`
           : null}
       </span>

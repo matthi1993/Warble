@@ -72,8 +72,8 @@ export class ToneTool extends EditTool {
       <pf-basic-card
         .tone=${tone}
         ?open=${this.cardOpen}
-        @tool-preview-start=${this.startBeforePreview}
-        @tool-preview-end=${this.endBeforePreview}
+        .effectDisabled=${this.effectDisabled(host, "base-tone")}
+        @effect-toggle=${() => this.toggleEffect(host, "base-tone")}
         @toggle=${(event: CustomEvent<{ open: boolean }>) => {
           this.cardOpen = event.detail.open;
           host.requestUpdate();
@@ -93,8 +93,8 @@ export class ToneTool extends EditTool {
       <pf-dynamic-range-card
         .tone=${tone}
         ?open=${this.dynamicRangeCardOpen}
-        @tool-preview-start=${this.startBeforePreview}
-        @tool-preview-end=${this.endBeforePreview}
+        .effectDisabled=${this.effectDisabled(host, "dynamic-range")}
+        @effect-toggle=${() => this.toggleEffect(host, "dynamic-range")}
         @toggle=${(event: CustomEvent<{ open: boolean }>) => {
           this.dynamicRangeCardOpen = event.detail.open;
           host.requestUpdate();

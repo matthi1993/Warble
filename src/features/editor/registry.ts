@@ -13,6 +13,8 @@ import { grainShader } from "./tools/grain/grain.shader";
 import { sharpenShader } from "./tools/sharpen/sharpen.shader";
 import { toneShader } from "./tools/tone/tone.shader";
 import { bloomShader } from "./tools/bloom/bloom.shader";
+import { BASE_TONE_KEYS, DYNAMIC_RANGE_KEYS, defaultTone, type ToneEdit } from "@domain/edits";
+import { isEffectEnabled } from "./effect-enabled";
 
 export interface EditorToolRegistration {
   readonly id: string;
@@ -104,10 +106,24 @@ export function readEditorToolValues(
   scope: ToolScope,
   path: string | null,
 ): Readonly<Record<string, unknown>> {
+  if (scope === "photo" && !isEffectEnabled(scope, path, "all")) return {};
   return Object.fromEntries(
     EDITOR_TOOLS
       .filter((tool) => tool.shader && tool.scopes.includes(scope) && tool.readValue)
-      .map((tool) => [tool.id, tool.readValue!(scope, path)]),
+      .filter((tool) => isEffectEnabled(scope, path, tool.id))
+      .map((tool) => {
+        const value = tool.readValue!(scope, path);
+        if (tool.id !== "tone") return [tool.id, value];
+        const tone = { ...(value as ToneEdit) };
+        const neutral = defaultTone();
+        if (!isEffectEnabled(scope, path, "base-tone")) {
+          for (const key of BASE_TONE_KEYS) tone[key] = neutral[key];
+        }
+        if (!isEffectEnabled(scope, path, "dynamic-range")) {
+          for (const key of DYNAMIC_RANGE_KEYS) tone[key] = neutral[key];
+        }
+        return [tool.id, tone];
+      }),
   );
 }
 

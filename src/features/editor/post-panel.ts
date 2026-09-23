@@ -6,8 +6,10 @@ import {
   subscribePostProcess,
 } from "@services/post-process/post-process-store";
 import { createEditorTools } from "./registry";
+import { subscribeEffectEnabled } from "./effect-enabled";
 import type { ToolHost } from "./tool";
 import "./post-presets.ui";
+import "@ui/controls/pf-effect-toggle";
 
 /** Global tool host. It renders the same registered tools as the photo editor. */
 @customElement("pf-post-process-card")
@@ -28,34 +30,12 @@ export class PfPostProcessCard extends LitElement {
       border-radius: var(--pf-radius-sm, 4px);
     }
     .label { font-size: var(--pf-text-sm); font-weight: 500; }
-    .toggle {
-      position: relative;
-      width: 36px;
-      height: 20px;
-      border: 0;
-      border-radius: 999px;
-      padding: 0;
-      cursor: pointer;
-      background: var(--pf-border);
-    }
-    .toggle[aria-pressed="true"] { background: var(--pf-accent, #4a90e2); }
-    .toggle::after {
-      content: "";
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: white;
-      transition: transform 120ms ease;
-    }
-    .toggle[aria-pressed="true"]::after { transform: translateX(16px); }
-    .dim { opacity: 0.5; pointer-events: none; }
+    .dim { opacity: 0.5; }
   `;
 
   private readonly tools = createEditorTools("post");
   private unsubscribe: (() => void) | null = null;
+  private unsubscribeEffects: (() => void) | null = null;
   private readonly host: ToolHost = {
     editTarget: null,
     canvas: null,
@@ -68,11 +48,14 @@ export class PfPostProcessCard extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.unsubscribe = subscribePostProcess(() => this.requestUpdate());
+    this.unsubscribeEffects = subscribeEffectEnabled(() => this.requestUpdate());
   }
 
   disconnectedCallback(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unsubscribeEffects?.();
+    this.unsubscribeEffects = null;
     super.disconnectedCallback();
   }
 
@@ -81,15 +64,11 @@ export class PfPostProcessCard extends LitElement {
     return html`
       <div class="enable-row">
         <span class="label">Post-Processing ${enabled ? "enabled" : "disabled"}</span>
-        <button
-          type="button"
-          class="toggle"
-          role="switch"
-          aria-pressed=${enabled ? "true" : "false"}
-          aria-label=${enabled ? "Disable post-processing" : "Enable post-processing"}
-          title=${enabled ? "Disable post-processing" : "Enable post-processing"}
-          @click=${() => setPostProcessEnabled(!enabled)}
-        ></button>
+        <pf-effect-toggle
+          .disabled=${!enabled}
+          label="post-processing"
+          @effect-toggle=${() => setPostProcessEnabled(!enabled)}
+        ></pf-effect-toggle>
       </div>
       <pf-post-presets-card></pf-post-presets-card>
       <div class=${enabled ? "stack" : "stack dim"}>

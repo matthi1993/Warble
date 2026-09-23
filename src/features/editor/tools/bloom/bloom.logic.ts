@@ -17,8 +17,8 @@ export class BloomTool extends EditTool {
       (key) => value[key as keyof BloomSettings] !== defaults[key as keyof BloomSettings],
     );
     return html`<pf-bloom-card .value=${value} ?open=${this.cardOpen} ?can-revert=${canRevert}
-      @tool-preview-start=${this.startBeforePreview}
-      @tool-preview-end=${this.endBeforePreview}
+      .effectDisabled=${this.effectDisabled(host)}
+      @effect-toggle=${() => this.toggleEffect(host)}
       @toggle=${(e: CustomEvent<{ open: boolean }>) => { this.cardOpen = e.detail.open; host.requestUpdate(); }}
       @bloom-change=${(e: CustomEvent<BloomSettings>) => { setPostBloom(e.detail); host.requestUpdate(); }}
       @bloom-reset=${() => this.reset(host)}></pf-bloom-card>`;

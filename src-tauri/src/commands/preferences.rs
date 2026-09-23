@@ -127,6 +127,8 @@ pub fn set_last_folder(path: String, state: State<'_, AppState>) -> Result<(), S
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewState {
     pub bg: Option<String>,
+    #[serde(default, rename = "proofingSize")]
+    pub proofing_size: Option<u32>,
     pub fit: Option<String>,
     #[serde(default, rename = "frameSize")]
     pub frame_size: Option<u32>,

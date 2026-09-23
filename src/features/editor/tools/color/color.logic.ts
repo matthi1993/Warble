@@ -44,8 +44,8 @@ export class ColorTool extends EditTool {
       .title=${"Color"}
       .value=${this.value(host)}
       ?open=${this.cardOpen}
-      @tool-preview-start=${this.startBeforePreview}
-      @tool-preview-end=${this.endBeforePreview}
+      .effectDisabled=${this.effectDisabled(host)}
+      @effect-toggle=${() => this.toggleEffect(host)}
       @toggle=${(event: CustomEvent<{ open: boolean }>) => {
         this.cardOpen = event.detail.open;
         host.requestUpdate();

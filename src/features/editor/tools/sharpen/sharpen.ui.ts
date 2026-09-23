@@ -78,6 +78,8 @@ export class PfSharpenCard extends LitElement {
   @property({ attribute: false })
   value: SharpenSettings = defaultSharpen();
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: Boolean })
   open = false;
 
@@ -141,7 +143,7 @@ export class PfSharpenCard extends LitElement {
     const canRevert =
       this.canRevert == null ? v.strength > 0 : this.canRevert;
     return html`
-      <pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .effectDisabled=${this.effectDisabled} .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

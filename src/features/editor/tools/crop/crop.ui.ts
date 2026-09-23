@@ -152,6 +152,8 @@ export class PfCropCard extends LitElement {
   @property({ type: Boolean })
   open = false;
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: String, attribute: "aspect" })
   aspect: AspectRatioKey = "3:2";
 
@@ -201,7 +203,7 @@ export class PfCropCard extends LitElement {
     const base = Math.round(r / 90) * 90;
     const sliderValue = Math.max(-45, Math.min(45, r - base));
     return html`
-      <pf-card before-after .title=${"Crop"} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .effectDisabled=${this.effectDisabled} .title=${"Crop"} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

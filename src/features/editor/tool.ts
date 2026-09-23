@@ -19,7 +19,7 @@
  * call `host.requestUpdate()` to make the shell re-render.
  */
 import type { TemplateResult } from "lit";
-import { endToolPreview, startToolPreview } from "./tool-preview";
+import { isEffectEnabled, setEffectEnabled } from "./effect-enabled";
 export type ToolScope = "photo" | "post";
 export type EditorImageSizing = "fit" | "fill" | "hybrid";
 
@@ -88,13 +88,13 @@ export abstract class EditTool {
    *  open/closed visual via `renderCard`. */
   cardOpen = false;
 
-  protected readonly startBeforePreview = (): void => {
-    startToolPreview({ id: this.id, scope: this.scope });
-  };
+  protected effectDisabled(host: ToolHost, id = this.id): boolean {
+    return !isEffectEnabled(this.scope, host.editTarget, id);
+  }
 
-  protected readonly endBeforePreview = (): void => {
-    endToolPreview({ id: this.id, scope: this.scope });
-  };
+  protected toggleEffect(host: ToolHost, id = this.id): void {
+    setEffectEnabled(this.scope, host.editTarget, id, this.effectDisabled(host, id));
+  }
 
   /** Set by the shell when this tool is the focused/interactive one. */
   active = false;

@@ -44,11 +44,7 @@ import {
   hasActiveEditorToolValues,
   readEditorToolValues,
 } from "@features/editor/registry";
-import {
-  getToolPreview,
-  subscribeToolPreview,
-  type ToolPreview,
-} from "@features/editor/tool-preview";
+import { isEffectEnabled, subscribeEffectEnabled } from "@features/editor/effect-enabled";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
 import type {
   CropFrame,
@@ -78,6 +74,9 @@ export class PfImageCanvas extends LitElement {
       overflow: hidden;
       background: var(--pf-canvas-bg, transparent);
       touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
       box-sizing: border-box;
     }
     canvas {
@@ -85,6 +84,9 @@ export class PfImageCanvas extends LitElement {
       height: 100%;
       display: block;
       cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
     }
     canvas.dragging {
       cursor: grabbing;
@@ -147,6 +149,9 @@ export class PfImageCanvas extends LitElement {
 
   @property({ type: Number })
   frameSize = 0;
+
+  @property({ type: Number })
+  proofingSize = 0;
 
   @property({ type: String })
   frameColor = "#fff";
@@ -295,6 +300,10 @@ export class PfImageCanvas extends LitElement {
   /** WKWebView synthesises a mouse click after a touch. Ignore that duplicate. */
   private suppressClickUntil = 0;
   private pointerDragMoved = false;
+  private longPressTimer: number | null = null;
+  private longPressPointerId: number | null = null;
+  private longPressActive = false;
+  private longPressConsumed = false;
 
   // --- Crop mode state ---------------------------------------------------
   /** Crop frame in normalised image coordinates (0..1) — the live frame
@@ -321,8 +330,7 @@ export class PfImageCanvas extends LitElement {
   private editsUnsubscribe: (() => void) | null = null;
   private postProcessUnsubscribe: (() => void) | null = null;
   private effectsUnsubscribe: (() => void) | null = null;
-  private toolPreviewUnsubscribe: (() => void) | null = null;
-  private toolPreview: ToolPreview | null = getToolPreview();
+  private effectEnabledUnsubscribe: (() => void) | null = null;
   /** GPU pipeline for tone (brightness/contrast/saturation) adjustments.
    * Lazy-initialised on first use so photos with no edits never pay for
    * WebGL context creation. */
@@ -410,14 +418,11 @@ export class PfImageCanvas extends LitElement {
       if (path && path !== this.path) return;
       this.scheduleDraw();
     });
-    this.toolPreviewUnsubscribe = subscribeToolPreview((preview) => {
-      const cropChanged = this.toolPreview?.id === "crop" || preview?.id === "crop";
-      this.toolPreview = preview;
-      if (cropChanged) {
+    this.effectEnabledUnsubscribe = subscribeEffectEnabled(({ scope, path, id }) => {
+      if (scope === "photo" && path !== this.path) return;
+      if (scope === "photo" && this.savedCrop && (id === "crop" || id === "all")) {
         this.userInteracted = false;
         this.forceFitOnNextRecompute = true;
-        this.rotatedCache = null;
-        this.renderPipeline.invalidate();
         requestAnimationFrame(() => this.onResize());
       } else {
         this.scheduleDraw();
@@ -491,6 +496,7 @@ export class PfImageCanvas extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener("blur", this.onWindowBlur);
     this.resizeObserver?.disconnect();
     this.loadAbort?.abort();
     this.cancelFullImageLoad();
@@ -502,6 +508,7 @@ export class PfImageCanvas extends LitElement {
       window.clearTimeout(this.activationTimer);
       this.activationTimer = null;
     }
+    this.endLongPress();
     // Full bitmap is owned by `full-image-cache`; do NOT close it here.
     this.thumbBitmap?.close?.();
     this.bitmap = null;
@@ -513,13 +520,14 @@ export class PfImageCanvas extends LitElement {
     this.postProcessUnsubscribe = null;
     this.effectsUnsubscribe?.();
     this.effectsUnsubscribe = null;
-    this.toolPreviewUnsubscribe?.();
-    this.toolPreviewUnsubscribe = null;
+    this.effectEnabledUnsubscribe?.();
+    this.effectEnabledUnsubscribe = null;
     this.renderPipeline.dispose();
   }
 
   willUpdate(changed: Map<string, unknown>) {
     if (changed.has("path")) {
+      this.endLongPress();
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
       this.scale = 1;
@@ -529,7 +537,7 @@ export class PfImageCanvas extends LitElement {
       this.cropFrame = null;
       this.refreshSavedCrop();
       if (this.canvas) this.startLoad();
-    } else if (changed.has("frameSize") || changed.has("sizing")) {
+    } else if (changed.has("frameSize") || changed.has("proofingSize") || changed.has("sizing")) {
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
       this.scale = 1;
@@ -990,7 +998,8 @@ export class PfImageCanvas extends LitElement {
    * canvas keeps showing the straightened/rotated image after the
    * crop card is dismissed. */
   private normalizedRotation(): number {
-    if (this.isToolPreviewed("photo", "crop")) return 0;
+    if (this.previewOriginal) return 0;
+    if (!this.cropEnabled()) return 0;
     let r: number;
     if (this.cropMode) {
       r = this.rotation || 0;
@@ -1049,12 +1058,12 @@ export class PfImageCanvas extends LitElement {
   private effectiveCrop(): CropEdit | null {
     if (this.cropMode) return null;
     if (this.previewOriginal) return null;
-    if (this.isToolPreviewed("photo", "crop")) return null;
+    if (!this.cropEnabled()) return null;
     return this.savedCrop;
   }
 
-  private isToolPreviewed(scope: ToolPreview["scope"], id: string): boolean {
-    return this.toolPreview?.scope === scope && this.toolPreview.id === id;
+  private cropEnabled(): boolean {
+    return isEffectEnabled("photo", this.path, "all") && isEffectEnabled("photo", this.path, "crop");
   }
 
   /**
@@ -1097,7 +1106,7 @@ export class PfImageCanvas extends LitElement {
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const inset = this.frameInset();
+    const inset = this.totalInset();
     const cw = Math.max(1, this.canvas.width - 2 * inset);
     const ch = Math.max(1, this.canvas.height - 2 * inset);
     const { dispW, dispH } = this.effectiveRect(src);
@@ -1135,8 +1144,20 @@ export class PfImageCanvas extends LitElement {
     if (!this.canvas) return 0;
     return Math.min(
       this.frameSize * (window.devicePixelRatio || 1),
+      Math.max(0, (Math.min(this.canvas.width, this.canvas.height) - 1) / 2 - this.proofingInset()),
+    );
+  }
+
+  private proofingInset(): number {
+    if (!this.canvas) return 0;
+    return Math.min(
+      this.proofingSize * (window.devicePixelRatio || 1),
       Math.max(0, (Math.min(this.canvas.width, this.canvas.height) - 1) / 2),
     );
+  }
+
+  private totalInset(): number {
+    return this.proofingInset() + this.frameInset();
   }
 
   /** Coalesce multiple repaint requests into one rAF-scheduled draw.
@@ -1169,7 +1190,8 @@ export class PfImageCanvas extends LitElement {
       const cy = cv.height / 2 + this.offsetY;
       const x = cx - drawW / 2;
       const y = cy - drawH / 2;
-      const inset = this.frameInset();
+      const inset = this.totalInset();
+      const frameInset = this.frameInset();
       const left = Math.max(inset, x);
       const top = Math.max(inset, y);
       const right = Math.min(cv.width - inset, x + drawW);
@@ -1179,13 +1201,13 @@ export class PfImageCanvas extends LitElement {
         return;
       }
       const radius = this.frameRadius * (window.devicePixelRatio || 1);
-      if (inset > 0) {
+      if (frameInset > 0) {
         ctx.fillStyle = this.frameColor;
-        ctx.fillRect(left - inset, top - inset, right - left + 2 * inset, bottom - top + 2 * inset);
+        ctx.fillRect(left - frameInset, top - frameInset, right - left + 2 * frameInset, bottom - top + 2 * frameInset);
       }
       ctx.save();
       ctx.beginPath();
-      ctx.roundRect(left, top, right - left, bottom - top, inset > 0 ? radius : 0);
+      ctx.roundRect(left, top, right - left, bottom - top, frameInset > 0 ? radius : 0);
       ctx.clip();
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = this.smoothingQuality;
@@ -1205,16 +1227,10 @@ export class PfImageCanvas extends LitElement {
       const photoValues: Record<string, unknown> = this.previewOriginal
         ? {}
         : { ...readEditorToolValues("photo", this.path) };
-      if (this.toolPreview?.scope === "photo") {
-        delete photoValues[this.toolPreview.id];
-      }
       const configuredPostValues: Record<string, unknown> =
         ppEnabled && !this.previewOriginal
         ? { ...readEditorToolValues("post", this.path) }
         : {};
-      if (this.toolPreview?.scope === "post") {
-        delete configuredPostValues[this.toolPreview.id];
-      }
       const postValues = configuredPostValues;
       const applyPipeline =
         hasActiveEditorToolValues(photoValues)
@@ -1262,7 +1278,7 @@ export class PfImageCanvas extends LitElement {
       if (
         this.cropMode
         && this.cropFrame
-        && !this.isToolPreviewed("photo", "crop")
+        && this.cropEnabled()
       ) {
         this.drawCropOverlay(ctx, x, y, drawW, drawH);
       }
@@ -1412,10 +1428,62 @@ export class PfImageCanvas extends LitElement {
 
   private attachInputs() {
     const cv = this.canvas!;
+    window.addEventListener("blur", this.onWindowBlur);
     cv.addEventListener("wheel", this.onWheel, { passive: false });
     cv.addEventListener("pointerdown", this.onPointerDown);
     cv.addEventListener("click", this.onClick);
     cv.addEventListener("dblclick", this.onDblClick);
+    cv.addEventListener("contextmenu", this.onContextMenu);
+  }
+
+  private onContextMenu = (event: MouseEvent) => event.preventDefault();
+
+  private onWindowBlur = () => { this.endLongPress(); };
+
+  private isOverImage(clientX: number, clientY: number): boolean {
+    if (!this.canvas) return false;
+    const source = this.effectiveSource();
+    if (!source) return false;
+    const { dispW, dispH } = this.effectiveRect(source);
+    const dpr = window.devicePixelRatio || 1;
+    const bounds = this.canvas.getBoundingClientRect();
+    const px = (clientX - bounds.left) * dpr;
+    const py = (clientY - bounds.top) * dpr;
+    const halfW = dispW * this.scale / 2;
+    const halfH = dispH * this.scale / 2;
+    const inset = this.totalInset();
+    return px >= Math.max(inset, this.canvas.width / 2 + this.offsetX - halfW)
+      && px <= Math.min(this.canvas.width - inset, this.canvas.width / 2 + this.offsetX + halfW)
+      && py >= Math.max(inset, this.canvas.height / 2 + this.offsetY - halfH)
+      && py <= Math.min(this.canvas.height - inset, this.canvas.height / 2 + this.offsetY + halfH);
+  }
+
+  private startLongPress(event: PointerEvent): void {
+    if (!this.isOverImage(event.clientX, event.clientY)) return;
+    this.cancelPendingActivation();
+    this.longPressPointerId = event.pointerId;
+    this.longPressTimer = window.setTimeout(() => {
+      this.longPressTimer = null;
+      this.longPressActive = true;
+      this.longPressConsumed = true;
+      this.cancelPendingActivation();
+      this.lastTouchTap = null;
+      this.dispatchEvent(new CustomEvent("image-preview-start", { bubbles: true, composed: true }));
+    }, 500);
+  }
+
+  private endLongPress(pointerId?: number): boolean {
+    if (pointerId !== undefined && this.longPressPointerId !== pointerId) return false;
+    if (this.longPressTimer !== null) window.clearTimeout(this.longPressTimer);
+    this.longPressTimer = null;
+    this.longPressPointerId = null;
+    const wasActive = this.longPressActive;
+    if (wasActive) {
+      this.longPressActive = false;
+      this.suppressClickUntil = performance.now() + 600;
+      this.dispatchEvent(new CustomEvent("image-preview-end", { bubbles: true, composed: true }));
+    }
+    return wasActive;
   }
 
   private onWheel = (e: WheelEvent) => {
@@ -1455,20 +1523,14 @@ export class PfImageCanvas extends LitElement {
     this.clampOffsets();
   }
 
-  /**
-   * Constrain pan so the displayed image always covers the canvas
-   * viewport. The proof/tight margin is CSS padding on the host, so
-   * the canvas's own dimensions are already the inner viewport — no
-   * extra subtraction needed. When the image is smaller than the
-   * viewport on an axis (zoomed out), the offset on that axis is
-   * locked to 0 to keep it centred.
-   */
+  /** Keep the image inside the proofing margin while panning. */
   private clampOffsets() {
     const src = this.effectiveSource();
     if (!src || !this.canvas) return;
     const { dispW, dispH } = this.effectiveRect(src);
-    const viewW = Math.max(1, this.canvas.width);
-    const viewH = Math.max(1, this.canvas.height);
+    const inset = this.totalInset();
+    const viewW = Math.max(1, this.canvas.width - 2 * inset);
+    const viewH = Math.max(1, this.canvas.height - 2 * inset);
     const drawW = dispW * this.scale;
     const drawH = dispH * this.scale;
     if (drawW <= viewW) {
@@ -1493,6 +1555,7 @@ export class PfImageCanvas extends LitElement {
       this.startCropDrag(e);
       return;
     }
+    if (this.touchPointers.size === 0) this.longPressConsumed = false;
     if (e.pointerType === "touch") {
       e.preventDefault();
       const wasEmpty = this.touchPointers.size === 0;
@@ -1507,9 +1570,11 @@ export class PfImageCanvas extends LitElement {
         /* capture is best-effort */
       }
       if (this.touchPointers.size >= 2) {
+        this.endLongPress();
         this.beginPinch();
       } else {
         this.beginPan(e.clientX, e.clientY);
+        this.startLongPress(e);
       }
       this.canvas!.addEventListener("pointermove", this.onPointerMove);
       this.canvas!.addEventListener("pointerup", this.onPointerUp);
@@ -1518,6 +1583,7 @@ export class PfImageCanvas extends LitElement {
     }
     this.pointerDragMoved = false;
     this.beginPan(e.clientX, e.clientY);
+    this.startLongPress(e);
     this.canvas!.setPointerCapture(e.pointerId);
     this.canvas!.addEventListener("pointermove", this.onPointerMove);
     this.canvas!.addEventListener("pointerup", this.onPointerUp);
@@ -1555,6 +1621,10 @@ export class PfImageCanvas extends LitElement {
   }
 
   private onPointerMove = (e: PointerEvent) => {
+    if (this.longPressPointerId === e.pointerId &&
+        Math.hypot(e.clientX - this.dragStartX, e.clientY - this.dragStartY) > 10) {
+      this.endLongPress(e.pointerId);
+    }
     if (e.pointerType === "touch" && this.touchPointers.has(e.pointerId)) {
       this.touchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.touchPointers.size >= 2 && this.pinch && this.canvas) {
@@ -1601,6 +1671,7 @@ export class PfImageCanvas extends LitElement {
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    this.endLongPress(e.pointerId);
     if (e.pointerType === "touch") {
       const wasTracked = this.touchPointers.delete(e.pointerId);
       if (!wasTracked) return;
@@ -1624,7 +1695,13 @@ export class PfImageCanvas extends LitElement {
       this.canvas?.removeEventListener("pointermove", this.onPointerMove);
       this.canvas?.removeEventListener("pointerup", this.onPointerUp);
       this.canvas?.removeEventListener("pointercancel", this.onPointerUp);
-      this.finishTouchGesture(e);
+      if (this.longPressConsumed) {
+        this.touchStart = null;
+        this.lastTouchTap = null;
+        this.longPressConsumed = false;
+      } else {
+        this.finishTouchGesture(e);
+      }
       return;
     }
     if (this.pointerDragMoved) {
@@ -1640,6 +1717,7 @@ export class PfImageCanvas extends LitElement {
     this.canvas?.removeEventListener("pointermove", this.onPointerMove);
     this.canvas?.removeEventListener("pointerup", this.onPointerUp);
     this.canvas?.removeEventListener("pointercancel", this.onPointerUp);
+    this.longPressConsumed = false;
   };
 
   private finishTouchGesture(e: PointerEvent) {
@@ -1797,7 +1875,7 @@ export class PfImageCanvas extends LitElement {
 
     if (this.path !== path) throw new Error("photo changed during export");
 
-    const crop = this.previewOriginal ? null : this.savedCrop;
+    const crop = this.previewOriginal || !this.cropEnabled() ? null : this.savedCrop;
     const sx = crop ? clamp(crop.x, 0, 1) * sourceWidth : 0;
     const sy = crop ? clamp(crop.y, 0, 1) * sourceHeight : 0;
     const sw = crop

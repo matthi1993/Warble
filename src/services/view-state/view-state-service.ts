@@ -7,14 +7,17 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type BgColor = "black" | "grey" | "white";
 export const FRAME_SIZES = [0, 6, 12, 24, 48] as const;
+export const PROOFING_SIZES = [0, 12, 24, 48, 96] as const;
 export const FRAME_RADII = [0, 8, 20] as const;
 export type FrameSize = (typeof FRAME_SIZES)[number];
+export type ProofingSize = (typeof PROOFING_SIZES)[number];
 export type FrameRadius = (typeof FRAME_RADII)[number];
 export type SizingMode = "fit" | "fill" | "hybrid";
 export type SmoothingQuality = "low" | "medium" | "high";
 
 export interface ViewState {
   bg: BgColor;
+  proofingSize: ProofingSize;
   frameSize: FrameSize;
   frameColor: BgColor;
   frameRadius: FrameRadius;
@@ -24,6 +27,7 @@ export interface ViewState {
 
 export const DEFAULT_VIEW_STATE: ViewState = {
   bg: "black",
+  proofingSize: 0,
   frameSize: 0,
   frameColor: "white",
   frameRadius: 0,
@@ -33,6 +37,7 @@ export const DEFAULT_VIEW_STATE: ViewState = {
 
 interface PersistedViewState {
   bg?: string | null;
+  proofingSize?: number | null;
   fit?: string | null;
   frameSize?: number | null;
   frameColor?: string | null;
@@ -46,6 +51,9 @@ function coerceBg(v: string | null | undefined): BgColor | null {
 }
 function coerceFrameSize(v: number | null | undefined): FrameSize | null {
   return FRAME_SIZES.find((size) => size === v) ?? null;
+}
+function coerceProofingSize(v: number | null | undefined): ProofingSize | null {
+  return PROOFING_SIZES.find((size) => size === v) ?? null;
 }
 function coerceFrameRadius(v: number | null | undefined): FrameRadius | null {
   return FRAME_RADII.find((radius) => radius === v) ?? null;
@@ -63,6 +71,7 @@ export async function loadViewState(): Promise<Partial<ViewState>> {
     if (!persisted) return {};
     return {
       ...(coerceBg(persisted.bg) ? { bg: coerceBg(persisted.bg)! } : {}),
+      proofingSize: coerceProofingSize(persisted.proofingSize) ?? DEFAULT_VIEW_STATE.proofingSize,
       frameSize: coerceFrameSize(persisted.frameSize)
         ?? (persisted.fit === "tight" ? 12 : persisted.fit === "proof" ? 48 : 0),
       frameColor: coerceBg(persisted.frameColor) ?? DEFAULT_VIEW_STATE.frameColor,

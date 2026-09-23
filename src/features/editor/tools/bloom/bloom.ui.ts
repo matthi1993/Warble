@@ -21,6 +21,7 @@ export class PfBloomCard extends LitElement {
 
   @property({ attribute: false }) value: BloomSettings = defaultBloom();
   @property({ type: Boolean }) open = false;
+  @property({ type: Boolean }) effectDisabled = false;
   @property() title = "Bloom";
   @property({ type: Boolean, attribute: "can-revert" }) canRevert: boolean | null = null;
 
@@ -41,7 +42,7 @@ export class PfBloomCard extends LitElement {
       ["spread", "Spread", 0, 100, 1],
     ];
     const canRevert = this.canRevert ?? controls.some(([key]) => this.value[key] !== defaults[key]);
-    return html`<pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${(e: CustomEvent<{ open: boolean }>) => { this.dispatchEvent(new CustomEvent("toggle", { detail: e.detail, bubbles: true, composed: true })); }}>
+    return html`<pf-card .effectDisabled=${this.effectDisabled} .title=${this.title} ?open=${this.open} @toggle=${(e: CustomEvent<{ open: boolean }>) => { this.dispatchEvent(new CustomEvent("toggle", { detail: e.detail, bubbles: true, composed: true })); }}>
       <button slot="revert" type="button" class="card-revert" title="Reset bloom" aria-label="Reset bloom" ?disabled=${!canRevert} @click=${() => this.dispatchEvent(new CustomEvent("bloom-reset", { bubbles: true, composed: true }))}><pf-icon name="rotate-ccw"></pf-icon></button>
       <div class="body">${controls.map(([key, label, min, max, step]) => html`
         <div class="row"><span class="label">${label}</span><span class="value">${this.value[key]}</span>

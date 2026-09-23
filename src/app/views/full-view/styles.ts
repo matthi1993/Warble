@@ -389,6 +389,18 @@ export const fullViewStyles = css`
     left: auto;
     width: 280px;
   }
+  .edit-enable-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    background: var(--pf-surface);
+    border: 1px solid var(--pf-border);
+    border-radius: var(--pf-radius-sm, 4px);
+    font-size: var(--pf-text-sm);
+  }
+  .edit-tool-stack { display: flex; flex-direction: column; gap: var(--pf-space-2); }
+  .edit-tool-stack.dim { opacity: 0.5; }
   .edit-footer {
     display: flex;
     flex-direction: column;

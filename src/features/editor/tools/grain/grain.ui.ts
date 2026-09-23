@@ -72,6 +72,8 @@ export class PfGrainCard extends LitElement {
   @property({ attribute: false })
   value: GrainSettings = defaultGrain();
 
+  @property({ type: Boolean }) effectDisabled = false;
+
   @property({ type: Boolean })
   open = false;
 
@@ -132,7 +134,7 @@ export class PfGrainCard extends LitElement {
         value.amount !== defaults.amount ||
         value.fine !== defaults.fine);
     return html`
-      <pf-card before-after .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
+      <pf-card .effectDisabled=${this.effectDisabled} .title=${this.title} ?open=${this.open} @toggle=${this.onToggle}>
         <button
           slot="revert"
           type="button"

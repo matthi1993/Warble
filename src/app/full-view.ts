@@ -45,6 +45,7 @@ import {
   type BgColor,
   type FrameRadius,
   type FrameSize,
+  type ProofingSize,
   type SmoothingQuality,
 } from "@services/view-state/view-state-service";
 import "@ui/controls/pf-icon-button";
@@ -72,7 +73,9 @@ import {
   type FullViewMenu,
 } from "./views/full-view/chrome";
 import type { EditTool, ToolHost } from "@features/editor/tool";
-import { createEditorTools } from "@features/editor/registry";
+import { createEditorTools, hasActiveEditorToolValues, readEditorToolValues } from "@features/editor/registry";
+import { isEffectEnabled, setEffectEnabled, subscribeEffectEnabled } from "@features/editor/effect-enabled";
+import "@ui/controls/pf-effect-toggle";
 import {
   currentSelection,
   isEditableSelection,
@@ -109,6 +112,9 @@ export class PfFullView extends LitElement {
 
   @state()
   private bg: BgColor = DEFAULT_VIEW_STATE.bg;
+
+  @state()
+  private proofingSize: ProofingSize = DEFAULT_VIEW_STATE.proofingSize;
 
   @state()
   private frameSize: FrameSize = DEFAULT_VIEW_STATE.frameSize;
@@ -158,6 +164,7 @@ export class PfFullView extends LitElement {
   private unsubscribeStore: (() => void) | null = null;
   private unsubscribeEdits: (() => void) | null = null;
   private unsubscribePostProcess: (() => void) | null = null;
+  private unsubscribeEffectEnabled: (() => void) | null = null;
   private unsubscribeCacheSettings: (() => void) | null = null;
 
   @state()
@@ -268,6 +275,7 @@ export class PfFullView extends LitElement {
     this.unsubscribePostProcess = subscribePostProcess(() => {
       this.requestUpdate();
     });
+    this.unsubscribeEffectEnabled = subscribeEffectEnabled(() => this.requestUpdate());
     this.unsubscribeCacheSettings = subscribeCacheSettings((settings) => {
       this.fullResolutionEnabled = settings.full_resolution_enabled;
     });
@@ -278,6 +286,8 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.unsubscribeEffectEnabled?.();
+    this.unsubscribeEffectEnabled = null;
     this.footerObserver?.disconnect();
     this.footerObserver = null;
     this.exifLoader.syncToPath(null);
@@ -309,12 +319,13 @@ export class PfFullView extends LitElement {
       );
     }
     if (
-      (changed.has("bg") || changed.has("frameSize") || changed.has("frameColor") ||
+      (changed.has("bg") || changed.has("proofingSize") || changed.has("frameSize") || changed.has("frameColor") ||
         changed.has("frameRadius") || changed.has("sizing") || changed.has("smoothing")) &&
       this.hydrated
     ) {
       void saveViewState({
         bg: this.bg,
+        proofingSize: this.proofingSize,
         frameSize: this.frameSize,
         frameColor: this.frameColor,
         frameRadius: this.frameRadius,
@@ -370,6 +381,7 @@ export class PfFullView extends LitElement {
   private async hydrateViewState() {
     const persisted = await loadViewState();
     if (persisted.bg) this.bg = persisted.bg;
+    if (persisted.proofingSize !== undefined) this.proofingSize = persisted.proofingSize;
     if (persisted.frameSize !== undefined) this.frameSize = persisted.frameSize;
     if (persisted.frameColor) this.frameColor = persisted.frameColor;
     if (persisted.frameRadius !== undefined) this.frameRadius = persisted.frameRadius;
@@ -581,6 +593,12 @@ export class PfFullView extends LitElement {
     this.openMenu = null;
   };
 
+  private setProofingSize = (size: ProofingSize) => {
+    const same = this.proofingSize === size;
+    this.proofingSize = size;
+    if (same) this.canvasEl()?.resetView();
+  };
+
   private setFrameSize = (size: FrameSize) => {
     const same = this.frameSize === size;
     this.frameSize = size;
@@ -732,10 +750,16 @@ export class PfFullView extends LitElement {
     this.previewOriginal = false;
   };
 
+  private onImagePreviewStart = () => { this.previewOriginal = true; };
+  private onImagePreviewEnd = () => { this.previewOriginal = false; };
+
   private canPreviewOriginal(): boolean {
     void this.editsTick;
     const target = this.editTargetPath();
-    return !!target && (hasEdits(target) || hasEffects(target));
+    return !!target && (
+      hasEdits(target) || hasEffects(target) ||
+      (getPostProcess().enabled && hasActiveEditorToolValues(readEditorToolValues("post", target)))
+    );
   }
 
   /** Ensure a newly-set busy state reaches the screen before an expensive
@@ -1018,8 +1042,22 @@ export class PfFullView extends LitElement {
           .exif=${this.exifLoader.exif}
           ?open=${true}
         ></pf-info-card>`;
-      case "edit":
-       return this.tools.map((t) => t.renderCard(this.toolHost));
+      case "edit": {
+        const path = this.editTargetPath();
+        const enabled = isEffectEnabled("photo", path, "all");
+        return html`
+          <div class="edit-enable-row">
+            <span>Edit ${enabled ? "enabled" : "disabled"}</span>
+            <pf-effect-toggle
+              .disabled=${!enabled}
+              label="editing"
+              @effect-toggle=${() => setEffectEnabled("photo", path, "all", !enabled)}
+            ></pf-effect-toggle>
+          </div>
+          <div class=${enabled ? "edit-tool-stack" : "edit-tool-stack dim"}>
+            ${this.tools.map((tool) => tool.renderCard(this.toolHost))}
+          </div>`;
+      }
      case "post":
         return html`<pf-post-process-card></pf-post-process-card>`;
       default:
@@ -1153,6 +1191,7 @@ export class PfFullView extends LitElement {
         <div class="stage">
           <pf-image-canvas
             .path=${path}
+            .proofingSize=${this.proofingSize}
             .frameSize=${this.frameSize}
             .frameColor=${this.bgCss(this.frameColor)}
             .frameRadius=${this.frameRadius}
@@ -1172,6 +1211,8 @@ export class PfFullView extends LitElement {
             @image-activate=${this.onImageActivate}
             @image-double-activate=${this.onImageDoubleActivate}
             @image-swipe=${this.onImageSwipe}
+            @image-preview-start=${this.onImagePreviewStart}
+            @image-preview-end=${this.onImagePreviewEnd}
           ></pf-image-canvas>
           ${path
             ? html`<pf-rating-overlay
@@ -1192,6 +1233,7 @@ export class PfFullView extends LitElement {
      <div class="bottombar-wrap">
        ${renderBottombar({
       bg: this.bg,
+      proofingSize: this.proofingSize,
       frameSize: this.frameSize,
       frameColor: this.frameColor,
       frameRadius: this.frameRadius,
@@ -1202,6 +1244,7 @@ export class PfFullView extends LitElement {
        bgLabel: (b) => this.bgLabel(b),
        onToggleMenu: this.toggleMenu,
        onSetBg: this.setBg,
+      onSetProofingSize: this.setProofingSize,
       onSetFrameSize: this.setFrameSize,
       onSetFrameColor: this.setFrameColor,
       onSetFrameRadius: this.setFrameRadius,
