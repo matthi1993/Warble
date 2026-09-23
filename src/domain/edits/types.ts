@@ -38,7 +38,7 @@ export interface CropEdit {
 
 /** Tonal adjustments under the "Basic" group in the editor side panel.
  *  Most values are in [-100, 100] with `0` meaning "no change".
- *  Exposure is stored as hundredths of an EV for RAW precision; the JPEG
+ *  Exposure is stored as hundredths of an EV; the JPEG
  *  UI still exposes the legacy -100..100 compact range.
  *
  *  White-balance is part of the same edit because it shares the same

@@ -25,7 +25,7 @@ let loaded = false;
 let loadPromise: Promise<void> | null = null;
 
 function isFormat(s: string): s is PhotoFormat {
-  return s === "jpg" || s === "raw";
+  return s === "jpg";
 }
 
 /** Hydrate the in-memory map from the backend. Idempotent. */

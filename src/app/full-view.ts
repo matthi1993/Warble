@@ -26,7 +26,6 @@ import {
   type PhotoFormat,
 } from "@domain/photo";
 import {
-  getLastJpegVariantOverride,
   setVariantOverride,
   subscribeVariantOverrides,
 } from "@app/variant-store";
@@ -76,7 +75,6 @@ import { createEditorTools } from "@features/editor/registry";
 import {
   currentSelection,
   isEditableSelection,
-  latestJpegVariant,
   resolvedPath,
 } from "./views/full-view/variant-selector";
 import { ExifLoader } from "./views/full-view/exif-loader";
@@ -180,6 +178,9 @@ export class PfFullView extends LitElement {
   @state()
   private openingIn = false;
 
+  @state()
+  private openingRaw = false;
+
   // --- Edit tools ----------------------------------------------------
   private readonly tools: EditTool[] = createEditorTools("photo");
  /** The tool currently in foreground/interactive mode. Crop is the
@@ -189,9 +190,7 @@ export class PfFullView extends LitElement {
 
   private exifLoader = new ExifLoader(() => this.requestUpdate());
 
-  /** Edit affordances are available for any selection the backend can
-   *  hand us as a display-ready bitmap — JPEG today and RAW via the
-   *  Rust-side demosaic pipeline. */
+  /** Only JPEG selections can be edited. */
   private get editMode(): boolean {
     return isEditableSelection(this.currentPhoto);
   }
@@ -456,7 +455,6 @@ export class PfFullView extends LitElement {
   private go(delta: number) {
     const next = this.index + delta;
     if (next < 0 || next >= this.photos.length) return;
-    this.prepareToLeave();
     this.dispatchEvent(
       new CustomEvent("full-view-navigate", {
         detail: { index: next },
@@ -467,7 +465,6 @@ export class PfFullView extends LitElement {
   }
 
   private close = () => {
-    this.prepareToLeave();
     this.dispatchEvent(
       new CustomEvent("full-view-close", { bubbles: true, composed: true })
     );
@@ -580,37 +577,6 @@ export class PfFullView extends LitElement {
     const path = fileForSelection(photo, format, variant);
     return path != null && (hasEdits(path) || hasEffects(path));
   };
-
-  private setFormat = (format: PhotoFormat) => {
-    const photo = this.currentPhoto;
-    if (!photo) return;
-    const variants = availableVariants(photo, format);
-    if (variants.length === 0) return;
-    const sel = currentSelection(photo);
-    const lastJpeg = format === "jpg"
-      ? getLastJpegVariantOverride(photo.path)
-      : null;
-    const variant =
-      variants.find((v) => v.key === lastJpeg?.variant)?.key ??
-      variants.find((v) => v.key === sel?.variant)?.key ?? variants[0].key;
-    setVariantOverride(photo.path, { format, variant }); 
-    this.openMenu = null;
-  };
-
-  private restoreJpegSelection(photo: Photo | null) {
-    if (!photo || currentSelection(photo)?.format !== "raw") return;
-    const variants = availableVariants(photo, "jpg");
-    if (variants.length === 0) return;
-    const last = getLastJpegVariantOverride(photo.path)?.variant;
-    const variant = variants.find((item) => item.key === last)?.key ??
-      latestJpegVariant(photo) ?? variants[0].key;
-    setVariantOverride(photo.path, { format: "jpg", variant });
-  }
-
-  /** Restore the remembered JPEG before navigation, grid view, or close. */
-  prepareToLeave() {
-    this.restoreJpegSelection(this.currentPhoto);
-  }
 
   private setVariant = (variantKey: string) => {
     const photo = this.currentPhoto;
@@ -747,7 +713,6 @@ export class PfFullView extends LitElement {
     const sourcePath = this.editTargetPath();
     const canvas = this.canvasEl();
     if (!photo || !selection || !sourcePath || !canvas) return;
-    if (selection.format !== "jpg" && selection.format !== "raw") return;
 
     this.savingVariant = true;
     try {
@@ -818,10 +783,7 @@ export class PfFullView extends LitElement {
         });
       return { format: "jpg", variant: edits[0]?.key ?? jpg[0].key };
     }
-    const raw = availableVariants(photo, "raw").filter(
-      (variant) => removedFormat !== "raw" || variant.key !== removedVariant,
-    );
-    return raw.length > 0 ? { format: "raw", variant: raw[0].key } : null;
+    return null;
   }
 
   private deleteVariant = async () => {
@@ -847,8 +809,9 @@ export class PfFullView extends LitElement {
         selection.variant,
       );
       if (fallback) setVariantOverride(photo.path, fallback);
+      const hasRemainingFiles = photo.files?.some((file) => file.path !== sourcePath) ?? false;
       await this.dispatchCatalogChange(
-        fallback ? "variant-delete" : "photo-delete",
+        hasRemainingFiles ? "variant-delete" : "photo-delete",
         photo,
       );
     } catch (error) {
@@ -868,7 +831,7 @@ export class PfFullView extends LitElement {
     const photo = this.currentPhoto;
     if (!photo) return;
     const confirmed = await ask(
-      `Move ${photo.filename}, all JPEG variants, and its RAW file to the Bin?`,
+      `Move ${photo.filename} and all its variants to the Bin?`,
       { title: "Delete Photo", kind: "warning" },
     );
     if (!confirmed) return;
@@ -906,6 +869,23 @@ export class PfFullView extends LitElement {
       });
     } finally {
       this.openingIn = false;
+    }
+  };
+
+  private openRaw = async (path: string) => {
+    if (this.openingRaw) return;
+    this.openingRaw = true;
+    this.openMenu = null;
+    try {
+      await invoke("open_raw_in_default_app", { path });
+    } catch (error) {
+      console.error("Failed to open RAW photo", error);
+      void message(`Failed to open RAW photo: ${error}`, {
+        title: "Open RAW",
+        kind: "error",
+      });
+    } finally {
+      this.openingRaw = false;
     }
   };
 
@@ -1129,13 +1109,14 @@ export class PfFullView extends LitElement {
        openMenu: this.openMenu,
        variantHasEdits: this.variantHasEdits,
        onToggleMenu: this.toggleMenu,
-       onSetFormat: this.setFormat,
+      onOpenRaw: this.openRaw,
        onSetVariant: this.setVariant,
        onDeletePhoto: this.deletePhoto,
        onOpenIn: this.openIn,
        deletingPhoto: this.deletingPhoto,
        fileActionBusy: this.savingVariant || this.deletingVariant,
        openingIn: this.openingIn,
+      openingRaw: this.openingRaw,
        showFullscreenToggle: !this.isIPad(),
        onToggleFullscreen: this.toggleFullscreen,
        onClose: this.close,

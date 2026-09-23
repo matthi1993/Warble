@@ -1,5 +1,4 @@
 import { html, type TemplateResult } from "lit";
-import { classifyFormat } from "@domain/photo";
 import {
   BASE_TONE_KEYS,
   DYNAMIC_RANGE_KEYS,
@@ -69,12 +68,9 @@ export class ToneTool extends EditTool {
 
   renderCard(host: ToolHost): TemplateResult {
     const tone = this.value(host);
-    const raw = this.scope === "photo"
-      && classifyFormat(host.editTarget?.split(".").pop() ?? "") === "raw";
     return html`
       <pf-basic-card
         .tone=${tone}
-        .raw=${raw}
         ?open=${this.cardOpen}
         @tool-preview-start=${this.startBeforePreview}
         @tool-preview-end=${this.endBeforePreview}
@@ -96,7 +92,6 @@ export class ToneTool extends EditTool {
       ></pf-basic-card>
       <pf-dynamic-range-card
         .tone=${tone}
-        .raw=${raw}
         ?open=${this.dynamicRangeCardOpen}
         @tool-preview-start=${this.startBeforePreview}
         @tool-preview-end=${this.endBeforePreview}

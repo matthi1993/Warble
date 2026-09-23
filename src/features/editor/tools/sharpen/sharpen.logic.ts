@@ -1,8 +1,6 @@
 import { html, type TemplateResult } from "lit";
-import { classifyFormat } from "@domain/photo";
 import {
   defaultSharpen,
-  defaultSharpenForFormat,
   getPhotoSharpen,
   setPhotoSharpen,
   type SharpenSettings,
@@ -15,16 +13,12 @@ import {
 import { EditTool, type ToolHost, type ToolScope } from "../../tool";
 import "./sharpen.ui";
 
-function formatOf(path: string | null) {
-  return path ? classifyFormat(path.split(".").pop() ?? "") : null;
-}
-
 export function readSharpenToolValue(
   scope: ToolScope,
   path: string | null,
 ): SharpenSettings {
   if (scope === "post") return getPostProcess().sharpen;
-  return getPhotoSharpen(path) ?? defaultSharpenForFormat(formatOf(path));
+  return getPhotoSharpen(path) ?? defaultSharpen();
 }
 
 export class SharpenTool extends EditTool {

@@ -24,7 +24,6 @@ export const bloomShader: ToolShaderModule = {
   `,
   functions: `
     vec3 bloomSource(vec2 uv, float lod) {
-      if (u_rawSource == 1) return sampleSource(uv);
       return srgbToLinear(textureLod(u_tex, uv, lod).rgb);
     }
 
@@ -60,7 +59,7 @@ export const bloomShader: ToolShaderModule = {
     }
 
     vec3 toolApplyBloom(vec3 current) {
-      vec3 currentLinear = u_rawSource == 1 ? current : srgbToLinear(current);
+      vec3 currentLinear = srgbToLinear(current);
       float baseRadius = 2.0 + pow(u_bloomRadius * 0.01, 1.35) * 70.0;
       vec3 tight = bloomDiffusion(baseRadius * 0.35);
       vec3 medium = bloomDiffusion(baseRadius);
@@ -80,7 +79,7 @@ export const bloomShader: ToolShaderModule = {
       float receiverMask = darkness * highlightRejection;
       vec3 bloomed = currentLinear
         + glow * (u_bloomStrength * 0.008) * receiverMask;
-      return u_rawSource == 1 ? bloomed : linearToSrgb(bloomed);
+      return linearToSrgb(bloomed);
     }
   `,
   photoApply: "",

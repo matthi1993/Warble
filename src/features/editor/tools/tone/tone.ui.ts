@@ -73,7 +73,6 @@ export class PfBasicCard extends LitElement {
   open = false;
 
   @property({ type: Boolean })
-  raw = false;
 
   private onToggle = (e: CustomEvent<{ open: boolean }>) => {
     e.stopPropagation();
@@ -88,7 +87,7 @@ export class PfBasicCard extends LitElement {
 
   private onSliderChange = (key: keyof ToneEdit) => (e: CustomEvent<number>) => {
     e.stopPropagation();
-    const spec = toneControlSpec(key, this.raw);
+    const spec = toneControlSpec();
     this.dispatchEvent(
       new CustomEvent<{ key: keyof ToneEdit; value: number }>("tone-change", {
         detail: { key, value: spec.toModel(e.detail) },
@@ -132,7 +131,7 @@ export class PfBasicCard extends LitElement {
         </button>
         ${BASE_TONE_KEYS.map(
           (key) => {
-            const spec = toneControlSpec(key, this.raw);
+            const spec = toneControlSpec();
             return html`
             <pf-tone-slider-row
               .label=${TONE_LABELS[key]}

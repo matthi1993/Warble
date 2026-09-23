@@ -10,8 +10,8 @@
 import { html, type TemplateResult } from "lit";
 import type { Photo } from "@domain/photo";
 import {
-  availableFormats,
   availableVariants,
+  RAW_EXTS,
   type PhotoFormat,
 } from "@domain/photo";
 import type {
@@ -42,13 +42,14 @@ export interface ToolbarOptions {
     variant: string
   ) => boolean;
   onToggleMenu: (which: FullViewMenu) => void;
-  onSetFormat: (f: PhotoFormat) => void;
+  onOpenRaw: (path: string) => void;
   onSetVariant: (key: string) => void;
   onDeletePhoto: () => void;
   onOpenIn: () => void;
   deletingPhoto: boolean;
   fileActionBusy: boolean;
   openingIn: boolean;
+  openingRaw: boolean;
   showFullscreenToggle: boolean;
   onToggleFullscreen: () => void;
   onClose: () => void;
@@ -56,7 +57,7 @@ export interface ToolbarOptions {
 
 export function renderToolbar(opts: ToolbarOptions): TemplateResult {
   const { photo, index, total, fullscreen, selection: sel, openMenu } = opts;
-  const formats = availableFormats(photo);
+  const rawFile = photo.files?.find((file) => RAW_EXTS.includes(file.extension.toLowerCase()));
   const variants = sel !== null ? availableVariants(photo, sel.format) : [];
   return html`
     <div class="toolbar">
@@ -65,22 +66,12 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
         <span class="counter">${index + 1} / ${total}</span>
       </div>
       <div class="toolbar-center">
-        ${sel !== null && formats.length > 1
-          ? html`<div
-              class="format-switch"
-              role="group"
-              aria-label="File format"
-            >
-              ${formats.map(
-                (f) => html`<button
-                  aria-pressed=${sel.format === f}
-                  @click=${() => opts.onSetFormat(f)}
-                >
-                  ${f}
-                </button>`
-              )}
-            </div>`
-          : null}
+        ${rawFile ? html`<button
+          class="menu-trigger"
+          type="button"
+          ?disabled=${opts.openingRaw}
+          @click=${() => opts.onOpenRaw(rawFile.path)}
+        >${opts.openingRaw ? "Opening RAW…" : "Open RAW in…"}</button>` : null}
         ${sel !== null && variants.length >= 1
           ? html`<span class="menu-wrap">
               <button

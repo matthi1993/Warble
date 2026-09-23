@@ -5,7 +5,6 @@ import {
   isCurveZero,
   type CurveEdit,
 } from "@domain/edits";
-import type { RawImageSource } from "@ui/photos/canvas/raw-source";
 import {
   composeToolDeclarations,
   composeToolFunctions,
@@ -18,15 +17,7 @@ import type {
 } from "./shader-types";
 import { GRAIN_TEXTURE_SIZE } from "../tools/grain/grain.shader";
 
-export type EditorSource =
-  | ImageBitmap
-  | HTMLCanvasElement
-  | OffscreenCanvas
-  | RawImageSource;
-
-function isRawSource(source: EditorSource): source is RawImageSource {
-  return "kind" in source && source.kind === "raw16";
-}
+export type EditorSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
 export class EditorRenderPipeline {
   readonly canvas = document.createElement("canvas");
@@ -34,7 +25,6 @@ export class EditorRenderPipeline {
   private program: WebGLProgram | null = null;
   private vao: WebGLVertexArrayObject | null = null;
   private sourceTexture: WebGLTexture | null = null;
-  private rawTexture: WebGLTexture | null = null;
   private photoCurveTexture: WebGLTexture | null = null;
   private postCurveTexture: WebGLTexture | null = null;
   private grainTexture: WebGLTexture | null = null;
@@ -68,7 +58,6 @@ export class EditorRenderPipeline {
     this.set2f("u_srcOffset", sourceRect.sx / width, sourceRect.sy / height);
     this.set2f("u_srcScale", scaleX, scaleY);
     this.set2f("u_sourceSize", width, height);
-    this.set1i("u_rawSource", isRawSource(source) ? 1 : 0);
 
     const bindingContext: ToolShaderBindingContext = {
       sourceScaleX: scaleX,
@@ -90,7 +79,6 @@ export class EditorRenderPipeline {
     this.bindTexture(1, this.photoCurveTexture);
     this.bindTexture(2, this.postCurveTexture);
     this.bindTexture(3, this.grainTexture);
-    this.bindTexture(4, this.rawTexture);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     return this.canvas;
   }
@@ -111,7 +99,6 @@ export class EditorRenderPipeline {
     if (this.vao) gl.deleteVertexArray(this.vao);
     for (const texture of [
       this.sourceTexture,
-      this.rawTexture,
       this.photoCurveTexture,
       this.postCurveTexture,
       this.grainTexture,
@@ -122,7 +109,6 @@ export class EditorRenderPipeline {
     this.program = null;
     this.vao = null;
     this.sourceTexture = null;
-    this.rawTexture = null;
     this.photoCurveTexture = null;
     this.postCurveTexture = null;
     this.grainTexture = null;
@@ -174,17 +160,14 @@ export class EditorRenderPipeline {
     this.set1i("u_editLut", 1);
     this.set1i("u_postLut", 2);
     this.set1i("u_grainTexture", 3);
-    this.set1i("u_rawTex", 4);
     this.createGeometry();
     this.sourceTexture = this.createSourceTexture();
-    this.rawTexture = this.createRawTexture();
     this.photoCurveTexture = this.createCurveTexture();
     this.postCurveTexture = this.createCurveTexture();
     this.grainTexture = this.createGrainTexture();
     const ready = !!(
       this.vao
       && this.sourceTexture
-      && this.rawTexture
       && this.photoCurveTexture
       && this.postCurveTexture
       && this.grainTexture
@@ -195,10 +178,7 @@ export class EditorRenderPipeline {
   private fragmentSource(): string {
     return `#version 300 es
       precision highp float;
-      precision highp usampler2D;
       uniform sampler2D u_tex;
-      uniform usampler2D u_rawTex;
-      uniform int u_rawSource;
       uniform vec2 u_sourceSize;
       in vec2 v_uv;
       out vec4 outColor;
@@ -216,25 +196,7 @@ export class EditorRenderPipeline {
         return mix(high, low, step(c, vec3(0.04045)));
       }
 
-      vec3 rawTexel(ivec2 point) {
-        ivec2 size = ivec2(u_sourceSize);
-        ivec2 samplePoint = clamp(point, ivec2(0), size - ivec2(1));
-        return vec3(texelFetch(u_rawTex, samplePoint, 0).rgb) / 65535.0;
-      }
-
       vec3 sampleSource(vec2 uv) {
-        if (u_rawSource == 1) {
-          vec2 point = clamp(uv, vec2(0.0), vec2(1.0)) * u_sourceSize - 0.5;
-          ivec2 base = ivec2(floor(point));
-          vec2 fraction = fract(point);
-          vec3 top = mix(rawTexel(base), rawTexel(base + ivec2(1, 0)), fraction.x);
-          vec3 bottom = mix(
-            rawTexel(base + ivec2(0, 1)),
-            rawTexel(base + ivec2(1, 1)),
-            fraction.x
-          );
-          return mix(top, bottom, fraction.y);
-        }
         return texture(u_tex, uv).rgb;
       }
 
@@ -247,7 +209,6 @@ export class EditorRenderPipeline {
         ${composeToolStage("photo")}
         ${composeToolStage("post")}
         color = clamp(color, 0.0, 1.0);
-        if (u_rawSource == 1) color = linearToSrgb(color);
         outColor = vec4(color, 1.0);
       }
     `;
@@ -273,19 +234,10 @@ export class EditorRenderPipeline {
 
   private uploadSource(source: EditorSource): void {
     const gl = this.gl!;
-    if (isRawSource(source)) {
-      gl.bindTexture(gl.TEXTURE_2D, this.rawTexture);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGB16UI, source.width, source.height, 0,
-        gl.RGB_INTEGER, gl.UNSIGNED_SHORT, source.data,
-      );
-    } else {
-      gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-      gl.generateMipmap(gl.TEXTURE_2D);
-    }
+    gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.generateMipmap(gl.TEXTURE_2D);
     this.uploadedSource = source;
   }
 
@@ -336,28 +288,6 @@ export class EditorRenderPipeline {
       new Uint8Array([0, 0, 0, 255]),
     );
     gl.generateMipmap(gl.TEXTURE_2D);
-    return texture;
-  }
-
-  private createRawTexture(): WebGLTexture | null {
-    const gl = this.gl!;
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGB16UI,
-      1,
-      1,
-      0,
-      gl.RGB_INTEGER,
-      gl.UNSIGNED_SHORT,
-      new Uint16Array([0, 0, 0]),
-    );
     return texture;
   }
 

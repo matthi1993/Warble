@@ -23,8 +23,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 kamadak-exif = "0.6"
 jpeg-decoder = "0.3"
 fast_image_resize = { version = "5", features = ["image"] }
-rawloader = "0.37"
-imagepipe = "0.5"
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 tokio = { version = "1", features = ["sync"] }
 rawler = "0.7"

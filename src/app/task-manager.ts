@@ -6,7 +6,6 @@ export type TaskKind =
   | "exif"
   | "hd-image"
   | "full-image"
-  | "raw-image"
   | "folder";
 
 export type TaskPriority = "urgent" | "high" | "normal" | "background";

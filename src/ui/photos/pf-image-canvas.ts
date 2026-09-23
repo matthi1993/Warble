@@ -28,10 +28,6 @@ import {
   getFullImage,
   loadFullImage,
 } from "../../app/full-image-cache";
-import {
-  getRawImage,
-  loadRawImage,
-} from "../../app/raw-image-cache";
 import type { CropEdit } from "@domain/edits";
 import {
   getPhotoEdit,
@@ -43,7 +39,6 @@ import {
   type PostProcessSettings,
 } from "@services/post-process/post-process-store";
 import { subscribePhotoEffects } from "@services/effects/effects-store";
-import { classifyFormat } from "@domain/photo";
 // Side-effect import: wires the worker-backed decoder into both
 // image caches and exports the binary thumbnail decoder.
 import { decodeJpegBytes } from "./canvas/decoder-bootstrap";
@@ -60,7 +55,6 @@ import {
   subscribeToolPreview,
   type ToolPreview,
 } from "@features/editor/tool-preview";
-import type { RawImageSource } from "./canvas/raw-source";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
 import type {
   CropFrame,
@@ -79,10 +73,6 @@ export type {
 /** Time the user must linger on a photo before we kick off a full-
  * resolution decode in addition to the HD preview.  */
 const FULL_IMAGE_DELAY_MS = 1000;
-
-/** Responsive, high-bit-depth working source shown while the full sensor
- * decode continues in the background. */
-const RAW_EDIT_PREVIEW_LONG_SIDE = 2560;
 
 // Time to wait until editing changes are applied to full res image after slider change
 const EDIT_SETTLE_MS = 1000;
@@ -278,9 +268,6 @@ export class PfImageCanvas extends LitElement {
    */
   private fullBitmap: ImageBitmap | null = null;
   private fullBitmapForPath: string | null = null;
-  /** Linear RGB16 RAW working image: responsive proxy first, full sensor later. */
-  private fullRaw: RawImageSource | null = null;
-  private fullRawForPath: string | null = null;
   /** Pending timer that kicks off the deferred full-res load. */
   private fullLoadTimer: number | null = null;
   /** Abort handle for the deferred full-res load itself. */
@@ -492,26 +479,21 @@ export class PfImageCanvas extends LitElement {
     if (!this.enableFullRes) return;
     const wasActive = this.editingActive;
     if (!wasActive) {
-      const rawActive = this.currentRawSource !== null;
       // Capture the source dims BEFORE flipping the flag so we can
       // adjust user-zoom for the full→HD downsize.
       const prevSrc = this.effectiveSource();
       const prevW = prevSrc?.width ?? 0;
       this.editingActive = true;
-      // RAW remains on the same RGB16 source while editing. Invalidating it
-      // here forced a multi-megabyte texture upload on the first slider tick.
-      if (!rawActive) {
-        this.rotatedCache = null;
-        this.renderPipeline.invalidate();
-        if (this.userInteracted && prevW > 0) {
-          const newSrc = this.effectiveSource();
-          const newW = newSrc?.width ?? 0;
-          if (newW > 0 && newW !== prevW) {
-            this.scale = (this.scale * prevW) / newW;
-          }
+      this.rotatedCache = null;
+      this.renderPipeline.invalidate();
+      if (this.userInteracted && prevW > 0) {
+        const newSrc = this.effectiveSource();
+        const newW = newSrc?.width ?? 0;
+        if (newW > 0 && newW !== prevW) {
+          this.scale = (this.scale * prevW) / newW;
         }
-        this.recomputeFit();
       }
+      this.recomputeFit();
     }
     if (this.editSettleTimer !== null) {
       window.clearTimeout(this.editSettleTimer);
@@ -519,13 +501,7 @@ export class PfImageCanvas extends LitElement {
     this.editSettleTimer = window.setTimeout(() => {
       this.editSettleTimer = null;
       if (!this.editingActive) return;
-      const rawActive = this.currentRawSource !== null;
       this.editingActive = false;
-      if (rawActive) {
-        // Re-enable the expensive preview effects without re-uploading RAW.
-        this.scheduleDraw();
-        return;
-      }
       const prevSrc = this.effectiveSource();
       const prevW = prevSrc?.width ?? 0;
       this.rotatedCache = null;
@@ -710,61 +686,6 @@ export class PfImageCanvas extends LitElement {
    * micro-timeout) so the warm-up never delays a paint. */
   private warmupTonePipeline() {
     if (!this.editing) return;
-    const path = this.path;
-    const ext = path?.split(".").pop() ?? "";
-    if (
-      this.enableFullRes &&
-      path &&
-      classifyFormat(ext) === "raw" &&
-      !this.currentRawSource &&
-      !this.fullLoadAbort
-    ) {
-      // RAW editing should not wait for the normal linger upgrade. Start the
-      // high-bit-depth working image as soon as the edit panel is active;
-      // the HD JPEG remains visible until this source is ready.
-      const rawAc = new AbortController();
-      this.fullLoadAbort = rawAc;
-      this.fullLoading = true;
-      const parent = this.loadAbort;
-      const onParentAbort = () => rawAc.abort();
-      parent?.signal.addEventListener("abort", onParentAbort, {
-        once: true,
-      });
-      void loadRawImage(path, {
-        signal: rawAc.signal,
-        maxLongSide: RAW_EDIT_PREVIEW_LONG_SIDE,
-      })
-        .then((raw) => {
-          if (!rawAc.signal.aborted && this.path === path) {
-            this.applyFullRaw(path, raw);
-          }
-        })
-        .catch((err) => {
-          if (!rawAc.signal.aborted) console.warn("RAW editing load failed", err);
-        })
-        .finally(() => {
-          parent?.signal.removeEventListener("abort", onParentAbort);
-          if (this.fullLoadAbort === rawAc) this.fullLoadAbort = null;
-          if (
-            parent &&
-            !parent.signal.aborted &&
-            !rawAc.signal.aborted &&
-            this.path === path
-          ) {
-            // The linger timer may have fired while this proxy owned the RAW
-            // load slot. Re-arm it so full resolution still replaces the
-            // proxy once the interaction-critical decode has completed.
-            this.scheduleFullImageLoad(path, parent);
-          }
-          if (
-            this.path === path &&
-            this.fullLoadTimer === null &&
-            this.fullLoadAbort === null
-          ) {
-            this.fullLoading = false;
-          }
-        });
-    }
     const source = this.effectiveSource()?.source;
     if (!source) return;
     const run = () => {
@@ -798,8 +719,6 @@ export class PfImageCanvas extends LitElement {
       this.thumbForPath = null;
       this.fullBitmap = null;
       this.fullBitmapForPath = null;
-      this.fullRaw = null;
-      this.fullRawForPath = null;
       this.draw();
       return;
     }
@@ -822,10 +741,6 @@ export class PfImageCanvas extends LitElement {
       // Full-res bitmaps are owned by full-image-cache; never close.
       this.fullBitmap = null;
       this.fullBitmapForPath = null;
-    }
-    if (this.fullRawForPath !== path) {
-      this.fullRaw = null;
-      this.fullRawForPath = null;
     }
 
     // Fast path: HD image already in the cross-instance LRU cache.
@@ -929,10 +844,6 @@ export class PfImageCanvas extends LitElement {
         this.fullLoading = false;
         return;
       }
-      // An edit-panel activation may already have started the RAW working
-      // image before the normal linger timer fired.
-      if (this.fullLoadAbort) return;
-
       // Cache hits still go through the linger gate (above) so the
       // user always sees the HD preview first, but the actual swap
       // is synchronous from here on.
@@ -940,37 +851,6 @@ export class PfImageCanvas extends LitElement {
       if (cached) {
         this.applyFullBitmap(path, cached);
         this.fullLoading = false;
-        return;
-      }
-
-      const ext = path.split(".").pop() ?? "";
-      if (classifyFormat(ext) === "raw") {
-        const cachedRaw = getRawImage(`${path}\0${0}`);
-        if (cachedRaw) {
-          this.applyFullRaw(path, cachedRaw);
-          this.fullLoading = false;
-          return;
-        }
-        const fullAc = new AbortController();
-        this.fullLoadAbort = fullAc;
-        const onParentAbort = () => fullAc.abort();
-        parent.signal.addEventListener("abort", onParentAbort, { once: true });
-        void loadRawImage(path, {
-          signal: fullAc.signal,
-        })
-          .then((raw) => {
-            if (fullAc.signal.aborted || this.path !== path) return;
-            this.applyFullRaw(path, raw);
-          })
-          .catch((err) => {
-            if (fullAc.signal.aborted) return;
-            console.warn("full-resolution RAW load failed", err);
-          })
-          .finally(() => {
-            parent.signal.removeEventListener("abort", onParentAbort);
-            if (this.fullLoadAbort === fullAc) this.fullLoadAbort = null;
-            if (this.path === path) this.fullLoading = false;
-          });
         return;
       }
 
@@ -1013,25 +893,6 @@ export class PfImageCanvas extends LitElement {
     this.fullBitmapForPath = path;
     // The rotated cache and tone texture are keyed on the underlying
     // source bitmap; swapping in a new one must drop both.
-    this.rotatedCache = null;
-    this.renderPipeline.invalidate();
-    if (this.userInteracted && prevW > 0) {
-      const newSrc = this.effectiveSource();
-      const newW = newSrc?.width ?? 0;
-      if (newW > 0 && newW !== prevW) {
-        this.scale = (this.scale * prevW) / newW;
-      }
-    }
-    this.recomputeFit();
-    this.scheduleDraw();
-  }
-
-  private applyFullRaw(path: string, raw: RawImageSource) {
-    if (this.path !== path) return;
-    const prevSrc = this.effectiveSource();
-    const prevW = prevSrc?.width ?? 0;
-    this.fullRaw = raw;
-    this.fullRawForPath = path;
     this.rotatedCache = null;
     this.renderPipeline.invalidate();
     if (this.userInteracted && prevW > 0) {
@@ -1095,11 +956,6 @@ export class PfImageCanvas extends LitElement {
     return this.bitmap ?? this.thumbBitmap;
   }
 
-  private get currentRawSource(): RawImageSource | null {
-    if (this.fullRaw && this.fullRawForPath === this.path) return this.fullRaw;
-    return null;
-  }
-
   /** Offscreen canvas holding `currentBitmap` rotated by `rotation`,
    * cached so the tone pipeline + 2D draw both see the rotated pixels
    * without re-rotating per frame. Keyed by `(bitmap, rotation)`. */
@@ -1119,14 +975,7 @@ export class PfImageCanvas extends LitElement {
     width: number;
     height: number;
   } | null {
-    const raw = this.currentRawSource;
     const bm = this.currentBitmap;
-    const base: EditorSource | null = raw ?? bm;
-    if (!base) return null;
-    // RAW working images are already in display orientation and are kept as
-    // integer textures. Rotation remains supported for the bitmap path; the
-    // crop tool still works on the same dimensions while a RAW is active.
-    if (raw) return { source: raw, width: raw.width, height: raw.height };
     if (!bm) return null;
     const rot = this.normalizedRotation();
     if (rot === 0) {
@@ -1349,11 +1198,6 @@ export class PfImageCanvas extends LitElement {
       // post curve) is skipped entirely. Toggling lets you compare the
       // look against the underlying edit instantly.
       const ppEnabled = pp.enabled;
-      const rawSource = "kind" in src.source && src.source.kind === "raw16";
-      // RAW integer textures require manual bilinear sampling. Temporarily
-      // omit multi-tap sharpening during a slider burst, then restore it on
-      // the settle redraw; tone controls remain visually live at full rate.
-      const interactiveRaw = rawSource && this.editingActive;
       const photoValues: Record<string, unknown> = this.previewOriginal
         ? {}
         : { ...readEditorToolValues("photo", this.path) };
@@ -1367,18 +1211,9 @@ export class PfImageCanvas extends LitElement {
       if (this.toolPreview?.scope === "post") {
         delete configuredPostValues[this.toolPreview.id];
       }
-      const postValues: Record<string, unknown> = rawSource
-        ? { bloom: configuredPostValues.bloom }
-        : { ...configuredPostValues };
-      if (interactiveRaw) {
-        photoValues.sharpen = null;
-        photoValues.grain = null;
-        postValues.sharpen = null;
-        postValues.grain = null;
-      }
+      const postValues = configuredPostValues;
       const applyPipeline =
-        rawSource
-        || hasActiveEditorToolValues(photoValues)
+        hasActiveEditorToolValues(photoValues)
         || hasActiveEditorToolValues(postValues);
       if (applyPipeline) {
         const visX0 = Math.max(0, x);
@@ -1396,26 +1231,14 @@ export class PfImageCanvas extends LitElement {
           const subSy = sy + v0 * sh;
           const subSw = (u1 - u0) * sw;
           const subSh = (v1 - v0) * sh;
-          let outW = Math.max(
+          const outW = Math.max(
             1,
             Math.min(Math.ceil(visW), Math.ceil(subSw))
           );
-          let outH = Math.max(
+          const outH = Math.max(
             1,
             Math.min(Math.ceil(visH), Math.ceil(subSh))
           );
-          if (interactiveRaw) {
-            // Cap interaction rendering to roughly 1.25 MP. Canvas2D scales
-            // the result to the viewport for the drag; the settle redraw is
-            // full resolution. This keeps Retina/4K canvases responsive.
-            const maxPixels = 1_250_000;
-            const previewScale = Math.min(
-              1,
-              Math.sqrt(maxPixels / (outW * outH)),
-            );
-            outW = Math.max(1, Math.round(outW * previewScale));
-            outH = Math.max(1, Math.round(outH * previewScale));
-          }
           const toned = this.renderPipeline.render(
             src.source,
             { photo: photoValues, post: postValues },
@@ -1425,16 +1248,12 @@ export class PfImageCanvas extends LitElement {
           );
           if (toned) {
             ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
-          } else if (!rawSource && !("kind" in src.source)) {
+          } else {
             ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
           }
         }
       } else {
-        // A RAW working source is not a browser image and therefore cannot
-        // be drawn by Canvas2D. It is always routed through WebGL above.
-        if (!rawSource && !("kind" in src.source)) {
-          ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
-        }
+        ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
       }
       if (
         this.cropMode
@@ -1951,17 +1770,11 @@ export class PfImageCanvas extends LitElement {
     const path = this.path;
     if (!path) throw new Error("no photo is loaded");
 
-    const ext = path.split(".").pop() ?? "";
     let source: EditorSource;
     let sourceWidth: number;
     let sourceHeight: number;
 
-    if (classifyFormat(ext) === "raw") {
-      const raw = await loadRawImage(path);
-      source = raw;
-      sourceWidth = raw.width;
-      sourceHeight = raw.height;
-    } else {
+    {
       const bitmap = await loadFullImage(path);
       const rotation = this.previewOriginal ? 0 : this.normalizedRotation();
       if (rotation !== 0) {

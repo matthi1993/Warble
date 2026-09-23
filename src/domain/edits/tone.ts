@@ -4,11 +4,7 @@ import {
   TONE_KEYS,
   type ToneEdit,
 } from "./types";
-import {
-  RAW_CONTRAST_SLIDER_RANGE,
-  TONE_GLOBAL_RESPONSE,
-  TONE_SLIDER_RANGE,
-} from "./adjustment-config";
+import { TONE_SLIDER_RANGE } from "./adjustment-config";
 
 export function defaultTone(): ToneEdit {
   return {
@@ -62,58 +58,8 @@ export interface ToneControlSpec {
   toControl: (modelValue: number) => number;
 }
 
-/**
- * UI semantics for tone controls. JPEGs retain the original compact
- * percentage ranges. RAW exposure is expressed in EV and RAW temperature
- * is expressed in Kelvin, while the persisted ToneEdit remains a stable
- * normalized value for backwards compatibility.
- */
-export function toneControlSpec(
-  key: keyof ToneEdit,
-  raw: boolean,
-): ToneControlSpec {
-  if (!raw) {
-    return {
-      ...TONE_SLIDER_RANGE,
-      displayValue: signedInteger,
-      toModel: (value) => value,
-      toControl: (value) => value,
-    };
-  }
-
-  if (key === "exposure") {
-    return {
-      min: -6,
-      max: 6,
-      step: 0.01,
-      resetValue: 0,
-      displayValue: (value) => `${formatSigned(value / TONE_GLOBAL_RESPONSE.exposureScale, 2)} EV`,
-      toModel: (value) => value * TONE_GLOBAL_RESPONSE.exposureScale,
-      toControl: (value) => value / TONE_GLOBAL_RESPONSE.exposureScale,
-    };
-  }
-
-  if (key === "temperature") {
-    return {
-      min: 2500,
-      max: 10500,
-      step: 50,
-      resetValue: 6500,
-      displayValue: (value) => `${Math.round(6500 + value * 40)} K`,
-      toModel: (value) => (value - 6500) / 40,
-      toControl: (value) => 6500 + value * 40,
-    };
-  }
-
-  if (key === "contrast") {
-    return {
-      ...RAW_CONTRAST_SLIDER_RANGE,
-      displayValue: signedInteger,
-      toModel: (value) => value,
-      toControl: (value) => value,
-    };
-  }
-
+/** Slider semantics for JPEG tone adjustments. */
+export function toneControlSpec(): ToneControlSpec {
   return {
     ...TONE_SLIDER_RANGE,
     displayValue: signedInteger,
@@ -126,7 +72,3 @@ function signedInteger(value: number): string {
   return value > 0 ? `+${Math.round(value)}` : `${Math.round(value)}`;
 }
 
-function formatSigned(value: number, digits: number): string {
-  const rounded = value.toFixed(digits);
-  return value > 0 ? `+${rounded}` : rounded;
-}

@@ -13,9 +13,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-/** Unsharp-mask sharpening. Applied as a per-photo effect (with a
- *  format-aware default — RAW gets a light pass, JPG gets nothing)
- *  and reused as a separate global pass by the post-process layer.
+/** Unsharp-mask sharpening. Applied as a per-photo effect and
+ *  reused as a separate global pass by the post-process layer.
  *
  *  The shader builds a blurred copy of the source at a mip level
  *  proportional to `radius`, subtracts it from the source to get a
@@ -80,8 +79,7 @@ export function isGrainZero(
 
 export interface PhotoEffects {
   /** `null` means "no per-photo override stored" — the canvas
-   *  falls back to a format-aware default (see
-   *  {@link defaultSharpenForFormat}). An explicit
+   *  falls back to the default. An explicit
    *  `SharpenSettings` (even one with `strength: 0`) is treated
    *  as a deliberate user choice and overrides the default. */
   sharpen: SharpenSettings | null;
@@ -92,24 +90,10 @@ export interface PhotoEffects {
 const LEGACY_STORAGE_KEY = "warble.effects.v1";
 
 /** Sensible "no sharpening" baseline. Radius / threshold are kept
- *  at the values the per-format defaults use so toggling strength
+ *  at the values the sliders use so toggling strength
  *  on doesn't snap the other sliders to weird positions. */
 export function defaultSharpen(): SharpenSettings {
   return { strength: 0, radius: 1, threshold: 0 };
-}
-
-/** Per-format starting point for the per-photo sharpen card. RAW
- *  files arrive un-sharpened from the demosaic pipeline and benefit
- *  from a light pass — Lightroom ships ~40 strength / 1.0 radius /
- *  0 threshold for the same reason. JPGs already carry whatever
- *  sharpening the camera applied, so we default to off. */
-export function defaultSharpenForFormat(
-  format: "jpg" | "raw" | null | undefined
-): SharpenSettings {
-  if (format === "raw") {
-    return { strength: 40, radius: 1, threshold: 0 };
-  }
-  return defaultSharpen();
 }
 
 export function isSharpenZero(
@@ -261,18 +245,14 @@ export function getPhotoEffects(path: string): PhotoEffects | null {
 /** Read the explicitly-stored sharpen settings for `path`. Returns
  *  `null` if the user has never touched the slider — callers that
  *  need a renderable value should fall back to
- *  {@link defaultSharpenForFormat}. */
+ *  {@link defaultSharpen}. */
 export function getPhotoSharpen(path: string | null): SharpenSettings | null {
   if (!path) return null;
   return effects.get(path)?.sharpen ?? null;
 }
 
-/** Store an explicit per-photo sharpen override. We
- *  KEEP `strength: 0` rather than collapsing to `null`, because a
- *  user-zeroed value must beat the format default (otherwise
- *  disabling sharpening on a RAW would silently re-enable it on
- *  the next reload). Pass `null` to clear the override and fall
- *  back to {@link defaultSharpenForFormat}. */
+/** Store an explicit per-photo sharpen override. Keep `strength: 0`
+ *  as an explicit value; pass `null` to use the default. */
 export function setPhotoSharpen(
   path: string,
   sharpen: SharpenSettings | null

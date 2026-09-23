@@ -6,11 +6,7 @@
  * picks the default value, the card just emits `sharpen-change`
  * / `sharpen-reset` / `toggle`.
  *
- * "Reset" returns the value to whatever the host considers the
- * baseline — for the per-photo edit panel that's the format-
- * specific default (some sharpening on RAW, none on JPG); for the
- * post-process panel it's all zeros. The card itself doesn't know
- * about formats, so the host wires the reset behaviour.
+ * "Reset" returns the value to the baseline chosen by the host.
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";

@@ -20,16 +20,6 @@ export const TONE_SLIDER_RANGE: SliderRange = {
   resetValue: 0,
 };
 
-/** RAW contrast deliberately uses a smaller control range than JPEG/base
- * edits because the linear RAW source makes the same contrast value feel
- * considerably stronger. */
-export const RAW_CONTRAST_SLIDER_RANGE: SliderRange = {
-  min: -50,
-  max: 50,
-  step: 1,
-  resetValue: 0,
-};
-
 /** Response scales for the base tone controls. These values are deliberately
  * separate from the UI ranges so the feel of a control can be tuned without
  * changing stored edit values. */

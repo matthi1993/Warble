@@ -49,16 +49,6 @@ export const toneShader: ToolShaderModule = {
     uniform float u_postWhites;
   `,
   functions: `
-    float toolLinearToSrgbTone(float c) {
-      if (c <= 0.0031308) return c * 12.92;
-      return 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
-    }
-
-    float toolSrgbToLinearTone(float c) {
-      if (c <= 0.04045) return c / 12.92;
-      return pow((c + 0.055) / 1.055, 2.4);
-    }
-
     vec3 toolApplyTone(
       vec3 col,
       float temperature,
@@ -69,8 +59,7 @@ export const toneShader: ToolShaderModule = {
       float blacks,
       float shadows,
       float highlights,
-      float whites,
-      int linearSource
+      float whites
     ) {
       col *= exposure;
       float tempGain = temperature * ${glslFloat(TONE_GLOBAL_RESPONSE.temperatureGain)};
@@ -86,9 +75,7 @@ export const toneShader: ToolShaderModule = {
         + abs(highlights) + abs(whites);
       if (regionalAmount > 1e-6) {
         float workingLuma = max(dot(col, LUMA), 0.0);
-        float toneLuma = linearSource == 1
-          ? toolLinearToSrgbTone(workingLuma)
-          : workingLuma;
+        float toneLuma = workingLuma;
         float bandLuma = clamp(toneLuma, 0.0, 1.0);
         float wBlacks = 1.0 - smoothstep(
           ${glslFloat(TONE_REGION_FALLOFFS.blacks.start)},
@@ -116,10 +103,7 @@ export const toneShader: ToolShaderModule = {
           + highlights * ${glslFloat(TONE_REGION_FALLOFFS.highlights.strength)} * wHighlights
           + whites * ${glslFloat(TONE_REGION_FALLOFFS.whites.strength)} * wWhites;
         float targetToneLuma = max(toneLuma + toneOffset, 0.0);
-        float targetWorkingLuma = linearSource == 1
-          ? toolSrgbToLinearTone(targetToneLuma)
-          : targetToneLuma;
-        if (workingLuma > 1e-6) col *= targetWorkingLuma / workingLuma;
+        if (workingLuma > 1e-6) col *= targetToneLuma / workingLuma;
       }
       col = (col - 0.5) * contrast + 0.5;
       float luma = dot(col, LUMA);
@@ -129,15 +113,14 @@ export const toneShader: ToolShaderModule = {
   photoApply: `
     color = toolApplyTone(
       source, u_temperature, u_tint, u_exposure, u_contrast,
-      u_saturation, u_blacks, u_shadows, u_highlights, u_whites,
-      u_rawSource
+      u_saturation, u_blacks, u_shadows, u_highlights, u_whites
     );
   `,
   postApply: `
     color = toolApplyTone(
       color, u_postTemperature, u_postTint, u_postExposure, u_postContrast,
       u_postSaturation, u_postBlacks, u_postShadows, u_postHighlights,
-      u_postWhites, u_rawSource
+      u_postWhites
     );
   `,
   bind(context, photoValue, postValue) {

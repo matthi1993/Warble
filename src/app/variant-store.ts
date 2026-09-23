@@ -20,17 +20,12 @@ interface PersistedRow {
 }
 
 const overrides = new Map<string, VariantPref>();
-/** RAW is a temporary working selection. Keep the most recently selected
- * JPEG separately so navigation can restore it without losing the user's
- * variant choice. */
-const lastJpegOverrides = new Map<string, VariantPref>();
-const sessionOverrides = new Set<string>();
 const listeners = new Set<() => void>();
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
 
 function isFormat(s: string): s is PhotoFormat {
-  return s === "jpg" || s === "raw";
+  return s === "jpg";
 }
 
 /** Hydrate the in-memory map from the backend. Idempotent. */
@@ -43,7 +38,6 @@ export function loadVariantOverrides(): Promise<void> {
         if (!isFormat(r.format)) continue;
         const pref = { format: r.format, variant: r.variant };
         overrides.set(r.path, pref);
-        if (pref.format === "jpg") lastJpegOverrides.set(r.path, pref);
       }
       loaded = true;
       notify();
@@ -58,8 +52,6 @@ export function loadVariantOverrides(): Promise<void> {
 /** Drop all in-memory overrides and re-fetch after a folder-sidecar rescan. */
 export function reloadVariantOverrides(): Promise<void> {
   overrides.clear();
-  lastJpegOverrides.clear();
-  sessionOverrides.clear();
   loaded = false;
   loadPromise = null;
   return loadVariantOverrides();
@@ -69,25 +61,11 @@ export function getVariantOverride(path: string): VariantPref | null {
   return overrides.get(path) ?? null;
 }
 
-export function hasSessionVariantOverride(path: string): boolean {
-  return sessionOverrides.has(path);
-}
-
-export function getLastJpegVariantOverride(path: string): VariantPref | null {
-  return lastJpegOverrides.get(path) ?? null;
-}
-
 /** Update the in-memory map and persist asynchronously. */
 export function setVariantOverride(
   path: string,
   pref: VariantPref
 ): void {
-  if (pref.format === "jpg") {
-    lastJpegOverrides.set(path, pref);
-    sessionOverrides.delete(path);
-  } else {
-    sessionOverrides.add(path);
-  }
   const existing = overrides.get(path);
   if (
     existing &&
@@ -98,9 +76,6 @@ export function setVariantOverride(
   }
   overrides.set(path, pref);
   notify();
-  // RAW is only for inspecting/editing the current photo. Persisting it would
-  // make navigation reopen the RAW instead of the last selected JPEG.
-  if (pref.format === "raw") return;
   void invoke("set_photo_variant", {
     path,
     format: pref.format,

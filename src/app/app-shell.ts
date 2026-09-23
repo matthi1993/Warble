@@ -1576,10 +1576,6 @@ export class WarbleApp extends LitElement {
   }
 
   private onFullViewClose = () => {
-    const fullView = this.renderRoot.querySelector("pf-full-view") as
-      | import("./full-view").PfFullView
-      | null;
-    fullView?.prepareToLeave();
     this.fullViewIndex = null;
   };
 

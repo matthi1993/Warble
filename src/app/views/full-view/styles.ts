@@ -154,32 +154,6 @@ export const fullViewStyles = css`
     color: var(--pf-text-muted);
     font-variant-numeric: tabular-nums;
   }
-  .format-switch {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    background: var(--pf-surface-2);
-    border: 1px solid var(--pf-border);
-    border-radius: var(--pf-radius-md);
-  }
-  .format-switch button {
-    background: transparent;
-    color: var(--pf-text);
-    border: none;
-    padding: 2px 10px;
-    font-size: var(--pf-text-xs);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    border-radius: var(--pf-radius-sm);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .format-switch button[aria-pressed="true"] {
-    background: var(--pf-accent-soft);
-    color: var(--pf-accent);
-  }
   .menu-wrap {
     position: relative;
     display: inline-flex;
@@ -544,7 +518,6 @@ export const fullViewStyles = css`
       height: 48px;
     }
     .close-btn,
-    .format-switch button,
     .menu-trigger,
     .menu-item,
     .footer-btn {

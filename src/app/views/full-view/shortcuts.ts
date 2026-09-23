@@ -22,7 +22,7 @@ export interface ShortcutDef {
   readonly description: string;
   /** True if the shortcut only fires while the viewer is in edit
    *  mode (i.e. the active variant is an editable format — JPEG or
-   *  RAW). */
+  *  JPEG). */
   readonly editModeOnly?: boolean;
   /** Imperative action against the viewer host. */
   readonly run: (host: PfFullView) => void;

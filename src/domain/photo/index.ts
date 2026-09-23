@@ -6,4 +6,5 @@ export {
   classifyFormat,
   fileForSelection,
   primarySelection,
+  RAW_EXTS,
 } from "./variants";

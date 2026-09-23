@@ -16,6 +16,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
+use crate::imaging::raw_preview;
 
 #[tauri::command]
 pub async fn reveal_in_file_manager(
@@ -83,6 +84,59 @@ pub async fn open_photo_in_app(
     {
         let _ = (resolved, app);
         Err("Open In is unavailable on Android".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn open_raw_in_default_app(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let resolved = state.resolve_library_path(&path)?;
+    let extension = resolved
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !raw_preview::is_raw_extension(&extension) {
+        return Err("Not a RAW photo".to_string());
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        return tauri_plugin_folder_access::open_in(&app, &resolved.to_string_lossy());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        return tauri::async_runtime::spawn_blocking(move || {
+            if !resolved.is_file() {
+                return Err(format!("path does not exist: {}", resolved.display()));
+            }
+            let status = Command::new("open")
+                .arg(&resolved)
+                .status()
+                .map_err(|e| format!("failed to open RAW photo: {e}"))?;
+            if status.success() { Ok(()) } else { Err("could not open RAW photo".to_string()) }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    {
+        let _ = app;
+        return tauri::async_runtime::spawn_blocking(move || open_external(&resolved))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = (resolved, app);
+        Err("Opening RAW files is unavailable on Android".to_string())
     }
 }
 

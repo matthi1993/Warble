@@ -5,8 +5,7 @@
 //! here. The frontend canvas applies them at render time on the
 //! decoded `ImageBitmap`, which is format-agnostic and free — no
 //! decode/re-encode round trip per save. The backend's only job is
-//! to hand the canvas the original decoded bytes (or, for RAW, the
-//! developed preview bytes).
+//! to hand the canvas encoded image bytes (or the embedded preview).
 //!
 //! Image reads use a small worker queue. The active photo is urgent;
 //! visible thumbnails and filter metadata use normal priority. The frontend
@@ -17,7 +16,7 @@ use tauri::ipc::Response;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::imaging::{exif_cache, full_image, hd_image, raw_preview, thumbnails};
+use crate::imaging::{exif_cache, full_image, hd_image, thumbnails};
 use crate::tasks::{self, Priority};
 
 #[tauri::command]
@@ -54,29 +53,6 @@ pub async fn get_full_image_bytes(
     let resolved = resolved.to_string_lossy().into_owned();
     let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
         full_image::load_bytes(&resolved, cancel)
-    })
-    .await?;
-    Ok(Response::new(bytes))
-}
-
-/// Return a linear, demosaiced RGB16 working image for RAW editing. The
-/// frontend uploads this directly as a high-bit-depth WebGL texture instead
-/// of decoding a JPEG and losing the RAW headroom before the first slider.
-#[tauri::command]
-pub async fn get_raw_image_bytes(
-    photo_path: String,
-    request_id: Option<u64>,
-    max_long_side: Option<u32>,
-    state: State<'_, AppState>,
-) -> Result<Response, String> {
-    let resolved = state.resolve_library_path(&photo_path)?;
-    let resolved = resolved.to_string_lossy().into_owned();
-    let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
-        let limit = max_long_side
-            .filter(|value| *value > 0)
-            .map(|value| value as usize);
-        let image = raw_preview::decode_linear16(std::path::Path::new(&resolved), limit, cancel)?;
-        raw_preview::encode_linear16(&image)
     })
     .await?;
     Ok(Response::new(bytes))
