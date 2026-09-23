@@ -153,6 +153,67 @@ impl LibraryCatalog {
         self.roots.clone()
     }
 
+    pub fn folder_photo_counts(&self) -> HashMap<String, usize> {
+        fn collect_indexed(
+            folder: &Folder,
+            indexed: &HashSet<String>,
+            ready: &mut HashSet<String>,
+        ) -> bool {
+            let children_ready = folder.children.iter().fold(true, |complete, child| {
+                collect_indexed(child, indexed, ready) && complete
+            });
+            let complete = folder.available && indexed.contains(&folder.id) && children_ready;
+            if complete {
+                ready.insert(folder.id.clone());
+            }
+            complete
+        }
+
+        let mut ready = HashSet::new();
+        for root in &self.roots {
+            collect_indexed(root, &self.indexed_folders, &mut ready);
+        }
+
+        let mut counts = ready
+            .iter()
+            .map(|id| (id.clone(), 0))
+            .collect::<HashMap<_, _>>();
+        let mut seen = HashSet::new();
+        for photo in self.photos.values() {
+            let path = Path::new(&photo.path);
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            let (base_stem, _) = parse_variant(stem);
+            let group = if base_stem.is_empty() {
+                photo.filename.to_ascii_lowercase()
+            } else {
+                base_stem.to_ascii_lowercase()
+            };
+            if !seen.insert((parent.to_path_buf(), group)) {
+                continue;
+            }
+            for ancestor in parent.ancestors() {
+                if let Some(count) = ancestor.to_str().and_then(|id| counts.get_mut(id)) {
+                    *count += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    pub fn all_photos(&self) -> Vec<Photo> {
+        self.roots
+            .iter()
+            .filter(|root| root.available)
+            .flat_map(|root| self.photos_in_folder_filtered(Path::new(&root.path), true))
+            .collect()
+    }
+
     /// Re-scan only the files beside one photo. Saving or deleting a variant
     /// cannot change the folder tree, so walking every nested directory is
     /// unnecessary and can take seconds on large or remote libraries.

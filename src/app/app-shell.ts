@@ -18,8 +18,10 @@ import {
 import {
   applyRatingShortcut,
   flushPhotoRatings,
+  getPhotoRating,
   loadPhotoRatings,
   reloadPhotoRatings,
+  subscribePhotoRatings,
 } from "@services/rating/rating-store";
 import { dropAllThumbnailState, invalidateThumbnails } from "@services/images/thumbnail-service";
 import { invalidateHdImages } from "@services/images/hd-image-cache";
@@ -110,8 +112,8 @@ export class WarbleApp extends LitElement {
   static styles = css`
     :host {
       display: grid;
-      grid-template-rows: 1fr auto;
-      grid-template-columns: 32px 228px 1fr 380px;
+      grid-template-rows: minmax(0, 1fr) auto;
+      grid-template-columns: 36px 260px minmax(0, 1fr) 304px;
       grid-template-areas:
         "rail sidebar main detail"
         "footer footer footer footer";
@@ -129,7 +131,7 @@ export class WarbleApp extends LitElement {
       font-size: var(--pf-text-base);
     }
     :host(.sidebar-collapsed) {
-     grid-template-columns: 32px 0 1fr 380px;
+      grid-template-columns: 36px 0 minmax(0, 1fr) 304px;
    }
    :host(.sidebar-collapsed) aside.sidebar {
      display: none;
@@ -181,12 +183,12 @@ export class WarbleApp extends LitElement {
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.4);
     overflow: hidden;
     left: 0;
-    width: 260px;
+    width: 296px;
     display: flex;
   }
   .fs-overlay-left .sidebar-rail {
-    width: 32px;
-    flex: 0 0 32px;
+    width: 36px;
+    flex: 0 0 36px;
     border-right: 1px solid var(--pf-border);
     background: var(--pf-surface);
     display: flex;
@@ -213,12 +215,11 @@ export class WarbleApp extends LitElement {
        full view's toolbar). */
     .sidebar-rail {
       grid-area: rail;
-      border-right: 1px solid var(--pf-border);
       background: var(--pf-surface);
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding-top: var(--pf-space-2);
+      padding-top: var(--pf-space-3);
       box-sizing: border-box;
     }
 
@@ -229,32 +230,13 @@ export class WarbleApp extends LitElement {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      min-width: 0;
     }
 
     .sidebar-header {
-      padding: var(--pf-space-3);
-      border-bottom: 1px solid var(--pf-border);
+      padding: var(--pf-space-3) var(--pf-space-2) var(--pf-space-4);
       display: flex;
       flex-direction: column;
-      gap: var(--pf-space-2);
-    }
-    .sidebar-title-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--pf-space-2);
-    }
-    .sidebar-title {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--pf-space-2);
-      color: var(--pf-text);
-      font-size: var(--pf-text-sm);
-      font-weight: 600;
-    }
-    .sidebar-header-row {
-      display: flex;
-      align-items: center;
       gap: var(--pf-space-2);
     }
     .sidebar-header pf-button {
@@ -267,10 +249,54 @@ export class WarbleApp extends LitElement {
       gap: var(--pf-space-1);
       flex: 0 0 auto;
     }
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--pf-space-2);
+      min-height: 36px;
+      margin-bottom: var(--pf-space-3);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .sidebar-brand-name {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      min-width: 0;
+    }
+    .sidebar-brand img {
+      width: 25px;
+      height: 25px;
+      border-radius: 7px;
+    }
+    .sidebar-navigation {
+      padding-bottom: var(--pf-space-3);
+      margin-bottom: var(--pf-space-3);
+      border-bottom: 1px solid var(--pf-border);
+    }
+    .sidebar-navigation button {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      width: 100%;
+      min-height: 36px;
+      padding: var(--pf-space-2);
+      border: 0;
+      border-radius: var(--pf-radius-md);
+      background: transparent;
+      color: var(--pf-text);
+      text-align: left;
+      font: inherit;
+      font-size: var(--pf-text-sm);
+      cursor: pointer;
+    }
+    .sidebar-navigation button:hover { background: var(--pf-surface-hover); }
+    .sidebar-navigation button.active { background: var(--pf-accent-soft); color: var(--pf-accent-hover); }
+    .sidebar-navigation .nav-count { margin-left: auto; color: var(--pf-text-muted); font-size: var(--pf-text-xs); }
     .folder-actions {
       flex: 0 0 auto;
-      padding: var(--pf-space-2);
-      border-top: 1px solid var(--pf-border);
+      padding: var(--pf-space-3);
     }
     .add-folders-button {
       display: flex;
@@ -300,7 +326,7 @@ export class WarbleApp extends LitElement {
       gap: var(--pf-space-2);
       padding: var(--pf-space-2);
       border-top: 1px solid var(--pf-border);
-      background: var(--pf-surface-2);
+      background: var(--pf-surface);
     }
     .empty-content-header {
       display: flex;
@@ -376,7 +402,7 @@ export class WarbleApp extends LitElement {
     .tree {
       flex: 1;
       overflow-y: auto;
-      padding: var(--pf-space-2);
+      padding: var(--pf-space-3) var(--pf-space-2);
     }
     .sidebar-settings { flex: 0 0 auto; }
     .sidebar-settings pf-button { width: 100%; }
@@ -388,11 +414,47 @@ export class WarbleApp extends LitElement {
 
     main.content {
       grid-area: main;
-      margin: var(--pf-space-4);
+      margin: 0;
+      padding: 0 var(--pf-space-4) var(--pf-space-3);
       overflow: hidden;
       display: flex;
       flex-direction: column;
       min-height: 0;
+      min-width: 0;
+    }
+    .content-topbar {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      min-height: 46px;
+      border-bottom: 1px solid var(--pf-border);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .content-topbar pf-icon { flex: 0 0 auto; }
+    .breadcrumb-current {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--pf-text);
+    }
+    .breadcrumb-separator { color: var(--pf-text-subtle); }
+    .mobile-menu-button, .mobile-backdrop, .detail-backdrop, .detail-toggle { display: none; }
+    .content-topbar .topbar-spacer { flex: 1; }
+    .detail-toggle {
+      align-items: center;
+      justify-content: center;
+      gap: var(--pf-space-1);
+      min-height: 34px;
+      padding: 0 var(--pf-space-2);
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      font: inherit;
+      cursor: pointer;
+      flex: 0 0 auto;
     }
     main.content > h1,
     main.content > p {
@@ -447,8 +509,11 @@ export class WarbleApp extends LitElement {
 
     aside.detail {
       grid-area: detail;
-      border-left: 1px solid var(--pf-border);
+      margin: var(--pf-space-3) var(--pf-space-3) var(--pf-space-2) 0;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-lg);
       overflow: hidden;
+      min-width: 0;
     }
 
     pf-full-view {
@@ -471,7 +536,7 @@ export class WarbleApp extends LitElement {
       background: var(--pf-surface);
       color: var(--pf-text-muted);
       font-size: var(--pf-text-xs);
-      min-height: 32px;
+      min-height: 44px;
     }
     .footer-label {
       flex-shrink: 0;
@@ -550,17 +615,17 @@ export class WarbleApp extends LitElement {
     }
     @media (pointer: coarse) {
       :host {
-        grid-template-columns: 44px 228px 1fr 380px;
+        grid-template-columns: 44px 260px minmax(0, 1fr) 304px;
       }
       :host(.sidebar-collapsed) {
-        grid-template-columns: 44px 0 1fr 380px;
+        grid-template-columns: 44px 0 minmax(0, 1fr) 304px;
       }
       .fs-overlay-left .sidebar-rail {
         width: 44px;
         flex-basis: 44px;
       }
       .fs-overlay-left {
-        width: 272px;
+        width: 304px;
       }
       .ctx-menu {
         min-width: 220px;
@@ -568,6 +633,83 @@ export class WarbleApp extends LitElement {
       .ctx-menu button {
         min-height: 48px;
       }
+    }
+    @media (max-width: 1080px) {
+      :host, :host(.sidebar-collapsed) {
+        grid-template-columns: 36px 260px minmax(0, 1fr);
+        grid-template-areas: "rail sidebar main" "footer footer footer";
+      }
+      :host(.sidebar-collapsed) { grid-template-columns: 36px 0 minmax(0, 1fr); }
+      aside.detail { display: none; }
+      .detail-toggle { display: inline-flex; }
+      :host(.detail-open) aside.detail {
+        display: block;
+        position: fixed;
+        z-index: 1101;
+        inset: env(safe-area-inset-top) 0 0 auto;
+        width: min(360px, 90vw);
+        margin: 0;
+        border-radius: var(--pf-radius-lg) 0 0 var(--pf-radius-lg);
+        box-shadow: -12px 0 36px rgba(0,0,0,.35);
+      }
+      .detail-backdrop {
+        position: fixed;
+        z-index: 1100;
+        inset: 0;
+        background: rgba(0,0,0,.55);
+      }
+      :host(.detail-open) .detail-backdrop { display: block; }
+      pf-full-view { grid-column: 3; }
+    }
+    @media (pointer: coarse) and (min-width: 701px) and (max-width: 1080px) {
+      :host { grid-template-columns: 44px 260px minmax(0, 1fr); }
+      :host(.sidebar-collapsed) { grid-template-columns: 44px 0 minmax(0, 1fr); }
+    }
+    @media (max-width: 700px) {
+      :host, :host(.sidebar-collapsed) {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "main" "footer";
+      }
+      :host > .sidebar-rail, :host > aside.sidebar { display: none; }
+      :host(.mobile-sidebar-open) > aside.sidebar {
+        display: flex;
+        position: fixed;
+        z-index: 1101;
+        inset: env(safe-area-inset-top) auto 0 0;
+        width: min(300px, 84vw);
+        box-shadow: 12px 0 36px rgba(0,0,0,.35);
+      }
+      .mobile-backdrop {
+        position: fixed;
+        z-index: 1100;
+        inset: 0;
+        background: rgba(0,0,0,.55);
+      }
+      :host(.mobile-sidebar-open) .mobile-backdrop { display: block; }
+      main.content { padding: 0 var(--pf-space-3) var(--pf-space-2); }
+      .mobile-menu-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        flex: 0 0 auto;
+        border: 1px solid var(--pf-border);
+        border-radius: var(--pf-radius-md);
+        background: var(--pf-surface);
+        color: var(--pf-text);
+        font: inherit;
+      }
+      .content-topbar { min-height: 52px; }
+      pf-full-view { grid-column: 1; }
+      footer.app-footer { padding-inline: var(--pf-space-3); }
+      :host(.fs-fullview) {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        grid-template-areas: "fullview";
+      }
+      :host(.fs-fullview) > .mobile-backdrop { display: none; }
+      :host(.fs-fullview) > .detail-backdrop { display: none; }
     }
   `;
 
@@ -584,6 +726,27 @@ export class WarbleApp extends LitElement {
   private selectedFolderName: string | null = null;
 
   @state()
+  private allPhotosSelected = false;
+
+  @state()
+  private favoritesSelected = false;
+
+  @state()
+  private libraryPhotos: Photo[] = [];
+
+  @state()
+  private ratingsTick = 0;
+
+  private unsubscribeRatings: (() => void) | null = null;
+
+  @state()
+  private folderPhotoCounts: Readonly<Record<string, number>> = {};
+
+  private indexedCountRoots = new Set<string>();
+  private folderCountRequest = 0;
+  private allPhotosRequest = 0;
+
+  @state()
   private busyLabel: string | null = null;
 
   @state()
@@ -594,6 +757,12 @@ export class WarbleApp extends LitElement {
 
   @state()
  private sidebarCollapsed = false;
+
+  @state()
+  private mobileSidebarOpen = false;
+
+  @state()
+  private detailOpen = false;
 
 
  /** Whether photo listings should recurse into all subfolders of the
@@ -670,6 +839,90 @@ export class WarbleApp extends LitElement {
     return buildFolderForest(this.imports);
   }
 
+  private async refreshFolderPhotoCounts(): Promise<void> {
+    const request = ++this.folderCountRequest;
+    try {
+      const counts = await invoke<Record<string, number>>("get_folder_photo_counts");
+      if (request === this.folderCountRequest) this.folderPhotoCounts = counts;
+    } catch (error) {
+      console.error("Failed to load folder photo counts", error);
+    }
+  }
+
+  private indexRootsForCounts(): void {
+    const available = this.imports.filter((root) => root.available);
+    const ids = new Set(available.map((root) => root.id));
+    for (const id of this.indexedCountRoots) {
+      if (!ids.has(id)) this.indexedCountRoots.delete(id);
+    }
+    for (const root of available) {
+      if (this.indexedCountRoots.has(root.id)) continue;
+      this.indexedCountRoots.add(root.id);
+      this.requestFolderImageIndex(root.path, true);
+    }
+  }
+
+  private selectAllPhotos = () => {
+    this.allPhotosSelected = true;
+    this.favoritesSelected = false;
+    this.selectedFolderId = null;
+    this.selectedFolderName = null;
+    this.selectedPhoto = null;
+    this.fullViewIndex = null;
+    this.mobileSidebarOpen = false;
+    this.detailOpen = false;
+    this.showLibraryPhotos();
+    void this.refreshAllPhotos();
+  };
+
+  private selectFavorites = () => {
+    this.allPhotosSelected = false;
+    this.favoritesSelected = true;
+    this.selectedFolderId = null;
+    this.selectedFolderName = null;
+    this.selectedPhoto = null;
+    this.fullViewIndex = null;
+    this.mobileSidebarOpen = false;
+    this.detailOpen = false;
+    this.showLibraryPhotos();
+    void this.refreshAllPhotos();
+  };
+
+  private showLibraryPhotos(): void {
+    if (!this.allPhotosSelected && !this.favoritesSelected) return;
+    const photos = this.favoritesSelected
+      ? this.libraryPhotos.filter((photo) => getPhotoRating(photo.path).rating >= 1)
+      : this.libraryPhotos;
+    const selectedPath = this.selectedPhoto?.path;
+    const previousIndex = this.fullViewIndex;
+    this.setPhotos(photos);
+    if (!selectedPath) return;
+    const selectedIndex = this.photos.findIndex((photo) => photo.path === selectedPath);
+    if (selectedIndex >= 0) {
+      this.selectedPhoto = this.photos[selectedIndex];
+      if (previousIndex !== null) this.fullViewIndex = selectedIndex;
+    } else if (previousIndex !== null && this.photos.length > 0) {
+      const index = Math.min(previousIndex, this.photos.length - 1);
+      this.selectedPhoto = this.photos[index];
+      this.fullViewIndex = index;
+    } else {
+      this.selectedPhoto = null;
+      this.fullViewIndex = null;
+    }
+  }
+
+  private async refreshAllPhotos(): Promise<void> {
+    const request = ++this.allPhotosRequest;
+    try {
+      const photos = await invoke<Photo[]>("get_all_photos");
+      if (request !== this.allPhotosRequest) return;
+      this.libraryPhotos = photos;
+      this.showLibraryPhotos();
+    } catch (error) {
+      console.error("Failed to load all photos", error);
+    }
+  }
+
   async connectedCallback() {
    super.connectedCallback();
    window.addEventListener("keydown", this.onGlobalKey);
@@ -680,6 +933,14 @@ export class WarbleApp extends LitElement {
    this.unsubscribeTasks = subscribeTasks((tasks, recentTasks) => {
      this.activeTasks = tasks;
      this.recentTasks = recentTasks;
+   });
+   this.unsubscribeRatings = subscribePhotoRatings((path) => {
+     this.ratingsTick++;
+     if (this.favoritesSelected && (path === "" ||
+       (this.libraryPhotos.some((photo) => photo.path === path) &&
+         this.photos.some((photo) => photo.path === path) !== (getPhotoRating(path).rating >= 1)))) {
+       this.showLibraryPhotos();
+     }
    });
    this.unlistenFoldersRehydrated = await listen("folders-rehydrated", () => {
      void this.onFoldersRehydrated();
@@ -849,6 +1110,8 @@ export class WarbleApp extends LitElement {
     this.unsubscribeAppBusy = null;
     this.unsubscribeTasks?.();
     this.unsubscribeTasks = null;
+    this.unsubscribeRatings?.();
+    this.unsubscribeRatings = null;
     this.stopPhotoBackgroundWork();
   }
 
@@ -1202,6 +1465,10 @@ export class WarbleApp extends LitElement {
 
   private async onFoldersUpdated(update: FolderUpdate): Promise<void> {
     this.imports = update.folders;
+    if (update.contentChanged) {
+      const root = this.imports.find((item) => item.id === update.rootId);
+      if (root?.available) this.requestFolderImageIndex(root.path, true);
+    }
     if (update.contentChanged && this.pendingRestoreFolderPath) {
       const restored = findFolderByPath(this.imports, this.pendingRestoreFolderPath);
       if (restored) {
@@ -1245,6 +1512,11 @@ export class WarbleApp extends LitElement {
   }
 
   private onFolderImagesUpdated(update: FolderImageUpdate): void {
+    void this.refreshFolderPhotoCounts();
+    void this.refreshAllPhotos();
+    if (this.allPhotosSelected || this.favoritesSelected) {
+      return;
+    }
     if (!this.selectedFolderId) return;
     const affectsSelection =
       update.folderKey === this.selectedFolderId ||
@@ -1260,6 +1532,7 @@ export class WarbleApp extends LitElement {
   }
 
   private async onPhotoIndexSynced(update: PhotoIndexUpdate): Promise<void> {
+    void this.refreshFolderPhotoCounts();
     if (update.changedImages.length > 0) {
       this.photoPipeline.invalidate(update.changedImages);
       invalidateThumbnails(update.changedImages);
@@ -1319,11 +1592,14 @@ export class WarbleApp extends LitElement {
     e: CustomEvent<{ id: string; path: string }>
   ) {
     const { id, path } = e.detail;
+    this.mobileSidebarOpen = false;
     await this.selectFolder(id, path);
   }
 
   private clearFolderSelection = () => {
-    if (this.selectedFolderId === null) return;
+    if (this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected) return;
+    this.allPhotosSelected = false;
+    this.favoritesSelected = false;
     this.selectedFolderId = null;
     this.selectedFolderName = null;
     this.selectedPhoto = null;
@@ -1342,10 +1618,12 @@ export class WarbleApp extends LitElement {
   };
 
   private async selectFolder(id: string, path: string) {
+    this.allPhotosSelected = false;
+    this.favoritesSelected = false;
     this.stopPhotoBackgroundWork();
     this.pendingRestoreFolderPath = null;
     this.selectedFolderId = id;
-    const name = id.split("/").filter(Boolean).pop() ?? path;
+    const name = findFolderByPath(this.imports, path)?.name ?? path.split("/").filter(Boolean).pop() ?? path;
     this.selectedFolderName = name;
     this.requestFolderImageIndex(path, this.includeSubfolders);
     const photos = await invoke<Photo[]>("get_photos_in_folder", {
@@ -1379,10 +1657,7 @@ export class WarbleApp extends LitElement {
   private onPhotoSelected(
     e: CustomEvent<{ path: string; filename: string }>
   ) {
-    this.selectedPhoto = {
-      path: e.detail.path,
-      filename: e.detail.filename,
-    };
+    this.selectedPhoto = this.photos.find((photo) => photo.path === e.detail.path) ?? null;
   }
 
   private onPhotoOpen(
@@ -1390,6 +1665,7 @@ export class WarbleApp extends LitElement {
   ) {
     const idx = this.photos.findIndex((p) => p.path === e.detail.path);
     if (idx >= 0) {
+      this.detailOpen = false;
       this.selectedPhoto = this.photos[idx];
       this.fullViewIndex = idx;
     }
@@ -1415,15 +1691,21 @@ export class WarbleApp extends LitElement {
     previousIndex: number;
   }): Promise<void> {
     const { kind, photoPath, memberPaths, previousIndex } = detail;
-    if (!this.selectedFolderId) return;
+    if (!this.selectedFolderId && !this.allPhotosSelected && !this.favoritesSelected) return;
     try {
       await invoke("refresh_photo_parent", {
         photoPath,
       });
-      this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
-        folderPath: this.selectedFolderId,
-        recursive: this.includeSubfolders,
-      }));
+      void this.refreshFolderPhotoCounts();
+      if (this.allPhotosSelected || this.favoritesSelected) {
+        await this.refreshAllPhotos();
+      } else {
+        this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
+            folderPath: this.selectedFolderId,
+            recursive: this.includeSubfolders,
+        }));
+        void this.refreshAllPhotos();
+      }
       if (kind === "photo-delete") {
         if (this.photos.length === 0) {
           this.selectedPhoto = null;
@@ -1559,6 +1841,11 @@ export class WarbleApp extends LitElement {
   };
 
   private toggleSidebar = () => {
+    if (window.matchMedia("(max-width: 700px)").matches) {
+      this.detailOpen = false;
+      this.mobileSidebarOpen = !this.mobileSidebarOpen;
+      return;
+    }
     this.sidebarCollapsed = !this.sidebarCollapsed;
   };
 
@@ -1586,6 +1873,17 @@ export class WarbleApp extends LitElement {
   };
 
  updated(changed: Map<string, unknown>): void {
+    if (changed.has("imports")) {
+      void this.refreshFolderPhotoCounts();
+      this.indexRootsForCounts();
+      void this.refreshAllPhotos();
+    }
+    if (changed.has("detailOpen")) {
+      this.classList.toggle("detail-open", this.detailOpen);
+    }
+    if (changed.has("mobileSidebarOpen")) {
+      this.classList.toggle("mobile-sidebar-open", this.mobileSidebarOpen);
+    }
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
@@ -1652,21 +1950,29 @@ export class WarbleApp extends LitElement {
       console.error("Failed to load restored folders", err);
       return;
     }
-    if (this.selectedFolderId === null) {
+    if (this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected) {
       const first = this.imports.find((folder) => folder.available);
       if (first) await this.selectFolder(first.id, first.path);
     }
   }
 
   private renderSidebar() {
+    void this.ratingsTick;
+    const roots = this.imports.filter((root) => root.available);
+    const allCount = roots.every((root) => this.folderPhotoCounts[root.id] !== undefined)
+      ? roots.reduce((total, root) => total + this.folderPhotoCounts[root.id], 0)
+      : null;
+    const favoriteCount = allCount === null
+      ? null
+      : this.libraryPhotos.filter((photo) => getPhotoRating(photo.path).rating >= 1).length;
     return html`
       <aside class="sidebar">
         <div class="sidebar-header">
-          <div class="sidebar-title-row">
-            <div class="sidebar-title">
-              <pf-icon name="folder"></pf-icon>
-              Folders
-            </div>
+          <div class="sidebar-brand">
+            <span class="sidebar-brand-name">
+              <img src=${APP_ICON_URL} alt="" />
+              <span>Warble</span>
+            </span>
             <span class="header-actions">
               <pf-icon-button
                 icon="refresh"
@@ -1676,6 +1982,18 @@ export class WarbleApp extends LitElement {
               <pf-theme-toggle></pf-theme-toggle>
             </span>
           </div>
+          <nav class="sidebar-navigation" aria-label="Library views">
+            <button type="button" class=${this.allPhotosSelected ? "active" : ""} aria-current=${this.allPhotosSelected ? "page" : "false"} @click=${this.selectAllPhotos}>
+              <pf-icon name="image"></pf-icon>
+              <span>All Photos</span>
+              <span class="nav-count">${allCount?.toLocaleString() ?? "…"}</span>
+            </button>
+            <button type="button" class=${this.favoritesSelected ? "active" : ""} aria-current=${this.favoritesSelected ? "page" : "false"} @click=${this.selectFavorites}>
+              <pf-icon name="star"></pf-icon>
+              <span>Favorites</span>
+              <span class="nav-count">${favoriteCount?.toLocaleString() ?? "…"}</span>
+            </button>
+          </nav>
         </div>
         <div
           class="tree"
@@ -1690,6 +2008,7 @@ export class WarbleApp extends LitElement {
                 (f) => html`
                   <pf-folder-tree-item
                     .folder=${f}
+                    .photoCounts=${this.folderPhotoCounts}
                     is-root
                     selected-id=${this.selectedFolderId ?? ""}
                   ></pf-folder-tree-item>
@@ -1720,6 +2039,8 @@ export class WarbleApp extends LitElement {
 
   render() {
     return html`
+      <div class="mobile-backdrop" @click=${() => (this.mobileSidebarOpen = false)}></div>
+      <div class="detail-backdrop" @click=${() => (this.detailOpen = false)}></div>
       <div class="sidebar-rail">
         <pf-icon-button
           icon=${this.sidebarCollapsed ? "panel-left-open" : "panel-left-close"}
@@ -1737,7 +2058,17 @@ export class WarbleApp extends LitElement {
         @photo-context-menu=${this.onPhotoContextMenu}
         @toggle-include-subfolders=${this.toggleIncludeSubfolders}
       >
-        ${this.selectedFolderId === null
+        <nav class="content-topbar" aria-label="Current folder">
+          <button class="mobile-menu-button" type="button" aria-label="Open folders" @click=${this.toggleSidebar}>
+            <pf-icon name="panel-left-open"></pf-icon>
+          </button>
+          <pf-icon name="folder"></pf-icon>
+          <span>Library</span>
+          ${this.selectedFolderName || this.allPhotosSelected || this.favoritesSelected ? html`<span class="breadcrumb-separator">›</span><span class="breadcrumb-current">${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.selectedFolderName}</span>` : null}
+          <span class="topbar-spacer"></span>
+          ${this.selectedPhoto ? html`<button class="detail-toggle" type="button" aria-label="Photo details" aria-expanded=${this.detailOpen} @click=${() => { this.mobileSidebarOpen = false; this.detailOpen = !this.detailOpen; }}><pf-icon name="info"></pf-icon> Info</button>` : null}
+        </nav>
+        ${this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected
           ? html`<div class="welcome">
               <div class="welcome-inner">
                 <img src=${APP_ICON_URL} alt="Warble" />
@@ -1747,17 +2078,18 @@ export class WarbleApp extends LitElement {
             </div>`
           : this.photos.length === 0
           ? html`<div class="empty-content-header">
-              <h1>${this.selectedFolderName ?? ""}</h1>
-              <label class="include-subfolders-toggle" title="Show photos from all nested subfolders of the selected folder">
+              <h1>${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.selectedFolderName ?? ""}</h1>
+              ${this.allPhotosSelected || this.favoritesSelected ? null : html`<label class="include-subfolders-toggle" title="Show photos from all nested subfolders of the selected folder">
                 <input type="checkbox" .checked=${this.includeSubfolders} @change=${this.toggleIncludeSubfolders} />
                 Include subfolders
-              </label>
+              </label>`}
             </div>
-              <p>No photos in this folder.</p>`
+              <p>${this.favoritesSelected ? "No photos with at least one star yet." : this.allPhotosSelected ? "No photos indexed yet." : "No photos in this folder."}</p>`
           : html`<pf-photo-grid
               .photos=${this.photos}
               .selectedPath=${this.selectedPhoto?.path ?? null}
-              .folderName=${this.selectedFolderName ?? ""}
+              .folderName=${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.selectedFolderName ?? ""}
+              .showSubfolderToggle=${!this.allPhotosSelected && !this.favoritesSelected}
               .includeSubfolders=${this.includeSubfolders}
               .filterMetadataLoading=${this.filterMetadataLoading}
               ?full-view-open=${this.fullViewIndex !== null}

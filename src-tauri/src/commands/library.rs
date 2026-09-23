@@ -548,3 +548,17 @@ pub fn get_photos_in_folder(
     let catalog = state.catalog.lock().map_err(|e| e.to_string())?;
     Ok(catalog.photos_in_folder_filtered(Path::new(&folder_path), recursive.unwrap_or(false)))
 }
+
+#[tauri::command]
+pub fn get_folder_photo_counts(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    let catalog = state.catalog.lock().map_err(|error| error.to_string())?;
+    Ok(catalog.folder_photo_counts())
+}
+
+#[tauri::command]
+pub fn get_all_photos(state: State<'_, AppState>) -> Result<Vec<Photo>, String> {
+    let catalog = state.catalog.lock().map_err(|error| error.to_string())?;
+    Ok(catalog.all_photos())
+}

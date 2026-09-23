@@ -15,8 +15,9 @@ export class PfFolderTreeItem extends LitElement {
       display: flex;
       align-items: center;
       gap: var(--pf-space-2);
+      min-height: 30px;
       padding: var(--pf-space-1) var(--pf-space-2);
-      border-radius: var(--pf-radius-sm);
+      border-radius: var(--pf-radius-md);
       cursor: pointer;
       user-select: none;
       transition: background var(--pf-transition), color var(--pf-transition);
@@ -27,13 +28,11 @@ export class PfFolderTreeItem extends LitElement {
     .row.selected {
       background: var(--pf-accent-soft);
       color: var(--pf-accent-hover);
+      box-shadow: inset 2px 0 var(--pf-accent);
     }
     .row.root .name {
       font-weight: 600;
-      font-size: var(--pf-text-xs);
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--pf-text-muted);
+      color: var(--pf-text);
     }
     .chevron {
       width: 1rem;
@@ -80,14 +79,19 @@ export class PfFolderTreeItem extends LitElement {
     }
     .name {
       flex: 1;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .count {
+      flex: 0 0 auto;
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      font-variant-numeric: tabular-nums;
+    }
     .children {
       padding-left: var(--pf-space-3);
-      border-left: 1px dashed var(--pf-border);
-      margin-left: 0.7rem;
       margin-top: 2px;
     }
   `;
@@ -100,6 +104,9 @@ export class PfFolderTreeItem extends LitElement {
 
   @property({ type: Boolean, attribute: "is-root" })
   isRoot = false;
+
+  @property({ attribute: false })
+  photoCounts: Readonly<Record<string, number>> = {};
 
   @state()
   private expanded = false;
@@ -215,6 +222,9 @@ export class PfFolderTreeItem extends LitElement {
           : html`<span class="chevron placeholder">·</span>`}
         <pf-icon class="folder-icon" name="folder"></pf-icon>
         <span class="name" title=${this.folder.path}>${label}</span>
+        ${this.folder.available
+          ? html`<span class="count" title="Photos including subfolders">${this.photoCounts[this.folder.id]?.toLocaleString() ?? "…"}</span>`
+          : null}
         ${this.folder.scanning
           ? html`<span class="spinner" title="Scanning folder" aria-label="Scanning folder"></span>`
           : null}
@@ -226,6 +236,7 @@ export class PfFolderTreeItem extends LitElement {
               (child) => html`
                 <pf-folder-tree-item
                   .folder=${child}
+                  .photoCounts=${this.photoCounts}
                   selected-id=${this.selectedId ?? ""}
                 ></pf-folder-tree-item>
               `

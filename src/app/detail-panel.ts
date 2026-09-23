@@ -2,6 +2,10 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { Photo } from "@domain/photo";
 import { fileForSelection } from "@domain/photo";
+import { buildExifSections, type ExifMetadata } from "@domain/exif";
+import { COLOR_LABELS, LABEL_COLORS, LABEL_DISPLAY_NAMES } from "@domain/rating";
+import { fetchExif } from "@services/exif/exif-service";
+import { getPhotoRating, setPhotoLabel, setPhotoStars, subscribePhotoRatings } from "@services/rating/rating-store";
 import {
   subscribeVariantOverrides,
 } from "@services/library/variant-store";
@@ -27,17 +31,19 @@ export class PfDetailPanel extends LitElement {
       overflow: hidden;
     }
     .image-wrap {
-      flex: 1;
+      flex: 0 0 auto;
       position: relative;
-      background: var(--pf-surface-2);
+      background: var(--pf-surface);
       padding: var(--pf-space-3);
       min-height: 0;
+      height: min(34vh, 260px);
     }
     pf-image-canvas {
       width: 100%;
       height: 100%;
-      border-radius: var(--pf-radius-sm);
+      border-radius: var(--pf-radius-md);
       overflow: hidden;
+      background: var(--pf-surface-2);
     }
     .expand-btn {
       position: absolute;
@@ -57,116 +63,75 @@ export class PfDetailPanel extends LitElement {
       box-shadow: var(--pf-shadow-md);
       z-index: 1;
     }
-    .variant-toggle {
-      position: absolute;
-      top: var(--pf-space-2);
-      left: 50%;
-      transform: translateX(-50%);
-      display: inline-flex;
-      align-items: center;
-      gap: var(--pf-space-2);
-      flex-wrap: wrap;
-      z-index: 2;
-    }
-    .toggle-group {
-      display: inline-flex;
-      align-items: center;
-      gap: 2px;
-      padding: 2px;
-      background: var(--pf-surface);
-      border: 1px solid var(--pf-border);
-      box-shadow: var(--pf-shadow-md);
-      border-radius: var(--pf-radius-md);
-    }
-    .toggle-group button {
-      background: transparent;
-      color: var(--pf-text);
-      border: none;
-      padding: 2px 8px;
-      font-size: var(--pf-text-xs);
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      border-radius: var(--pf-radius-sm);
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .toggle-group button[aria-pressed="true"] {
-      background: var(--pf-accent-soft);
-      color: var(--pf-accent);
-    }
-    .menu-wrap {
-      position: relative;
-      display: inline-flex;
-    }
-    .menu-trigger {
-      background: var(--pf-surface);
-      color: var(--pf-text);
-      border: 1px solid var(--pf-border);
-      box-shadow: var(--pf-shadow-md);
-      padding: 2px 8px;
-      font-size: var(--pf-text-xs);
-      font-weight: 600;
-      border-radius: var(--pf-radius-md);
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      white-space: nowrap;
-    }
-    .menu-trigger:hover {
-      background: var(--pf-accent-soft);
-    }
-    .menu-popup {
-      position: absolute;
-      top: calc(100% + 4px);
-      left: 50%;
-      transform: translateX(-50%);
-      background: var(--pf-surface);
-      border: 1px solid var(--pf-border);
-      border-radius: var(--pf-radius-md);
-      box-shadow: var(--pf-shadow-md);
-      padding: 4px;
-      z-index: 5;
-      min-width: 140px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-    .menu-item {
-      background: transparent;
-      color: var(--pf-text);
-      border: none;
-      padding: 4px 8px;
-      text-align: left;
-      font-size: var(--pf-text-xs);
-      border-radius: var(--pf-radius-sm);
-      cursor: pointer;
-    }
-    .menu-item:hover {
-      background: var(--pf-surface-2);
-    }
-    .menu-item[aria-pressed="true"] {
-      background: var(--pf-accent-soft);
-      color: var(--pf-accent);
-    }
     .meta {
-      padding: var(--pf-space-3) var(--pf-space-4);
-      border-top: 1px solid var(--pf-border);
+      padding: var(--pf-space-2) var(--pf-space-3) var(--pf-space-4);
       font-size: var(--pf-text-sm);
       display: flex;
       flex-direction: column;
-      gap: var(--pf-space-1);
+      gap: var(--pf-space-3);
+      overflow-y: auto;
+      min-height: 0;
     }
     .filename {
-      font-weight: 600;
+      font-weight: 700;
       font-size: var(--pf-text-base);
       word-break: break-all;
     }
+    .photo-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .photo-facts span {
+      padding: 3px 6px;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-sm);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+    }
+    .info-section {
+      border-top: 1px solid var(--pf-border);
+      padding-top: var(--pf-space-3);
+    }
+    .info-section h3 {
+      margin: 0 0 var(--pf-space-2);
+      color: var(--pf-text-muted);
+      font-size: var(--pf-text-xs);
+      font-weight: 600;
+    }
+    .info-section dl { margin: 0; }
+    .info-row {
+      display: grid;
+      grid-template-columns: 90px minmax(0, 1fr);
+      gap: var(--pf-space-2);
+      padding: 5px 0;
+      font-size: var(--pf-text-xs);
+    }
+    .info-row dt { color: var(--pf-text-muted); }
+    .info-row dd { margin: 0; overflow-wrap: anywhere; }
+    .rating-controls, .label-controls { display: inline-flex; align-items: center; gap: 3px; }
+    .rating-controls button {
+      border: 0;
+      background: none;
+      padding: 0 2px;
+      color: var(--pf-text-subtle);
+      font-size: 19px;
+      cursor: pointer;
+    }
+    .rating-controls button.active { color: var(--pf-accent); }
+    .label-controls button {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid var(--pf-border);
+      border-radius: 4px;
+      opacity: .55;
+      cursor: pointer;
+    }
+    .label-controls button[aria-pressed="true"] { opacity: 1; outline: 2px solid var(--pf-accent); outline-offset: 2px; }
     .path {
       color: var(--pf-text-muted);
       word-break: break-all;
-      font-family: var(--pf-font-mono);
       font-size: var(--pf-text-xs);
     }
   `;
@@ -183,6 +148,15 @@ export class PfDetailPanel extends LitElement {
   @state()
   private variantTick = 0;
 
+  @state()
+  private exif: ExifMetadata | null = null;
+
+  @state()
+  private ratingTick = 0;
+
+  private exifRequest = 0;
+  private unsubscribeRatings: (() => void) | null = null;
+
   private unsubscribeStore: (() => void) | null = null;
 
   connectedCallback(): void {
@@ -190,12 +164,29 @@ export class PfDetailPanel extends LitElement {
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
+    this.unsubscribeRatings = subscribePhotoRatings(() => { this.ratingTick++; });
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
+    this.unsubscribeRatings?.();
+    this.unsubscribeRatings = null;
+    this.exifRequest++;
+  }
+
+  protected updated(changed: Map<string, unknown>): void {
+    if (!changed.has("photo")) return;
+    const photo = this.photo;
+    const request = ++this.exifRequest;
+    this.exif = null;
+    if (!photo) return;
+    void fetchExif(photo.path).then((exif) => {
+      if (request === this.exifRequest) this.exif = exif;
+    }).catch(() => {
+      if (request === this.exifRequest) this.exif = {};
+    });
   }
 
   private currentPath(photo: Photo): string {
@@ -226,6 +217,7 @@ export class PfDetailPanel extends LitElement {
 
   render() {
     void this.variantTick;
+    void this.ratingTick;
     const photo = this.photo;
     if (!photo) {
       return html`
@@ -244,6 +236,8 @@ export class PfDetailPanel extends LitElement {
       `;
     }
     const path = this.currentPath(photo);
+    const rating = getPhotoRating(photo.path);
+    const sections = buildExifSections(this.exif);
     return html`
       <div class="image-wrap">
         <pf-image-canvas
@@ -272,7 +266,27 @@ export class PfDetailPanel extends LitElement {
       </div>
       <div class="meta">
         <div class="filename">${photo.filename}</div>
-        <div class="path">${photo.path}</div>
+        <div class="photo-facts">
+          ${photo.extensions?.map((extension) => html`<span>${extension.toUpperCase()}</span>`)}
+          ${this.exif?.pixelWidth && this.exif?.pixelHeight ? html`<span>${this.exif.pixelWidth} × ${this.exif.pixelHeight}</span>` : null}
+          ${this.exif?.iso ? html`<span>ISO ${this.exif.iso}</span>` : null}
+        </div>
+        <div class="info-section">
+          <div class="info-row"><dt>Rating</dt><dd class="rating-controls" role="group" aria-label="Photo rating">
+            ${[1, 2, 3, 4, 5].map((star) => html`<button type="button" class=${star <= rating.rating ? "active" : ""} aria-label=${`${star} stars`} @click=${() => setPhotoStars(photo.path, rating.rating === star ? 0 : star)}>★</button>`)}
+          </dd></div>
+          <div class="info-row"><dt>Labels</dt><dd class="label-controls" role="group" aria-label="Photo label">
+            ${COLOR_LABELS.map((label) => html`<button type="button" style=${`background: ${LABEL_COLORS[label]}`} aria-label=${LABEL_DISPLAY_NAMES[label]} aria-pressed=${rating.label === label} @click=${() => setPhotoLabel(photo.path, rating.label === label ? "" : label)}></button>`)}
+          </dd></div>
+        </div>
+        ${sections.map((section) => html`<section class="info-section">
+          <h3>${section.title}</h3>
+          <dl>${section.rows.map((row) => html`<div class="info-row"><dt>${row.label}</dt><dd>${row.value}</dd></div>`)}</dl>
+        </section>`)}
+        <div class="info-section">
+          <h3>File path</h3>
+          <div class="path">${photo.path}</div>
+        </div>
       </div>
     `;
   }

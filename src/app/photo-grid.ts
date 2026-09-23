@@ -55,15 +55,16 @@ export class PfPhotoGrid extends LitElement {
       position: relative;
       height: 100%;
       min-height: 0;
+      container-type: inline-size;
     }
     .grid-header {
       flex: 0 0 auto;
       z-index: 5;
       display: flex;
       flex-direction: column;
-      gap: var(--pf-space-2);
-      padding: var(--pf-space-3) var(--pf-space-1) var(--pf-space-2);
-      margin-bottom: var(--pf-space-3);
+      gap: var(--pf-space-3);
+      padding: var(--pf-space-3) 0 var(--pf-space-3);
+      margin-bottom: var(--pf-space-2);
       background: var(--pf-bg);
       border-bottom: 1px solid var(--pf-border);
     }
@@ -71,6 +72,7 @@ export class PfPhotoGrid extends LitElement {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
+      padding: 0 2px var(--pf-space-4);
     }
     :host([full-view-open]) .grid-header {
       display: none;
@@ -80,6 +82,23 @@ export class PfPhotoGrid extends LitElement {
       align-items: center;
       gap: var(--pf-space-3);
       flex-wrap: wrap;
+    }
+    .folder-heading {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+      flex: 1 1 180px;
+    }
+    .folder-heading .count {
+      padding-left: 2px;
+    }
+    .size-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      margin-left: auto;
+      min-width: 150px;
     }
     .subfolder-toggle {
       display: inline-flex;
@@ -98,11 +117,11 @@ export class PfPhotoGrid extends LitElement {
     }
     .folder-title {
       margin: 0;
-      font-size: var(--pf-text-xl);
-      font-weight: 600;
-      letter-spacing: -0.01em;
+      font-size: clamp(1.25rem, 2.6vw, 1.65rem);
+      font-weight: 700;
+      letter-spacing: -0.035em;
       color: var(--pf-text);
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -116,7 +135,8 @@ export class PfPhotoGrid extends LitElement {
       flex: 0 0 auto;
     }
     .grid-header pf-slider {
-      flex: 0 1 220px;
+      flex: 0 1 110px;
+      min-width: 65px;
     }
     .grid-header .count {
       flex: 0 0 auto;
@@ -130,28 +150,14 @@ export class PfPhotoGrid extends LitElement {
       gap: var(--pf-space-2);
       padding: var(--pf-space-2) var(--pf-space-3);
       border: 1px solid var(--pf-border);
-      border-radius: var(--pf-radius-md);
+      border-radius: var(--pf-radius-lg);
       background: var(--pf-surface, var(--pf-bg));
-      box-shadow: var(--pf-shadow-sm);
-    }
-    .filter-panel-heading {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      min-height: 22px;
-    }
-    .filter-summary {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--pf-space-2);
-      color: var(--pf-text-muted);
-      font-size: var(--pf-text-xs);
-      font-variant-numeric: tabular-nums;
+      box-shadow: none;
     }
     .filter-controls {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: var(--pf-space-2);
+      gap: var(--pf-space-3);
       align-items: end;
     }
     .filter-control {
@@ -172,11 +178,11 @@ export class PfPhotoGrid extends LitElement {
     .date-inputs input {
       box-sizing: border-box;
       width: 100%;
-      min-height: 28px;
-      padding: 4px 8px;
+      min-height: 34px;
+      padding: 5px 9px;
       border: 1px solid var(--pf-border);
-      border-radius: var(--pf-radius-sm);
-      background: var(--pf-bg);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface-2);
       color: var(--pf-text);
       font: inherit;
       font-size: var(--pf-text-xs);
@@ -247,13 +253,13 @@ export class PfPhotoGrid extends LitElement {
       align-items: center;
       flex-wrap: wrap;
       gap: var(--pf-space-3);
+      border-top: 1px solid var(--pf-border);
+      padding-top: var(--pf-space-2);
     }
     .filter-group {
       display: inline-flex;
       align-items: center;
       gap: var(--pf-space-2);
-    }
-    .filter-group {
       color: var(--pf-text-muted);
       font-size: var(--pf-text-xs);
     }
@@ -267,7 +273,7 @@ export class PfPhotoGrid extends LitElement {
       background: transparent;
       border: 0;
       color: var(--pf-text-muted);
-      font-size: 14px;
+      font-size: 16px;
       line-height: 1;
       padding: 2px 1px;
       cursor: pointer;
@@ -306,6 +312,7 @@ export class PfPhotoGrid extends LitElement {
       color: var(--pf-text-muted);
       font-size: var(--pf-text-xs);
       cursor: pointer;
+      margin-left: auto;
     }
     .filter-clear:hover:not([disabled]) {
       color: var(--pf-text);
@@ -342,11 +349,11 @@ export class PfPhotoGrid extends LitElement {
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(var(--pf-grid-cols, 6), 1fr);
-      gap: var(--pf-space-3);
+      grid-template-columns: repeat(auto-fill, minmax(max(100px, calc((100% - (var(--pf-grid-cols, 6) - 1) * 10px) / var(--pf-grid-cols, 6))), 1fr));
+      gap: 10px;
     }
     .day-group {
-      margin-bottom: var(--pf-space-5);
+      margin-bottom: var(--pf-space-4);
     }
     .day-heading {
       display: flex;
@@ -356,7 +363,6 @@ export class PfPhotoGrid extends LitElement {
       margin: 0 0 var(--pf-space-2);
       padding: var(--pf-space-2) var(--pf-space-1);
       border: 0;
-      border-bottom: 1px solid var(--pf-border);
       background: transparent;
       color: var(--pf-text);
       text-align: left;
@@ -381,15 +387,19 @@ export class PfPhotoGrid extends LitElement {
     .day-heading[aria-expanded="false"] .day-chevron {
       transform: rotate(-90deg);
     }
-    @media (max-width: 900px) {
+    @container (max-width: 650px) {
       .filter-controls {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
-    @media (max-width: 720px) {
+    @container (max-width: 430px) {
       .filter-controls {
         grid-template-columns: 1fr;
       }
+      .size-controls { width: 100%; margin-left: 0; }
+      .subfolder-toggle { order: 2; }
+      .grid-header { max-height: 55vh; overflow-y: auto; }
+      .filter-panel { flex: 0 0 auto; }
     }
   `;
 
@@ -404,6 +414,9 @@ export class PfPhotoGrid extends LitElement {
 
   @property({ type: Boolean })
   includeSubfolders = false;
+
+  @property({ type: Boolean })
+  showSubfolderToggle = true;
 
   @property({ type: Boolean })
   filterMetadataLoading = false;
@@ -913,15 +926,17 @@ export class PfPhotoGrid extends LitElement {
     return html`
       <div class="grid-header">
         <div class="header-row">
-          <h2 class="folder-title" title=${this.folderName ?? ""}>
-            ${this.folderName ?? ""}
-          </h2>
-          <label class="subfolder-toggle" title="Show photos from all nested subfolders of the selected folder">
+          <div class="folder-heading">
+            <h2 class="folder-title" title=${this.folderName ?? ""}>${this.folderName ?? ""}</h2>
+            <span class="count">${filtersActive ? `${visible.length} of ${this.photos.length}` : this.photos.length} photos${metadataLoading ? " · Reading camera info…" : ""}</span>
+          </div>
+          ${this.showSubfolderToggle ? html`<label class="subfolder-toggle" title="Show photos from all nested subfolders of the selected folder">
             <input type="checkbox" .checked=${this.includeSubfolders} @change=${this.toggleIncludeSubfolders} />
             Include subfolders
-          </label>
-          <span class="label">Size</span>
-          <pf-slider
+          </label>` : null}
+          <div class="size-controls">
+            <span class="label">Size</span>
+            <pf-slider
             min=${MIN_COLUMNS}
             max=${MAX_COLUMNS}
             step="1"
@@ -930,22 +945,11 @@ export class PfPhotoGrid extends LitElement {
             .label=${"Thumbnails per row"}
             @change=${(e: CustomEvent<number>) =>
               this.setColumns(MIN_COLUMNS + MAX_COLUMNS - e.detail)}
-          ></pf-slider>
-          <span class="count">${this.columns} / row</span>
+            ></pf-slider>
+            <span class="count">${this.columns} / row</span>
+          </div>
         </div>
         <div class="filter-panel">
-          <div class="filter-panel-heading">
-            <span class="filter-summary">
-              ${filtersActive ? `${visible.length} of ${this.photos.length}` : `${this.photos.length} photos`}
-              ${metadataLoading ? " · Reading camera info…" : ""}
-              <button
-                type="button"
-                class="filter-clear"
-                ?disabled=${!filtersActive}
-                @click=${this.clearFilters}
-              >Clear</button>
-            </span>
-          </div>
           <div class="filter-controls">
             <label class="filter-control">
               <span class="filter-label">Camera</span>
@@ -1058,6 +1062,12 @@ export class PfPhotoGrid extends LitElement {
               )}
             </span>
           </span>
+          <button
+            type="button"
+            class="filter-clear"
+            ?disabled=${!filtersActive}
+            @click=${this.clearFilters}
+          >Clear filters</button>
           </div>
         </div>
       </div>

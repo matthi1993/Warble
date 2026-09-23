@@ -18,11 +18,11 @@ export class PfThumbnailCard extends LitElement {
     .card {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: var(--pf-space-2);
-      padding: var(--pf-space-2);
+      align-items: stretch;
+      gap: 0;
+      padding: 4px;
       border-radius: var(--pf-radius-md);
-      background: var(--pf-surface);
+      background: var(--pf-surface-2);
       border: 1px solid var(--pf-border);
       cursor: pointer;
       user-select: none;
@@ -34,7 +34,7 @@ export class PfThumbnailCard extends LitElement {
     }
     :host([selected]) .card {
       border-color: var(--pf-accent);
-      box-shadow: 0 0 0 2px var(--pf-accent-soft);
+      box-shadow: 0 0 0 1px var(--pf-accent);
     }
     .thumb {
       /* Cards stretch to fill their grid cell; the thumbnail is a
@@ -49,18 +49,16 @@ export class PfThumbnailCard extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      background: var(--pf-surface-2);
+      background: var(--pf-bg);
       border-radius: var(--pf-radius-sm);
       overflow: hidden;
       position: relative;
       color: var(--pf-text-subtle);
     }
     .thumb img {
-      max-width: 100%;
-      max-height: 100%;
-      width: auto;
-      height: auto;
-      object-fit: contain;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
       display: block;
     }
     .placeholder {
@@ -69,11 +67,12 @@ export class PfThumbnailCard extends LitElement {
     }
     .filename {
       font-size: var(--pf-text-xs);
-      color: var(--pf-text-muted);
+      color: var(--pf-text);
       max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      padding: 6px 3px 2px;
     }
     .error {
       display: inline-flex;
@@ -86,8 +85,8 @@ export class PfThumbnailCard extends LitElement {
     }
     .badge {
       position: absolute;
-      top: var(--pf-space-1);
-      right: var(--pf-space-1);
+      top: 5px;
+      right: 5px;
       display: flex;
       gap: 2px;
       pointer-events: none;
@@ -103,7 +102,7 @@ export class PfThumbnailCard extends LitElement {
       text-transform: uppercase;
     }
     .badge span.variants {
-      background: var(--pf-accent, #4a7);
+      background: var(--pf-accent);
       text-transform: none;
     }
   `;
