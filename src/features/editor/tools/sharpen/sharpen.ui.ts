@@ -13,7 +13,7 @@ import { customElement, property } from "lit/decorators.js";
 import {
   defaultSharpen,
   type SharpenSettings,
-} from "@services/effects/effects-store";
+} from "@domain/edits";
 import "@ui/cards/pf-card";
 import "@ui/controls/pf-slider";
 import "@ui/icons/pf-icon";

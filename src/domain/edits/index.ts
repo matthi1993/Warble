@@ -29,6 +29,11 @@ export {
 } from "./adjustment-config";
 export type { SliderRange } from "./adjustment-config";
 export { cropEditsEqual } from "./crop";
+export type { BloomSettings, GrainSettings, SharpenSettings } from "./effects";
+export {
+  defaultBloom, defaultGrain, defaultSharpen,
+  isBloomZero, isGrainZero, isSharpenZero,
+} from "./effects";
 export type { CurveChannel, CurveEdit, CurvePoint } from "./curve";
 export {
   CURVE_CHANNELS,

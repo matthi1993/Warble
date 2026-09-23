@@ -1,5 +1,5 @@
 import type { ToolShaderModule } from "../../rendering/shader-types";
-import type { GrainSettings } from "@services/effects/effects-store";
+import type { GrainSettings } from "@domain/edits";
 
 function bindGrain(
   prefix: "edit" | "",

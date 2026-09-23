@@ -19,7 +19,7 @@
  * call `host.requestUpdate()` to make the shell re-render.
  */
 import type { TemplateResult } from "lit";
-import { isEffectEnabled, setEffectEnabled } from "./effect-enabled";
+import type { EditorState } from "./editor-state";
 export type ToolScope = "photo" | "post";
 export type EditorImageSizing = "fit" | "fill" | "hybrid";
 
@@ -81,7 +81,7 @@ export abstract class EditTool {
    *  the shell to address tools and decide active-state. */
   abstract readonly id: string;
 
-  constructor(readonly scope: ToolScope = "photo") {}
+  constructor(readonly scope: ToolScope, protected readonly state: EditorState) {}
 
   /** True when the side-panel card is expanded. The shell renders
    *  every tool's card unconditionally — the tool decides its own
@@ -89,11 +89,11 @@ export abstract class EditTool {
   cardOpen = false;
 
   protected effectDisabled(host: ToolHost, id = this.id): boolean {
-    return !isEffectEnabled(this.scope, host.editTarget, id);
+    return !this.state.isEffectEnabled(this.scope, host.editTarget, id);
   }
 
   protected toggleEffect(host: ToolHost, id = this.id): void {
-    setEffectEnabled(this.scope, host.editTarget, id, this.effectDisabled(host, id));
+    this.state.setEffectEnabled(this.scope, host.editTarget, id, this.effectDisabled(host, id));
   }
 
   /** Set by the shell when this tool is the focused/interactive one. */

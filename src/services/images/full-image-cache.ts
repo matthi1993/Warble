@@ -32,13 +32,13 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { CacheSettings } from "./cache-settings";
+import type { CacheSettings } from "@services/settings/cache-settings";
 import {
   beginTask,
   cancelTaskRequest,
   isTaskCancellation,
   nextRequestId,
-} from "./task-manager";
+} from "@services/tasks/task-manager";
 
 /** Fallback used until the persisted setting is loaded from the backend. */
 const DEFAULT_MAX_ENTRIES = 1;

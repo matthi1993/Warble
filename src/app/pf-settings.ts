@@ -8,7 +8,7 @@ import {
   getCacheSettings,
   saveCacheSettings,
   type CacheSettings,
-} from "./cache-settings";
+} from "@services/settings/cache-settings";
 import {
   exportPostProcessPresets,
   importPostProcessPresets,

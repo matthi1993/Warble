@@ -23,7 +23,7 @@ import {
   loadFullImage,
 } from "@services/images/full-image-cache";
 import type { CropEdit } from "@domain/edits";
-import { canvasState } from "@services/edits/canvas-state-adapter";
+import { canvasState } from "./canvas-state-adapter";
 import type { PostProcessSettings } from "@services/post-process/post-process-store";
 // Side-effect import: wires the worker-backed decoder into both
 // image caches and exports the binary thumbnail decoder.
@@ -346,70 +346,47 @@ export class PfImageCanvas extends LitElement {
     this.unsubscribeState = canvasState.subscribe({
       path: () => this.path,
       onEdit: (path) => {
-      const prevCrop = this.savedCrop;
-      this.refreshSavedCrop();
-      // Only reset pan/zoom when the crop rectangle changed — tone-only
-      // edits should keep the user's current viewport so they can watch
-      // an adjustment land on the area they care about.
-      const cropChanged =
-        !!prevCrop !== !!this.savedCrop ||
-        (prevCrop != null &&
-          this.savedCrop != null &&
-          (prevCrop.x !== this.savedCrop.x ||
-            prevCrop.y !== this.savedCrop.y ||
-            prevCrop.width !== this.savedCrop.width ||
-            prevCrop.height !== this.savedCrop.height ||
-            prevCrop.rotation !== this.savedCrop.rotation));
-      if (cropChanged) {
-        this.userInteracted = false;
-        this.forceFitOnNextRecompute = true;
-        // Saved rotation feeds `normalizedRotation()` when crop mode
-        // is off, so a rotation change must drop the rotated cache to
-        // force a re-bake at the new angle.
-        if (
-          (prevCrop?.rotation ?? 0) !== (this.savedCrop?.rotation ?? 0)
-        ) {
-          this.rotatedCache = null;
-          this.renderPipeline.invalidate();
+        const prevCrop = this.savedCrop;
+        this.refreshSavedCrop();
+        // Only reset pan/zoom when the crop rectangle changed — tone-only
+        // edits should keep the user's current viewport.
+        const cropChanged =
+          !!prevCrop !== !!this.savedCrop ||
+          (prevCrop != null &&
+            this.savedCrop != null &&
+            (prevCrop.x !== this.savedCrop.x ||
+              prevCrop.y !== this.savedCrop.y ||
+              prevCrop.width !== this.savedCrop.width ||
+              prevCrop.height !== this.savedCrop.height ||
+              prevCrop.rotation !== this.savedCrop.rotation));
+        if (cropChanged) {
+          this.userInteracted = false;
+          this.forceFitOnNextRecompute = true;
+          if ((prevCrop?.rotation ?? 0) !== (this.savedCrop?.rotation ?? 0)) {
+            this.rotatedCache = null;
+            this.renderPipeline.invalidate();
+          }
+          this.recomputeFit();
+          if (this.cropMode && prevCrop && !this.savedCrop) {
+            this.cropFrame = this.computeInitialCropFrame();
+          }
         }
-        this.recomputeFit();
-        // If the saved crop just got cleared (e.g. user hit revert)
-        // while the crop tool is open, drop the live frame so the
-        // visible crop no longer reflects the now-deleted edit.
-        if (this.cropMode && prevCrop && !this.savedCrop) {
-          this.cropFrame = this.computeInitialCropFrame();
-        }
-      }
-      // Path-targeted edit pushes (i.e. NOT the bulk-load broadcast
-      // that fires with `path === ""`) mean the user just touched a
-      // slider or nudged the crop. Pin the canvas to the HD bitmap
-      // until the dust settles so the WebGL tone pipeline doesn't
-      // burn frames re-uploading a 40 MP texture per drag tick.
-      if (path && path === this.path) {
-        this.markEditingActive();
-      }
-      this.scheduleDraw();
+        if (path && path === this.path) this.markEditingActive();
+        this.scheduleDraw();
       },
-    // Post-process settings are global (not per-photo), so every
-    // change forces a redraw on every visible canvas — but they're
-    // CPU-cheap (the LUT/colour uniforms just flow through the existing
-    // WebGL program).
       onPostProcess: (next) => {
         this.postProcess = next;
         this.scheduleDraw();
       },
-    // Per-photo effects (sharpen, grain) live in their own library-backed
-    // store. Slider drags push at the same rate as edit slider drags,
-    // and the WebGL pipeline can absorb them without a re-upload.
       onEffects: () => this.scheduleDraw(),
       onEffectEnabled: (scope, id) => {
-      if (scope === "photo" && this.savedCrop && (id === "crop" || id === "all")) {
-        this.userInteracted = false;
-        this.forceFitOnNextRecompute = true;
-        requestAnimationFrame(() => this.onResize());
-      } else {
-        this.scheduleDraw();
-      }
+        if (scope === "photo" && this.savedCrop && (id === "crop" || id === "all")) {
+          this.userInteracted = false;
+          this.forceFitOnNextRecompute = true;
+          requestAnimationFrame(() => this.onResize());
+        } else {
+          this.scheduleDraw();
+        }
       },
     });
   }

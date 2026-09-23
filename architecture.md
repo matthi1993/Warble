@@ -20,22 +20,15 @@ The [documentation home](<00 docs/README.md>) links the user guides.
 
 ## Layering
 
-The core uses four concentric layers. Cross-layer product capabilities live
-in `features/` and are composed by `app/`.
+The core uses capability-oriented modules with inward dependencies. Product
+features are composed by `app/`; stateful viewers are features, not generic UI.
 
 ```
-┌─────────────────────────────────────────────┐
-│  app/        – views, shell, router         │
-│  ┌───────────────────────────────────────┐  │
-│  │  ui/        – presentational widgets  │  │
-│  │  ┌─────────────────────────────────┐  │  │
-│  │  │  services/  – IPC, stores       │  │  │
-│  │  │  ┌───────────────────────────┐  │  │  │
-│  │  │  │  domain/  – pure values   │  │  │  │
-│  │  │  └───────────────────────────┘  │  │  │
-│  │  └─────────────────────────────────┘  │  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
+app/      → features/ + services/ + ui/ + domain/
+features/ → services/ (adapters only) + ui/ + domain/
+services/ → domain/ (+ Tauri IPC)
+ui/       → domain/ (props in, events out)
+domain/   → no outer layer
 ```
 
 ### `src/domain/`
@@ -48,7 +41,7 @@ Tauri.** Safe to consume from anywhere. Each subfolder ships its own
   helpers.
 - `folder/` — `Folder`, tree-walking helpers.
 - `edits/` — `CropEdit`, `ToneEdit`, `PhotoEdit`, aspect-ratio table,
-  equality + zero-check helpers (`cropEditsEqual`, `isToneZero`).
+  effect settings, equality + zero-check helpers (`cropEditsEqual`, `isToneZero`).
 - `rating/` — `PhotoRating`, `ColorLabel`, key-shortcut tables.
 - `exif/` — `ExifMetadata`, section builders for the info card.
 
@@ -70,8 +63,13 @@ Subfolders:
 - `rating/rating-store.ts` — per-photo star + color label.
 - `view-state/view-state-service.ts` — persisted bg/fit/sizing.
 - `exif/exif-service.ts` — read EXIF metadata via `get_exif_metadata`.
-- `effects/effects-store.ts` — per-photo shader effects.
+- `effects/effects-store.ts` and `effect-enabled-store.ts` — per-photo shader
+  effects and persisted preview switches.
 - `post-process/` — global post-process values and presets.
+- `images/` — thumbnail/HD/full image loading, cache, and decode worker.
+- `library/` — selected-folder enrichment pipeline and variant preferences.
+- `tasks/` — background task observation and busy indicator state.
+- `settings/` — cache preferences and native settings events.
 
 ### `src/ui/`
 
@@ -83,7 +81,8 @@ out. Each component lives in its own file and registers itself via
 - `cards/` — `pf-card` (disclosure), `pf-info-row`, `pf-tone-slider-row`.
 - `icons/` — SVG icon registry + `pf-icon`.
 - `folders/` — folder tree row.
-- `photos/` — image canvas, thumbnail card, rating overlay.
+- Stateful canvas, thumbnail loading and rating controls are in features,
+  not in the presentational UI library.
 
 ### `src/features/`
 
@@ -92,7 +91,12 @@ runtime behavior. Tool-specific code belongs here instead of being spread
 across the generic layers.
 
 - `editor/` — tool registry, shared tool contract, Edit/Post hosts, WebGL
-  composition, and one folder per editing tool.
+  composition, and one folder per editing tool. Tools depend on the
+  `EditorState` port; the registry is the single registration list. Its
+  store adapter composes editing, effect and post-process services.
+- `image-viewer/` — stateful canvas and thumbnail card; rendering/interaction
+  live here, with a state adapter subscribing to the service stores.
+- `rating/` — interactive rating overlay; it observes the rating store.
 
 ### `src/app/`
 
@@ -108,14 +112,8 @@ state machines.
   `src/features/editor/`.
 - `photo-grid.ts`, `detail-panel.ts`, `folder-tree.ts`,
   `full-view.ts` — top-level views.
-- `task-manager.ts`, `thumbnail-service.ts`, `hd-image-cache.ts`,
-  `full-image-cache.ts`, `full-image-worker.ts` — on-demand image
-  decoding and caching. The backend queue prioritises the active photo;
-  the frontend modules deduplicate requests and own `ImageBitmap` lifetimes.
-- `photo-processing-pipeline.ts` — staged metadata batches and bounded
-  thumbnail warmup for the selected folder.
-- `variant-store.ts` — file-format override store (still in `app/`
-  because it sits between the variant store and on-disk preferences).
+The image, library, task and settings services are composed here. The backend
+queue prioritises the active photo; frontend caches own `ImageBitmap` lifetimes.
 
 The native `src-tauri/src/library/` owns the catalog and folder scans;
 `src-tauri/src/sidecar.rs` reconciles portable metadata with SQLite;
@@ -128,7 +126,7 @@ distinct from the frontend view and store layers.
   modules.
 - **Hard cap:** 500 lines, _except_ for genuinely cohesive units. Two
   documented exceptions exist today:
-  - [src/ui/photos/pf-image-canvas.ts](src/ui/photos/pf-image-canvas.ts)
+  - [src/features/image-viewer/pf-image-canvas.ts](src/features/image-viewer/pf-image-canvas.ts)
     (~2600 lines) — image loading, gesture controller, crop overlay, and hit
     testing remain coupled. WebGL tool rendering has moved to the editor
     feature.
@@ -145,18 +143,20 @@ Web components communicate **upwards** via DOM `CustomEvent` (bubbling
 never DOM queries. Stores notify subscribers, which trigger Lit's
 reactive update cycle by mutating `@state` fields.
 
-Tauri `invoke()` calls live in `services/` for shared business state and
-also in `app/` orchestration modules for library scans, selected-folder
-metadata, and image loading. Keep presentational widgets in `ui/` free of
-library policy.
+Tauri `invoke()` calls live in `services/` for shared business state and in
+`app/` orchestration for library scans. Keep presentational widgets in `ui/`
+free of library policy. The stateful image viewer consumes an adapter for its
+editing subscriptions; moving its bitmap and gesture lifecycles behind pure
+props is a later, separately validated change.
 
 ## Adding new code
 
 1. **New value type or pure helper?** → `src/domain/<area>/`.
-2. **New IPC call or shared store?** → `src/services/<area>/`.
+2. **New IPC call or shared store?** → `src/services/<capability>/`.
 3. **New visual widget reused in >1 place?** → `src/ui/<category>/`.
 4. **New editing tool?** → `src/features/editor/tools/<tool>/`, then register
-   it in `src/features/editor/registry.ts`.
+  it in `src/features/editor/registry.ts`. Use the `EditorState` port for
+  persistence; add its adapter methods only if the tool needs new operations.
 5. **New view or shell logic?** → `src/app/` (or `src/app/views/...`
    for sub-components of a specific view).
 

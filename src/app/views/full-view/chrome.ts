@@ -17,7 +17,7 @@ import {
 import type {
   ImageSizing,
   ImageSmoothingQuality,
-} from "@ui/photos/pf-image-canvas";
+} from "@features/image-viewer/pf-image-canvas";
 import {
   FRAME_RADII,
   FRAME_SIZES,

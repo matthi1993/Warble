@@ -12,7 +12,7 @@ import {
   getPhotoRating,
   subscribePhotoRatings,
 } from "@services/rating/rating-store";
-import "../ui/photos/pf-thumbnail-card";
+import "@features/image-viewer/pf-thumbnail-card";
 import "../ui/controls/pf-slider";
 import "../ui/icons/pf-icon";
 

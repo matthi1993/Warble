@@ -1,4 +1,4 @@
-import type { ToolScope } from "./tool";
+type ToolScope = "photo" | "post";
 
 const STORAGE_KEY = "warble.disabledEffects.v1";
 type DisabledEffects = { post: string[]; photo: Record<string, string[]> };

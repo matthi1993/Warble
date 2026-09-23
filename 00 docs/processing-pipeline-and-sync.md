@@ -16,12 +16,12 @@ separate operations.
 | Discover folder tree | Add, reconnect, startup, or Sync | [Scan coordinator](../src-tauri/src/library/scanner.rs) | Does not decode images or read EXIF |
 | Discover photo files | Open a folder or Sync | Scan coordinator and [catalog](../src-tauri/src/library/catalog.rs) | Indexed photos appear before sidecar reconciliation finishes |
 | Reconcile sidecars | After photo discovery | [Portable index sync](../src-tauri/src/library/loader.rs) and [sidecar adapter](../src-tauri/src/sidecar.rs) | Runs on a separate blocking task, in SQLite batches of 64 |
-| Load grid metadata | Select photos in a folder | [Frontend processing pipeline](../src/app/photo-processing-pipeline.ts), [EXIF cache](../src-tauri/src/imaging/exif_cache.rs) | Four photos per cancellable batch; the grid is already usable |
+| Load grid metadata | Select photos in a folder | [Frontend processing pipeline](../src/services/library/photo-processing-pipeline.ts), [EXIF cache](../src-tauri/src/imaging/exif_cache.rs) | Four photos per cancellable batch; the grid is already usable |
 | Render thumbnails and previews | Visible card or opened photo; optional warmup | [Image worker pool](../src-tauri/src/tasks/mod.rs) | On demand, not required to complete a folder scan |
 
 The folder scan queue and image worker pool are separate. A tree scan does not
 occupy the workers used by an opened photo. The frontend records scan and
-image work in the [task manager](../src/app/task-manager.ts) for the footer.
+image work in the [task manager](../src/services/tasks/task-manager.ts) for the footer.
 
 ## Add, open, and Sync
 
@@ -112,7 +112,7 @@ source for ratings and adjustments on rescan.
 
 ## Display and cache lifecycle
 
-The selected-folder [frontend pipeline](../src/app/photo-processing-pipeline.ts)
+The selected-folder [frontend pipeline](../src/services/library/photo-processing-pipeline.ts)
 enriches photos with filter/date metadata in batches of **4**, then warms up
 to **64** thumbnails sequentially. Switching folders cancels its current
 request/warmup and discards late results. Visible cards request thumbnails
@@ -126,9 +126,9 @@ The [thumbnail](../src-tauri/src/imaging/thumbnails/mod.rs) and
 size, and modification time, so changed files miss the old cache entry. There
 is no need to regenerate or purge *all* disk cache files on each Sync. When
 `photo-index-synced` reports changed image keys, app shell invalidates the
-path-scoped [thumbnail](../src/app/thumbnail-service.ts),
-[HD](../src/app/hd-image-cache.ts), and
-[full-image](../src/app/full-image-cache.ts) renderer caches, refreshes
+path-scoped [thumbnail](../src/services/images/thumbnail-service.ts),
+[HD](../src/services/images/hd-image-cache.ts), and
+[full-image](../src/services/images/full-image-cache.ts) renderer caches, refreshes
 visible cards, and reloads an open photo. Settings also allow clearing
 generated caches separately.
 

@@ -13,7 +13,7 @@ Decoded images and generated previews are reused where possible. Cache limits
 and preview quality can be changed from Performance & Caches.
 
 Image display is handled by
-[`pf-image-canvas.ts`](../src/ui/photos/pf-image-canvas.ts). Native image work
+[`pf-image-canvas.ts`](../src/features/image-viewer/pf-image-canvas.ts). Native image work
 lives under [`src-tauri/src/imaging/`](../src-tauri/src/imaging/).
 
 ## Folder preparation
@@ -52,10 +52,10 @@ discovery use a separate scan coordinator, so they cannot occupy the image
 workers.
 
 Frontend task coordination is in
-[`task-manager.ts`](../src/app/task-manager.ts). The native worker queue is in
+[`task-manager.ts`](../src/services/tasks/task-manager.ts). The native worker queue is in
 [`tasks/mod.rs`](../src-tauri/src/tasks/mod.rs). The selected-folder stages
 are coordinated by
-[`photo-processing-pipeline.ts`](../src/app/photo-processing-pipeline.ts);
+[`photo-processing-pipeline.ts`](../src/services/library/photo-processing-pipeline.ts);
 the folder tree and file discovery queue is in
 [`scanner.rs`](../src-tauri/src/library/scanner.rs).
 

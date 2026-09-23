@@ -11,7 +11,7 @@ import {
   beginTask,
   cancelTaskRequest,
   nextRequestId,
-} from "../../task-manager";
+} from "@services/tasks/task-manager";
 
 export class ExifLoader {
   private currentPath: string | null = null;

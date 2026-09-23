@@ -7,7 +7,7 @@ import {
   promoteTaskRequest,
   type TaskHandle,
   type TaskPriority,
-} from "./task-manager";
+} from "@services/tasks/task-manager";
 
 const CACHE_LIMIT = 500;
 const cache = new Map<string, ArrayBuffer>();

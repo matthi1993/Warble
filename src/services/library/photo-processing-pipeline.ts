@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Photo, PhotoFilterInfo } from "@domain/photo";
-import { prefetchThumbnails } from "./thumbnail-service";
-import { beginTask, cancelTaskRequest, nextRequestId } from "./task-manager";
+import { prefetchThumbnails } from "@services/images/thumbnail-service";
+import { beginTask, cancelTaskRequest, nextRequestId } from "@services/tasks/task-manager";
 
 const METADATA_BATCH_SIZE = 4;
 const THUMBNAIL_WARM_LIMIT = 64;

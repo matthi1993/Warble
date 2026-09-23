@@ -28,8 +28,8 @@ import {
 import {
   setVariantOverride,
   subscribeVariantOverrides,
-} from "@app/variant-store";
-import { getCacheSettings, subscribeCacheSettings } from "@app/cache-settings";
+} from "@services/library/variant-store";
+import { getCacheSettings, subscribeCacheSettings } from "@services/settings/cache-settings";
 import { applyRatingShortcut } from "@services/rating/rating-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import {
@@ -51,12 +51,12 @@ import {
 import "@ui/controls/pf-icon-button";
 import "@ui/controls/pf-slider";
 import "@ui/icons/pf-icon";
-import "@ui/photos/pf-image-canvas";
-import "@ui/photos/pf-rating-overlay";
+import "@features/image-viewer/pf-image-canvas";
+import "@features/rating/pf-rating-overlay";
 import type {
   ImageSizing,
   PfImageCanvas,
-} from "@ui/photos/pf-image-canvas";
+} from "@features/image-viewer/pf-image-canvas";
 import "./views/full-view/pf-info-card";
 import "./views/full-view/pf-edit-side-panel";
 import "@features/editor/post-panel";
@@ -74,7 +74,8 @@ import {
 } from "./views/full-view/chrome";
 import type { EditTool, ToolHost } from "@features/editor/tool";
 import { createEditorTools, hasActiveEditorToolValues, readEditorToolValues } from "@features/editor/registry";
-import { isEffectEnabled, setEffectEnabled, subscribeEffectEnabled } from "@features/editor/effect-enabled";
+import { isEffectEnabled, setEffectEnabled, subscribeEffectEnabled } from "@services/effects/effect-enabled-store";
+import { editorStateAdapter } from "@features/editor/adapters/store-state";
 import "@ui/controls/pf-effect-toggle";
 import {
   currentSelection,
@@ -210,7 +211,7 @@ export class PfFullView extends LitElement {
   private openingRaw = false;
 
   // --- Edit tools ----------------------------------------------------
-  private readonly tools: EditTool[] = createEditorTools("photo");
+  private readonly tools: EditTool[] = createEditorTools("photo", editorStateAdapter);
  /** The tool currently in foreground/interactive mode. Crop is the
   *  only one that takes over the canvas; tone runs passively. */
  @state()
@@ -758,7 +759,7 @@ export class PfFullView extends LitElement {
     const target = this.editTargetPath();
     return !!target && (
       hasEdits(target) || hasEffects(target) ||
-      (getPostProcess().enabled && hasActiveEditorToolValues(readEditorToolValues("post", target)))
+      (getPostProcess().enabled && hasActiveEditorToolValues(readEditorToolValues("post", target, editorStateAdapter)))
     );
   }
 

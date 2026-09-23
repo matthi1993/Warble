@@ -7,7 +7,7 @@ import { message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
 import type { Photo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
-import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
+import { loadVariantOverrides, reloadVariantOverrides } from "@services/library/variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import { flushAllPhotoEdits, reloadPhotoEdits } from "@services/edits/edits-store";
 import {
@@ -21,20 +21,20 @@ import {
   loadPhotoRatings,
   reloadPhotoRatings,
 } from "@services/rating/rating-store";
-import { dropAllThumbnailState, invalidateThumbnails } from "./thumbnail-service";
-import { invalidateHdImages } from "./hd-image-cache";
-import { invalidateFullImages } from "./full-image-cache";
-import { PhotoProcessingPipeline } from "./photo-processing-pipeline";
+import { dropAllThumbnailState, invalidateThumbnails } from "@services/images/thumbnail-service";
+import { invalidateHdImages } from "@services/images/hd-image-cache";
+import { invalidateFullImages } from "@services/images/full-image-cache";
+import { PhotoProcessingPipeline } from "@services/library/photo-processing-pipeline";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
-import { beginAppBusy, subscribeAppBusy, waitForAppBusyPaint } from "./app-busy";
+import { beginAppBusy, subscribeAppBusy, waitForAppBusyPaint } from "@services/tasks/app-busy";
 import {
   beginTask,
   subscribeTasks,
   type TaskHandle,
   type TaskRecord,
-} from "./task-manager";
+} from "@services/tasks/task-manager";
 import "./pf-settings";
 import "./pf-task-details";
 

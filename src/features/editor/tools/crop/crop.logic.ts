@@ -16,11 +16,6 @@ import {
   type CropEdit,
   type Orientation,
 } from "@domain/edits";
-import {
-  flushPhotoEdit,
-  getPhotoEdit,
-  setPhotoCrop,
-} from "@services/edits/edits-store";
 import "./crop.ui";
 import {
   EditTool,
@@ -40,7 +35,7 @@ export class CropTool extends EditTool {
 
   activate(host: ToolHost): void {
     const target = host.editTarget;
-    const saved = target ? getPhotoEdit(target)?.crop ?? null : null;
+    const saved = target ? this.state.getPhotoEdit(target)?.crop ?? null : null;
     if (saved) {
       this.aspect = saved.aspectRatio;
       this.orientation = saved.orientation;
@@ -65,7 +60,7 @@ export class CropTool extends EditTool {
 
   syncFromStore(target: string | null): void {
     if (!target) return;
-    const saved = getPhotoEdit(target)?.crop ?? null;
+    const saved = this.state.getPhotoEdit(target)?.crop ?? null;
     if (saved) {
       this.aspect = saved.aspectRatio;
       this.orientation = saved.orientation;
@@ -74,11 +69,11 @@ export class CropTool extends EditTool {
   }
 
   hasEdits(target: string): boolean {
-    return getPhotoEdit(target)?.crop != null;
+    return this.state.getPhotoEdit(target)?.crop != null;
   }
 
   serializeEdit(target: string): unknown | null {
-    const crop = getPhotoEdit(target)?.crop ?? null;
+    const crop = this.state.getPhotoEdit(target)?.crop ?? null;
     return crop ? { ...crop } : null;
   }
 
@@ -86,13 +81,13 @@ export class CropTool extends EditTool {
     const target = host.editTarget;
     if (!target) return;
     if (data == null) {
-      setPhotoCrop(target, null);
+      this.state.setPhotoCrop(target, null);
       this.syncFromStore(target);
       host.requestUpdate();
       return;
     }
     const crop = data as CropEdit;
-    setPhotoCrop(target, { ...crop });
+    this.state.setPhotoCrop(target, { ...crop });
     this.aspect = crop.aspectRatio;
     this.orientation = crop.orientation;
     this.rotation = crop.rotation ?? 0;
@@ -157,7 +152,7 @@ export class CropTool extends EditTool {
   async reset(host: ToolHost): Promise<void> {
     const target = host.editTarget;
     if (!target) return;
-    const saved = getPhotoEdit(target)?.crop ?? null;
+    const saved = this.state.getPhotoEdit(target)?.crop ?? null;
     if (!saved) return;
     // Reset host UI BEFORE clearing the DB: the canvas will re-render
     // and dispatch crop-change as a side effect; suppress that so
@@ -173,7 +168,7 @@ export class CropTool extends EditTool {
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     this.suppressPersist = false;
-    setPhotoCrop(target, null);
+    this.state.setPhotoCrop(target, null);
   }
 
   renderCard(host: ToolHost): TemplateResult {
@@ -250,9 +245,9 @@ export class CropTool extends EditTool {
       orientation: this.orientation,
       rotation: this.rotation,
     };
-    const prev = getPhotoEdit(target)?.crop ?? null;
+    const prev = this.state.getPhotoEdit(target)?.crop ?? null;
     if (prev && cropEditsEqual(prev, crop)) return;
-    setPhotoCrop(target, crop);
+    this.state.setPhotoCrop(target, crop);
   }
 
   private onCardToggle(host: ToolHost, open: boolean): void {
@@ -269,6 +264,6 @@ export class CropTool extends EditTool {
     // Signal the shell that active-tool status changed.
     host.requestUpdate();
     const target = host.editTarget;
-    if (!open && target) void flushPhotoEdit(target);
+    if (!open && target) void this.state.flushPhotoEdit(target);
   }
 }

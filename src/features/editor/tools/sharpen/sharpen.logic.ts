@@ -1,41 +1,36 @@
 import { html, type TemplateResult } from "lit";
 import {
   defaultSharpen,
-  getPhotoSharpen,
-  setPhotoSharpen,
   type SharpenSettings,
-} from "@services/effects/effects-store";
-import {
-  getPostProcess,
-  resetPostSharpen,
-  setPostSharpen,
-} from "@services/post-process/post-process-store";
+} from "@domain/edits";
+import type { EditorState } from "../../editor-state";
 import { EditTool, type ToolHost, type ToolScope } from "../../tool";
 import "./sharpen.ui";
 
 export function readSharpenToolValue(
   scope: ToolScope,
   path: string | null,
+  state: EditorState,
 ): SharpenSettings {
-  if (scope === "post") return getPostProcess().sharpen;
-  return getPhotoSharpen(path) ?? defaultSharpen();
+  if (scope === "post") return state.getPostProcess().sharpen;
+  return state.getPhotoSharpen(path) ?? defaultSharpen();
 }
 
 export class SharpenTool extends EditTool {
   readonly id = "sharpen";
 
   hasEdits(target: string): boolean {
-    return getPhotoSharpen(target) != null;
+    return this.state.getPhotoSharpen(target) != null;
   }
 
   serializeEdit(target: string): unknown | null {
-    const value = getPhotoSharpen(target);
+    const value = this.state.getPhotoSharpen(target);
     return value ? { ...value } : null;
   }
 
   applyEdit(host: ToolHost, data: unknown): void {
     if (!host.editTarget || this.scope !== "photo") return;
-    setPhotoSharpen(
+    this.state.setPhotoSharpen(
       host.editTarget,
       data == null ? null : { ...defaultSharpen(), ...(data as SharpenSettings) },
     );
@@ -43,16 +38,16 @@ export class SharpenTool extends EditTool {
   }
 
   reset(host: ToolHost): void {
-    if (this.scope === "post") resetPostSharpen();
-    else if (host.editTarget) setPhotoSharpen(host.editTarget, null);
+    if (this.scope === "post") this.state.resetPostSharpen();
+    else if (host.editTarget) this.state.setPhotoSharpen(host.editTarget, null);
     host.requestUpdate();
   }
 
   renderCard(host: ToolHost): TemplateResult {
     const stored = this.scope === "post"
-      ? getPostProcess().sharpen
-      : getPhotoSharpen(host.editTarget);
-    const value = readSharpenToolValue(this.scope, host.editTarget);
+      ? this.state.getPostProcess().sharpen
+      : this.state.getPhotoSharpen(host.editTarget);
+    const value = readSharpenToolValue(this.scope, host.editTarget, this.state);
     return html`<pf-sharpen-card
       .title=${this.scope === "post" ? "Output Sharpening" : "Sharpen"}
       .value=${value}
@@ -65,8 +60,8 @@ export class SharpenTool extends EditTool {
         host.requestUpdate();
       }}
       @sharpen-change=${(event: CustomEvent<SharpenSettings>) => {
-        if (this.scope === "post") setPostSharpen(event.detail);
-        else if (host.editTarget) setPhotoSharpen(host.editTarget, event.detail);
+        if (this.scope === "post") this.state.setPostSharpen(event.detail);
+        else if (host.editTarget) this.state.setPhotoSharpen(host.editTarget, event.detail);
         host.requestUpdate();
       }}
       @sharpen-reset=${() => this.reset(host)}

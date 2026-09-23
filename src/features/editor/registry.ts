@@ -6,6 +6,7 @@ import { BloomTool, readBloomToolValue } from "./tools/bloom/bloom.logic";
 import { SharpenTool, readSharpenToolValue } from "./tools/sharpen/sharpen.logic";
 import { ToneTool, readToneToolValue } from "./tools/tone/tone.logic";
 import type { ToolShaderModule } from "./rendering/shader-types";
+import type { EditorState } from "./editor-state";
 import type { EditTool, ToolScope } from "./tool";
 import { colorShader } from "./tools/color/color.shader";
 import { curveShader } from "./tools/curve/curve.shader";
@@ -14,7 +15,6 @@ import { sharpenShader } from "./tools/sharpen/sharpen.shader";
 import { toneShader } from "./tools/tone/tone.shader";
 import { bloomShader } from "./tools/bloom/bloom.shader";
 import { BASE_TONE_KEYS, DYNAMIC_RANGE_KEYS, defaultTone, type ToneEdit } from "@domain/edits";
-import { isEffectEnabled } from "./effect-enabled";
 
 export interface EditorToolRegistration {
   readonly id: string;
@@ -22,8 +22,8 @@ export interface EditorToolRegistration {
   readonly order: number;
   readonly scopes: readonly ToolScope[];
   readonly shader?: ToolShaderModule;
-  readValue?(scope: ToolScope, path: string | null): unknown;
-  create(scope: ToolScope): EditTool;
+  readValue?(scope: ToolScope, path: string | null, state: EditorState): unknown;
+  create(scope: ToolScope, state: EditorState): EditTool;
 }
 
 /** The only list that decides which tools exist and where they appear. */
@@ -33,7 +33,7 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     title: "Crop",
     order: 10,
     scopes: ["photo"],
-    create: () => new CropTool(),
+    create: (scope, state) => new CropTool(scope, state),
   },
   {
     id: "tone",
@@ -42,7 +42,7 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     scopes: ["photo", "post"],
     shader: toneShader,
     readValue: readToneToolValue,
-    create: (scope) => new ToneTool(scope),
+    create: (scope, state) => new ToneTool(scope, state),
   },
   {
     id: "color",
@@ -51,7 +51,7 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     scopes: ["photo", "post"],
     shader: colorShader,
     readValue: readColorToolValue,
-    create: (scope) => new ColorTool(scope),
+    create: (scope, state) => new ColorTool(scope, state),
   },
   {
     id: "curve",
@@ -60,7 +60,7 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     scopes: ["photo", "post"],
     shader: curveShader,
     readValue: readCurveToolValue,
-    create: (scope) => new CurveTool(scope),
+    create: (scope, state) => new CurveTool(scope, state),
   },
   {
     id: "sharpen",
@@ -69,7 +69,7 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     scopes: ["photo", "post"],
     shader: sharpenShader,
     readValue: readSharpenToolValue,
-    create: (scope) => new SharpenTool(scope),
+    create: (scope, state) => new SharpenTool(scope, state),
   },
   {
     id: "bloom",
@@ -77,8 +77,8 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     order: 15,
     scopes: ["post"],
     shader: bloomShader,
-    readValue: () => readBloomToolValue(),
-    create: () => new BloomTool("post"),
+    readValue: (_scope, _path, state) => readBloomToolValue(state),
+    create: (scope, state) => new BloomTool(scope, state),
   },
   {
     id: "grain",
@@ -87,39 +87,36 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     scopes: ["photo", "post"],
     shader: grainShader,
     readValue: readGrainToolValue,
-    create: (scope) => new GrainTool(scope),
+    create: (scope, state) => new GrainTool(scope, state),
   },
 ];
 
-export function createEditorTools(scope: ToolScope): EditTool[] {
+export function createEditorTools(scope: ToolScope, state: EditorState): EditTool[] {
   return EDITOR_TOOLS
     .filter((tool) => tool.scopes.includes(scope))
     .sort((a, b) => a.order - b.order)
-    .map((tool) => tool.create(scope));
-}
-
-export function toolShaders(): readonly ToolShaderModule[] {
-  return EDITOR_TOOLS.flatMap((tool) => tool.shader ? [tool.shader] : []);
+    .map((tool) => tool.create(scope, state));
 }
 
 export function readEditorToolValues(
   scope: ToolScope,
   path: string | null,
+  state: EditorState,
 ): Readonly<Record<string, unknown>> {
-  if (scope === "photo" && !isEffectEnabled(scope, path, "all")) return {};
+  if (scope === "photo" && !state.isEffectEnabled(scope, path, "all")) return {};
   return Object.fromEntries(
     EDITOR_TOOLS
       .filter((tool) => tool.shader && tool.scopes.includes(scope) && tool.readValue)
-      .filter((tool) => isEffectEnabled(scope, path, tool.id))
+      .filter((tool) => state.isEffectEnabled(scope, path, tool.id))
       .map((tool) => {
-        const value = tool.readValue!(scope, path);
+        const value = tool.readValue!(scope, path, state);
         if (tool.id !== "tone") return [tool.id, value];
         const tone = { ...(value as ToneEdit) };
         const neutral = defaultTone();
-        if (!isEffectEnabled(scope, path, "base-tone")) {
+        if (!state.isEffectEnabled(scope, path, "base-tone")) {
           for (const key of BASE_TONE_KEYS) tone[key] = neutral[key];
         }
-        if (!isEffectEnabled(scope, path, "dynamic-range")) {
+        if (!state.isEffectEnabled(scope, path, "dynamic-range")) {
           for (const key of DYNAMIC_RANGE_KEYS) tone[key] = neutral[key];
         }
         return [tool.id, tone];

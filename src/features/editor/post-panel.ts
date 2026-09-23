@@ -6,7 +6,8 @@ import {
   subscribePostProcess,
 } from "@services/post-process/post-process-store";
 import { createEditorTools } from "./registry";
-import { subscribeEffectEnabled } from "./effect-enabled";
+import { subscribeEffectEnabled } from "@services/effects/effect-enabled-store";
+import { editorStateAdapter } from "@features/editor/adapters/store-state";
 import type { ToolHost } from "./tool";
 import "./post-presets.ui";
 import "@ui/controls/pf-effect-toggle";
@@ -33,7 +34,7 @@ export class PfPostProcessCard extends LitElement {
     .dim { opacity: 0.5; }
   `;
 
-  private readonly tools = createEditorTools("post");
+  private readonly tools = createEditorTools("post", editorStateAdapter);
   private unsubscribe: (() => void) | null = null;
   private unsubscribeEffects: (() => void) | null = null;
   private readonly host: ToolHost = {

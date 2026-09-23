@@ -1,5 +1,5 @@
 import type { ToolShaderModule, ToolShaderBindingContext } from "../../rendering/shader-types";
-import { defaultBloom, type BloomSettings } from "@services/effects/effects-store";
+import { defaultBloom, type BloomSettings } from "@domain/edits";
 
 function bindBloom(context: ToolShaderBindingContext, input: unknown): void {
   const value = input as BloomSettings | null;

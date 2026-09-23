@@ -12,70 +12,14 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-
-/** Unsharp-mask sharpening. Applied as a per-photo effect and
- *  reused as a separate global pass by the post-process layer.
- *
- *  The shader builds a blurred copy of the source at a mip level
- *  proportional to `radius`, subtracts it from the source to get a
- *  high-pass mask, gates the mask by `threshold` (so flat regions
- *  / noise are spared), and adds `strength` × mask back to the
- *  source. Standard unsharp-mask math. */
-export interface SharpenSettings {
-  /** 0..200 — overall amount of high-frequency contrast added
-   *  back. 0 disables the sharpening pass entirely. 100 maps to
-   *  a moderate Lightroom-style boost. */
-  strength: number;
-  /** 0.3..3 — radius of the blur used to build the high-pass
-   *  mask, in source pixels. Smaller values target only the
-   *  finest detail; larger values create halos around edges. */
-  radius: number;
-  /** 0..50 — minimum local contrast (0–255 luminance delta) that
-   *  must be exceeded before a pixel is sharpened. Protects skin
-   *  / sky / sensor noise from being amplified. */
-  threshold: number;
-}
-
-export interface GrainSettings {
-  /** 0.1..100 — diameter of the organic grain. Post-process grain is
-   * interpreted in normalised image space, not source pixels. */
-  size: number;
-  /** 0..100 — strength of the organic, softly-shaped film grain. */
-  amount: number;
-  /** 0..100 — strength of the additional monochrome per-pixel noise. */
-  fine: number;
-}
-
-export interface BloomSettings {
-  /** 0..100 — final light-spill amount. */
-  strength: number;
-  /** 0..100 — luminance at which pixels begin emitting. */
-  threshold: number;
-  /** 0..100 — radius of the three-scale blur pyramid. */
-  radius: number;
-  /** 0..100 — width of the soft bright-pixel gate. */
-  softness: number;
-  /** 0..100 — balance from tight detail to broad atmosphere. */
-  spread: number;
-}
-
-export function defaultBloom(): BloomSettings {
-  return { strength: 0, threshold: 68, radius: 50, softness: 45, spread: 60 };
-}
-
-export function isBloomZero(bloom: BloomSettings | null | undefined): boolean {
-  return !bloom || bloom.strength <= 0;
-}
-
-export function defaultGrain(): GrainSettings {
-  return { size: 25, amount: 0, fine: 0 };
-}
-
-export function isGrainZero(
-  grain: GrainSettings | null | undefined
-): boolean {
-  return !grain || (grain.amount <= 0 && grain.fine <= 0);
-}
+import {
+  defaultGrain, defaultSharpen, type GrainSettings, type SharpenSettings,
+} from "@domain/edits";
+export {
+  defaultBloom, defaultGrain, defaultSharpen, isBloomZero,
+  isGrainZero, isSharpenZero,
+} from "@domain/edits";
+export type { BloomSettings, GrainSettings, SharpenSettings } from "@domain/edits";
 
 export interface PhotoEffects {
   /** `null` means "no per-photo override stored" — the canvas
@@ -88,19 +32,6 @@ export interface PhotoEffects {
 }
 
 const LEGACY_STORAGE_KEY = "warble.effects.v1";
-
-/** Sensible "no sharpening" baseline. Radius / threshold are kept
- *  at the values the sliders use so toggling strength
- *  on doesn't snap the other sliders to weird positions. */
-export function defaultSharpen(): SharpenSettings {
-  return { strength: 0, radius: 1, threshold: 0 };
-}
-
-export function isSharpenZero(
-  s: SharpenSettings | null | undefined
-): boolean {
-  return !s || s.strength <= 0;
-}
 
 type Listener = (path: string) => void;
 

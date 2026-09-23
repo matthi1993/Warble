@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import { defaultBloom, type BloomSettings } from "@services/effects/effects-store";
+import { defaultBloom, type BloomSettings } from "@domain/edits";
 import "@ui/cards/pf-card";
 import "@ui/controls/pf-slider";
 import "@ui/icons/pf-icon";

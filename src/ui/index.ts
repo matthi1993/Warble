@@ -12,4 +12,3 @@ import "./controls/pf-icon-button";
 import "./controls/pf-slider";
 import "./controls/pf-theme-toggle";
 import "./folders/pf-folder-tree-item";
-import "./photos/pf-thumbnail-card";

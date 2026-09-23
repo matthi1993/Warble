@@ -4,10 +4,10 @@ import type { Photo } from "@domain/photo";
 import { fileForSelection } from "@domain/photo";
 import {
   subscribeVariantOverrides,
-} from "./variant-store";
+} from "@services/library/variant-store";
 import { currentSelection } from "./views/full-view/variant-selector";
 import "../ui/controls/pf-icon-button";
-import "../ui/photos/pf-image-canvas";
+import "@features/image-viewer/pf-image-canvas";
 
 function isIPad(): boolean {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent ?? "";

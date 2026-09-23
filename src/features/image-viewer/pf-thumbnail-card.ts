@@ -5,8 +5,8 @@ import {
   requestThumbnail,
   type ThumbnailHandle,
 } from "@services/images/thumbnail-service";
-import "../icons/pf-icon";
-import "./pf-rating-overlay";
+import "@ui/icons/pf-icon";
+import "@features/rating/pf-rating-overlay";
 
 @customElement("pf-thumbnail-card")
 export class PfThumbnailCard extends LitElement {

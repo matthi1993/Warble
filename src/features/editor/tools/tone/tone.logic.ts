@@ -8,18 +8,13 @@ import {
   isToneZero,
   type ToneEdit,
 } from "@domain/edits";
-import { getPhotoEdit, setPhotoTone } from "@services/edits/edits-store";
-import {
-  getPostProcess,
-  resetPostTone,
-  setPostTone,
-} from "@services/post-process/post-process-store";
+import type { EditorState } from "../../editor-state";
 import { EditTool, type ToolHost, type ToolScope } from "../../tool";
 import "./tone.ui";
 
-export function readToneToolValue(scope: ToolScope, path: string | null): ToneEdit {
-  if (scope === "post") return getPostProcess().tone;
-  return (path ? getPhotoEdit(path)?.tone : null) ?? defaultTone();
+export function readToneToolValue(scope: ToolScope, path: string | null, state: EditorState): ToneEdit {
+  if (scope === "post") return state.getPostProcess().tone;
+  return (path ? state.getPhotoEdit(path)?.tone : null) ?? defaultTone();
 }
 
 export class ToneTool extends EditTool {
@@ -27,21 +22,21 @@ export class ToneTool extends EditTool {
   dynamicRangeCardOpen = false;
 
   private value(host: ToolHost): ToneEdit {
-    return readToneToolValue(this.scope, host.editTarget);
+    return readToneToolValue(this.scope, host.editTarget, this.state);
   }
 
   private write(host: ToolHost, value: ToneEdit | null): void {
-    if (this.scope === "post") setPostTone(value ?? defaultTone());
-    else if (host.editTarget) setPhotoTone(host.editTarget, value);
+    if (this.scope === "post") this.state.setPostTone(value ?? defaultTone());
+    else if (host.editTarget) this.state.setPhotoTone(host.editTarget, value);
     host.requestUpdate();
   }
 
   hasEdits(target: string): boolean {
-    return !isToneZero(getPhotoEdit(target)?.tone);
+    return !isToneZero(this.state.getPhotoEdit(target)?.tone);
   }
 
   serializeEdit(target: string): unknown | null {
-    const value = getPhotoEdit(target)?.tone;
+    const value = this.state.getPhotoEdit(target)?.tone;
     return value ? { ...value } : null;
   }
 
@@ -53,7 +48,7 @@ export class ToneTool extends EditTool {
 
   reset(host: ToolHost): void {
     if (this.scope === "post") {
-      resetPostTone();
+      this.state.resetPostTone();
       host.requestUpdate();
     } else {
       this.write(host, null);

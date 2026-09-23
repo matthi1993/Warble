@@ -15,7 +15,7 @@ import {
 } from "@domain/photo";
 import {
   getVariantOverride,
-} from "@app/variant-store";
+} from "@services/library/variant-store";
 
 export interface VariantSelection {
   format: PhotoFormat;

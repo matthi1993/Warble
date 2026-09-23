@@ -13,13 +13,13 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { CacheSettings } from "./cache-settings";
+import type { CacheSettings } from "@services/settings/cache-settings";
 import {
   beginTask,
   cancelTaskRequest,
   isTaskCancellation,
   nextRequestId,
-} from "./task-manager";
+} from "@services/tasks/task-manager";
 
 // Keep a couple of lightweight HD bitmaps independently from expensive
 // full-resolution bitmaps.

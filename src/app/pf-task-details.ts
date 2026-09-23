@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import type { TaskRecord } from "./task-manager";
+import type { TaskRecord } from "@services/tasks/task-manager";
 
 @customElement("pf-task-details")
 export class PfTaskDetails extends LitElement {

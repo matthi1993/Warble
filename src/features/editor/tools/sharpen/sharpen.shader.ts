@@ -1,5 +1,5 @@
 import type { ToolShaderModule } from "../../rendering/shader-types";
-import type { SharpenSettings } from "@services/effects/effects-store";
+import type { SharpenSettings } from "@domain/edits";
 
 function bindSharpen(
   prefix: "edit" | "post",
