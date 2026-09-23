@@ -18,6 +18,19 @@ pub struct PreparedFolder {
     pub entry_count: usize,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderEntry {
+    pub relative_path: String,
+    pub is_directory: bool,
+    pub is_file: bool,
+}
+
+#[derive(Deserialize)]
+pub struct FolderEntries {
+    pub entries: Vec<FolderEntry>,
+}
+
 #[derive(Deserialize)]
 struct PickResponse {
     folders: Vec<FolderGrant>,
@@ -78,6 +91,26 @@ pub fn prepare_folder<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
+pub fn scan_folder<R: Runtime>(
+    app: &AppHandle<R>,
+    bookmark: &str,
+    relative_path: &str,
+    recursive: bool,
+) -> Result<Vec<FolderEntry>, String> {
+    app.state::<FolderAccess<R>>()
+        .0
+        .run_mobile_plugin::<FolderEntries>(
+            "scanFolder",
+            ScanFolderPayload {
+                bookmark,
+                relative_path,
+                recursive,
+            },
+        )
+        .map(|response| response.entries)
+        .map_err(|e| e.to_string())
+}
+
 pub fn trash_files<R: Runtime>(app: &AppHandle<R>, paths: &[String]) -> Result<(), String> {
     let response = app
         .state::<FolderAccess<R>>()
@@ -113,6 +146,14 @@ fn serde_payload(multiple: bool) -> PickPayload {
 #[derive(Serialize)]
 struct BookmarkPayload<'a> {
     bookmark: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanFolderPayload<'a> {
+    bookmark: &'a str,
+    relative_path: &'a str,
+    recursive: bool,
 }
 
 #[derive(Serialize)]

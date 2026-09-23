@@ -81,4 +81,30 @@ impl SettingsStore {
         }
         snapshot
     }
+
+    pub fn save(
+        &self,
+        storage: &DeviceStorage,
+        settings: CacheSettings,
+    ) -> Result<CacheSettings, String> {
+        let mut current = self.current.lock().map_err(|e| e.to_string())?;
+        storage.set_cache_settings(settings)?;
+        *current = settings;
+        Ok(settings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_reports_unavailable_storage_without_changing_active_settings() {
+        let settings = SettingsStore::default();
+        let mut requested = CacheSettings::default();
+        requested.thumbnail_disk_max_entries = 5_000;
+
+        assert!(settings.save(&DeviceStorage::default(), requested).is_err());
+        assert_eq!(settings.get().thumbnail_disk_max_entries, 0);
+    }
 }

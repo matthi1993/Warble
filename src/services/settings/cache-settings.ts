@@ -44,8 +44,9 @@ export function subscribeCacheSettings(listener: (settings: CacheSettings) => vo
 export function configureCacheSettings(): Promise<CacheSettings> {
   if (configurePromise) return configurePromise;
   configurePromise = (async () => {
-    void listen<CacheSettings>("cache-settings-changed", (event) => publish(event.payload));
+    const listening = listen<CacheSettings>("cache-settings-changed", (event) => publish(event.payload));
     try {
+      await listening;
       return publish(await invoke<CacheSettings>("get_cache_settings"));
     } catch (error) {
       console.warn("failed to load device cache settings", error);

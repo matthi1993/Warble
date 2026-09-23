@@ -72,6 +72,9 @@ impl DeviceStorage {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(id, grants)| {
+                #[cfg(target_os = "ios")]
+                let selected = grants.iter().find(|grant| grant.bookmark.is_some())?;
+                #[cfg(not(target_os = "ios"))]
                 let selected = grants
                     .iter()
                     .find(|grant| Path::new(&grant.path).is_dir())
@@ -173,6 +176,20 @@ impl DeviceStorage {
                 })
             })
             .collect()
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn bookmark_for(&self, library_id: &str, root_id: &str, path: &Path) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()?
+            .data
+            .root_grants
+            .get(library_id)?
+            .get(root_id)?
+            .iter()
+            .find(|grant| Path::new(&grant.path) == path)
+            .and_then(|grant| grant.bookmark.clone())
     }
 
     pub fn remove_root(&self, library_id: &str, root_id: &str) -> Result<(), String> {

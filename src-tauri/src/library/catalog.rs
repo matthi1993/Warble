@@ -326,6 +326,95 @@ pub fn scan_folder_images(
     Ok(photos)
 }
 
+#[cfg(target_os = "ios")]
+pub fn scan_coordinated_tree(
+    folder_key: &str,
+    name: &str,
+    entries: &[tauri_plugin_folder_access::FolderEntry],
+) -> Result<Folder, String> {
+    let (_root_id, relative) = split_portable_key(folder_key)?;
+    let mut folder = Folder {
+        id: folder_key.to_string(),
+        path: folder_key.to_string(),
+        name: name.to_string(),
+        children: Vec::new(),
+        available: true,
+        scanning: false,
+    };
+    for entry in entries.iter().filter(|entry| entry.is_directory) {
+        let path = Path::new(&entry.relative_path);
+        if !safe_relative_path(path) {
+            continue;
+        }
+        let Ok(descendant) = path.strip_prefix(relative) else {
+            continue;
+        };
+        if descendant.as_os_str().is_empty() {
+            continue;
+        }
+        let mut parent = &mut folder;
+        for component in descendant.components() {
+            let component = component.as_os_str().to_string_lossy();
+            let child_id = format!("{}/{}", parent.id, component);
+            let index = match parent
+                .children
+                .iter()
+                .position(|child| child.id == child_id)
+            {
+                Some(index) => index,
+                None => {
+                    parent.children.push(Folder {
+                        id: child_id.clone(),
+                        path: child_id,
+                        name: component.into_owned(),
+                        children: Vec::new(),
+                        available: true,
+                        scanning: false,
+                    });
+                    parent.children.len() - 1
+                }
+            };
+            parent = &mut parent.children[index];
+        }
+    }
+    sort_folder_children(&mut folder);
+    Ok(folder)
+}
+
+#[cfg(target_os = "ios")]
+fn sort_folder_children(folder: &mut Folder) {
+    folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+    for child in &mut folder.children {
+        sort_folder_children(child);
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn safe_relative_path(path: &Path) -> bool {
+    path.components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+#[cfg(target_os = "ios")]
+pub fn scan_coordinated_images(
+    folder_key: &str,
+    root: &Path,
+    entries: &[tauri_plugin_folder_access::FolderEntry],
+) -> Result<HashMap<String, Photo>, String> {
+    let (root_id, relative) = split_portable_key(folder_key)?;
+    let mut photos = HashMap::new();
+    for entry in entries.iter().filter(|entry| entry.is_file) {
+        let path = Path::new(&entry.relative_path);
+        if !safe_relative_path(path) || !path.starts_with(relative) {
+            continue;
+        }
+        if let Some(photo) = photo_from_path(&root.join(path), root, root_id) {
+            photos.insert(photo.path.clone(), photo);
+        }
+    }
+    Ok(photos)
+}
+
 fn scan_image_files(
     folder: &Path,
     root: &Path,

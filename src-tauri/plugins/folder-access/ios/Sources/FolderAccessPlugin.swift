@@ -4,6 +4,11 @@ import UniformTypeIdentifiers
 
 struct PickFoldersArgs: Decodable { let multiple: Bool }
 struct ResolveBookmarkArgs: Decodable { let bookmark: String }
+struct ScanFolderArgs: Decodable {
+  let bookmark: String
+  let relativePath: String
+  let recursive: Bool
+}
 struct TrashFilesArgs: Decodable { let paths: [String] }
 struct OpenInArgs: Decodable { let path: String }
 
@@ -127,6 +132,82 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
         invoke.reject("Could not read the selected folder: \(error.localizedDescription)")
       }
     }
+  }
+
+  @objc func scanFolder(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(ScanFolderArgs.self)
+    guard let data = Data(base64Encoded: args.bookmark) else {
+      invoke.reject("Invalid folder bookmark")
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        var stale = false
+        let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+        guard self.retainSecurityScope(for: root) else {
+          invoke.reject("Folder permission is no longer valid")
+          return
+        }
+        let folder = args.relativePath.isEmpty ? root : root.appendingPathComponent(args.relativePath, isDirectory: true)
+        var entries: [[String: Any]] = []
+        for attempt in 0...4 {
+          entries = try self.coordinateFolderEntries(at: folder, relativeTo: root, recursive: args.recursive)
+          if !entries.isEmpty || !args.relativePath.isEmpty || attempt == 4 { break }
+          Thread.sleep(forTimeInterval: [0.2, 0.5, 1.0, 2.0][attempt])
+        }
+        invoke.resolve(["entries": entries])
+      } catch {
+        invoke.reject("Could not scan the selected folder: \(error.localizedDescription)")
+      }
+    }
+  }
+
+  private func coordinateFolderEntries(at folder: URL, relativeTo root: URL, recursive: Bool) throws -> [[String: Any]] {
+    let coordinator = NSFileCoordinator()
+    var coordinationError: NSError?
+    var enumerationError: Error?
+    var entries: [[String: Any]] = []
+    coordinator.coordinate(readingItemAt: folder, options: .withoutChanges, error: &coordinationError) { coordinatedURL in
+      let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
+      var providerError: Error?
+      do {
+        let urls: [URL]
+        if recursive {
+          guard let enumerator = FileManager.default.enumerator(
+            at: coordinatedURL, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles],
+            errorHandler: { _, error in providerError = error; return false }
+          ) else {
+            throw NSError(domain: "FolderAccess", code: 2, userInfo: [NSLocalizedDescriptionKey: "The folder could not be enumerated"])
+          }
+          urls = enumerator.compactMap { $0 as? URL }
+        } else {
+          urls = try FileManager.default.contentsOfDirectory(
+            at: coordinatedURL, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]
+          )
+        }
+        for url in urls {
+          let values = try url.resourceValues(forKeys: keys)
+          guard url.path.hasPrefix(coordinatedURL.path + "/") else {
+            throw NSError(domain: "FolderAccess", code: 3, userInfo: [NSLocalizedDescriptionKey: "The file provider returned an unexpected folder path"])
+          }
+          let relative = String(url.path.dropFirst(coordinatedURL.path.count + 1))
+          let rootRelative = folder.path == root.path
+            ? relative
+            : String(folder.path.dropFirst(root.path.count + 1)) + "/" + relative
+          let isDirectory = values.isDirectory == true || url.hasDirectoryPath
+          entries.append([
+            "relativePath": rootRelative,
+            "isDirectory": isDirectory,
+            "isFile": values.isRegularFile == true || (values.isRegularFile == nil && !isDirectory)
+          ])
+        }
+        if let providerError = providerError { throw providerError }
+      } catch {
+        enumerationError = error
+      }
+    }
+    if let error = coordinationError ?? enumerationError as NSError? { throw error }
+    return entries
   }
 
   /// NSFileCoordinator gives SMB/File Provider extensions time to fetch each

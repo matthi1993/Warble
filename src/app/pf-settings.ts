@@ -62,15 +62,23 @@ export class PfSettings extends LitElement {
   @state() private draft: CacheSettings = { ...getCacheSettings() };
   @state() private usage: CacheUsage | null = null;
   @state() private saving = false;
+  @state() private loaded = false;
   @state() private error = "";
   @state() private presetFeedback = "";
 
   async open(): Promise<void> {
-    this.visible = true;
     this.error = "";
     this.presetFeedback = "";
-    await configureCacheSettings();
-    this.draft = { ...getCacheSettings() };
+    this.loaded = false;
+    this.visible = true;
+    try {
+      await configureCacheSettings();
+      this.draft = { ...await invoke<CacheSettings>("get_cache_settings") };
+      this.loaded = true;
+    } catch (error) {
+      this.error = `Could not load cache settings: ${String(error)}`;
+      return;
+    }
     try { this.usage = await invoke<CacheUsage>("get_cache_disk_usage"); }
     catch { this.usage = null; }
   }
@@ -147,10 +155,6 @@ export class PfSettings extends LitElement {
     }
   }
 
-  private options(values: number[], unit: string) {
-    return values.map((value) => html`<option value=${value}>${value === 0 ? "Off" : `${value.toLocaleString()} ${unit}`}</option>`);
-  }
-
   private formatBytes(bytes: number) {
     if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
     if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -193,7 +197,7 @@ export class PfSettings extends LitElement {
           </section>
           ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
         </main>
-        <footer><button @click=${this.close}>Cancel</button><button class="primary" ?disabled=${this.saving} @click=${this.save}>${this.saving ? "Saving…" : "Save on this device"}</button></footer>
+        <footer><button @click=${this.close}>Cancel</button><button class="primary" ?disabled=${this.saving || !this.loaded} @click=${this.save}>${this.saving ? "Saving…" : "Save on this device"}</button></footer>
       </div></div>`;
   }
 
@@ -202,7 +206,7 @@ export class PfSettings extends LitElement {
   }
 
   private select(key: keyof CacheSettings, title: string, detail: string, values: number[], unit: string) {
-    return html`<div class="row"><label>${title}<small>${detail}</small></label><select .value=${String(this.draft[key])} @change=${(e: Event) => this.setNumber(key, e)}>${this.options(values, unit)}</select></div>`;
+    return html`<div class="row"><label>${title}<small>${detail}</small></label><select @change=${(e: Event) => this.setNumber(key, e)}>${values.map((value) => html`<option value=${value} ?selected=${value === this.draft[key]}>${value === 0 ? "Off" : `${value.toLocaleString()} ${unit}`}</option>`)}</select></div>`;
   }
 }
 

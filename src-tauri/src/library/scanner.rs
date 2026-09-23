@@ -5,8 +5,12 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(target_os = "ios")]
+use super::catalog::{scan_coordinated_images, scan_coordinated_tree};
 use crate::app_state::AppState;
-use crate::library::{scan_folder_images, scan_root_tree, scan_subtree_tree, Folder, Photo};
+#[cfg(not(target_os = "ios"))]
+use crate::library::{scan_folder_images, scan_root_tree, scan_subtree_tree};
+use crate::library::{Folder, Photo};
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -426,6 +430,10 @@ enum ScanOutcome {
 fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> ScanOutcome {
     match job.kind {
         ScanKind::FolderTree => {
+            #[cfg(target_os = "ios")]
+            let folder = coordinated_entries(app, job, true)
+                .and_then(|entries| scan_coordinated_tree(&job.folder_key, &job.name, &entries));
+            #[cfg(not(target_os = "ios"))]
             let folder = if job.folder_key == job.root_id {
                 scan_root_tree(&job.root_id, &job.name, &job.root_path)
             } else {
@@ -437,7 +445,13 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
             }
         }
         ScanKind::FolderImages => {
-            let photos = match scan_folder_images(&job.folder_key, &job.root_path, job.recursive) {
+            #[cfg(target_os = "ios")]
+            let scanned = coordinated_entries(app, job, job.recursive).and_then(|entries| {
+                scan_coordinated_images(&job.folder_key, &job.root_path, &entries)
+            });
+            #[cfg(not(target_os = "ios"))]
+            let scanned = scan_folder_images(&job.folder_key, &job.root_path, job.recursive);
+            let photos = match scanned {
                 Ok(photos) => photos,
                 Err(message) => return ScanOutcome::Error(message),
             };
@@ -484,6 +498,22 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
             ScanOutcome::Done
         }
     }
+}
+
+#[cfg(target_os = "ios")]
+fn coordinated_entries(
+    app: &AppHandle,
+    job: &ScanJob,
+    recursive: bool,
+) -> Result<Vec<tauri_plugin_folder_access::FolderEntry>, String> {
+    let state = app.state::<AppState>();
+    let library_id = state.repository()?.library_id()?;
+    let bookmark = state
+        .device_storage
+        .bookmark_for(&library_id, &job.root_id, &job.root_path)
+        .ok_or_else(|| format!("Folder {} needs reconnecting in Files", job.name))?;
+    let (_, relative) = crate::library::split_portable_key(&job.folder_key)?;
+    tauri_plugin_folder_access::scan_folder(app, &bookmark, &relative.to_string_lossy(), recursive)
 }
 
 fn new_job(
