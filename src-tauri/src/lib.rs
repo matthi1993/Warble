@@ -43,6 +43,7 @@ pub fn run() {
             commands::index_folder_images,
             commands::refresh_photo_parent,
             commands::remove_imported_folder,
+            commands::reset_workspace,
             commands::get_photos_in_folder,
             commands::get_thumbnail,
             commands::get_full_image_bytes,

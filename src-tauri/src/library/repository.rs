@@ -462,6 +462,52 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())
     }
 
+    /// Forget this workspace without touching image files or their sidecars.
+    /// Keeping the schema intact lets existing connections continue to work.
+    pub fn reset_workspace(&self) -> Result<String, String> {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        self.with_transaction(|tx| {
+            for table in [
+                "media_roots",
+                "photo_variants",
+                "photo_edits",
+                "photo_exif",
+                "photo_ratings",
+                "app_settings",
+                "migration_legacy_bindings",
+            ] {
+                tx.execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(|e| e.to_string())?;
+            }
+            for table in [
+                "photo_variants",
+                "photo_edits",
+                "photo_exif",
+                "photo_ratings",
+            ] {
+                tx.execute_batch(&format!(
+                    "CREATE TRIGGER IF NOT EXISTS {table}_valid_root
+                     BEFORE INSERT ON {table}
+                     WHEN NOT EXISTS (
+                         SELECT 1 FROM media_roots
+                         WHERE id = substr(NEW.path, 1, instr(NEW.path, '/') - 1)
+                     )
+                     BEGIN SELECT RAISE(IGNORE); END;"
+                ))
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute("DELETE FROM library_info", [])
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO library_info (id, revision) VALUES (?1, 1)",
+                params![new_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        Ok(new_id)
+    }
+
     /// Legacy absolute paths exist only in this local migration hand-off
     /// table. The loader persists them in device storage and then clears it,
     /// ensuring snapshots never expose host paths.
@@ -813,6 +859,45 @@ fn write_setting(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_workspace_forgets_sqlite_data_without_touching_photos() {
+        let dir = std::env::temp_dir().join(format!("warble-reset-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("original.jpg");
+        std::fs::write(&photo, b"original photo bytes").unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        let old_id = repo.library_id().unwrap();
+        repo.add_media_root("root", "Photos").unwrap();
+        repo.set_photo_rating_row("root/original.jpg", 5, "red", 1)
+            .unwrap();
+        repo.set_photo_edit("root/original.jpg", "{}").unwrap();
+        repo.set_photo_variant("root/original.jpg", "jpg", "base")
+            .unwrap();
+        repo.set_photo_exif("root/original.jpg", 1, 20, 1, "{}")
+            .unwrap();
+        repo.set_setting("last_folder", "root").unwrap();
+
+        let new_id = repo.reset_workspace().unwrap();
+        assert_ne!(old_id, new_id);
+        assert_eq!(repo.library_id().unwrap(), new_id);
+        assert!(repo.media_roots().unwrap().is_empty());
+        assert!(repo.all_photo_ratings().unwrap().is_empty());
+        assert!(repo.all_photo_edits().unwrap().is_empty());
+        assert!(repo.all_photo_variants().unwrap().is_empty());
+        assert!(repo.get_photo_exif("root/original.jpg").unwrap().is_none());
+        assert!(repo.get_setting("last_folder").unwrap().is_none());
+        repo.set_photo_rating_row("root/original.jpg", 5, "red", 1)
+            .unwrap();
+        repo.set_photo_exif("root/original.jpg", 1, 20, 1, "{}")
+            .unwrap();
+        assert!(repo.all_photo_ratings().unwrap().is_empty());
+        assert!(repo.get_photo_exif("root/original.jpg").unwrap().is_none());
+        assert_eq!(std::fs::read(&photo).unwrap(), b"original photo bytes");
+
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn migrates_legacy_absolute_paths_to_portable_keys() {

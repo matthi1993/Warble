@@ -183,6 +183,12 @@ impl DeviceStorage {
         persist(&inner)
     }
 
+    pub fn remove_library_grants(&self, library_id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        inner.data.root_grants.remove(library_id);
+        persist(&inner)
+    }
+
     /// Atomically replace several child-root grants with one parent grant.
     pub fn consolidate_roots(
         &self,

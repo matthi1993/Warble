@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
-import type { Photo, PhotoFilterInfo } from "@domain/photo";
+import type { Photo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
 import { loadVariantOverrides, reloadVariantOverrides } from "./variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
@@ -20,15 +20,14 @@ import {
   loadPhotoRatings,
   reloadPhotoRatings,
 } from "@services/rating/rating-store";
-import { dropAllThumbnailState, prefetchThumbnails } from "./thumbnail-service";
+import { dropAllThumbnailState } from "./thumbnail-service";
+import { PhotoProcessingPipeline } from "./photo-processing-pipeline";
 import "./photo-grid";
 import "./detail-panel";
 import "./full-view";
 import { beginAppBusy, subscribeAppBusy, waitForAppBusyPaint } from "./app-busy";
 import {
   beginTask,
-  cancelTaskRequest,
-  nextRequestId,
   subscribeTasks,
   type TaskHandle,
   type TaskRecord,
@@ -48,10 +47,6 @@ function findFolderByPath(roots: Folder[], path: string): Folder | null {
 interface FolderSelection {
   path: string;
   bookmark: string | null;
-}
-
-interface PhotoFilterInfoResult extends PhotoFilterInfo {
-  path: string;
 }
 
 interface FolderScanProgress {
@@ -75,8 +70,6 @@ interface FolderUpdate {
   contentChanged: boolean;
 }
 
-// Small chunks form cancellation points between cold EXIF reads.
-const FILTER_METADATA_BATCH_SIZE = 32;
 const APP_ICON_URL = new URL("../../app-icon.png", import.meta.url).href;
 
 function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
@@ -645,10 +638,7 @@ export class WarbleApp extends LitElement {
   private folderImageRefreshTimer: number | null = null;
   private pendingRestoreFolderPath: string | null = null;
 
-  /** Invalidates filter metadata requests when the active photo set changes. */
-  private filterMetadataRequest = 0;
-  private filterMetadataTaskId: number | null = null;
-  private filterInfoByPath = new Map<string, PhotoFilterInfo>();
+  private readonly photoPipeline = new PhotoProcessingPipeline();
 
   @state()
   private filterMetadataLoading = false;
@@ -787,121 +777,35 @@ export class WarbleApp extends LitElement {
 
   private unlistenFoldersRehydrated: UnlistenFn | null = null;
   private unsubscribeTasks: (() => void) | null = null;
-  private cancelThumbnailPrefetch: (() => void) | null = null;
 
   private setPhotos(photos: Photo[]): void {
-    this.stopPhotoBackgroundWork();
-    // Reuse metadata that was prepared for filtering in another folder.
-    this.photos = sortPhotosOldestFirst(photos.map((photo) => {
-      const filterInfo = photo.filterInfo ?? this.filterInfoByPath.get(photo.path);
-      return filterInfo ? { ...photo, filterInfo } : photo;
-    }));
-    if (this.photos.length > 0) {
-      this.cancelThumbnailPrefetch = prefetchThumbnails(
-        this.photos.map((photo) => photo.path)
-      );
-      this.requestPhotoFilterInfo();
-    }
+    this.photos = sortPhotosOldestFirst(this.photoPipeline.enrich(photos));
+    this.startPhotoBackgroundWork();
   }
 
-  private pausePhotoFilterInfo(): void {
-    this.filterMetadataRequest++;
-    if (this.filterMetadataTaskId !== null) {
-      cancelTaskRequest(this.filterMetadataTaskId);
-      this.filterMetadataTaskId = null;
-    }
-    this.filterMetadataLoading = false;
+  private startPhotoBackgroundWork(): void {
+    if (this.fullViewIndex !== null) return;
+    this.photoPipeline.start(
+      this.photos,
+      () => this.applyPhotoMetadata(),
+      () => this.photos.map((photo) => photo.path),
+      (loading) => { this.filterMetadataLoading = loading; },
+    );
   }
 
   private stopPhotoBackgroundWork(): void {
-    this.pausePhotoFilterInfo();
-    this.cancelThumbnailPrefetch?.();
-    this.cancelThumbnailPrefetch = null;
+    this.photoPipeline.stop();
   }
 
-  /** Load capture metadata as soon as a folder opens. */
-  private requestPhotoFilterInfo = (): void => {
-    if (this.filterMetadataLoading) return;
-    const unprepared = this.photos.filter(
-      (photo) => !this.filterInfoByPath.has(photo.path)
-    );
-    this.filterMetadataLoading = unprepared.length > 0;
-    if (!this.filterMetadataLoading) return;
-    const request = ++this.filterMetadataRequest;
-    void this.loadPhotoFilterInfo(unprepared, request);
-  };
-
-  private async loadPhotoFilterInfo(
-    photos: Photo[],
-    request: number
-  ): Promise<void> {
-    const task = beginTask({
-      kind: "exif",
-      label: "Reading photo metadata",
-      priority: "normal",
-      target: `${photos.length} photos`,
-      completed: 0,
-      total: photos.length,
-    });
-    let completed = 0;
-    let taskStatus: "completed" | "cancelled" | "failed" = "completed";
-    try {
-      for (let start = 0; start < photos.length; start += FILTER_METADATA_BATCH_SIZE) {
-        if (request !== this.filterMetadataRequest) return;
-        const batch = photos.slice(start, start + FILTER_METADATA_BATCH_SIZE);
-        const requestId = nextRequestId();
-        this.filterMetadataTaskId = requestId;
-        let info: PhotoFilterInfoResult[];
-        try {
-          info = await invoke<PhotoFilterInfoResult[]>("get_photo_filter_metadata", {
-            photoPaths: batch.map((photo) => photo.path),
-            requestId,
-          });
-        } finally {
-          if (this.filterMetadataTaskId === requestId) {
-            this.filterMetadataTaskId = null;
-          }
-        }
-        if (request !== this.filterMetadataRequest) return;
-        for (const item of info) this.filterInfoByPath.set(item.path, item);
-        completed += batch.length;
-        task.update({ completed });
-
-        const enriched = sortPhotosOldestFirst(this.photos.map((photo) => {
-          const filterInfo = this.filterInfoByPath.get(photo.path);
-          return filterInfo && photo.filterInfo !== filterInfo
-            ? { ...photo, filterInfo }
-            : photo;
-        }));
-        this.photos = enriched;
-        const selectedPath = this.selectedPhoto?.path;
-        if (selectedPath) {
-          this.selectedPhoto =
-            enriched.find((photo) => photo.path === selectedPath) ?? this.selectedPhoto;
-          if (this.fullViewIndex !== null) {
-            const sortedIndex = enriched.findIndex((photo) => photo.path === selectedPath);
-            if (sortedIndex >= 0) this.fullViewIndex = sortedIndex;
-          }
-        }
-        // Yield between batches so the UI can update as metadata arrives.
-        if (start + FILTER_METADATA_BATCH_SIZE < photos.length) {
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-        }
-      }
-    } catch (err) {
-      // Metadata is an enhancement; thumbnails and the rest of the grid
-      // remain usable when a file provider temporarily refuses a read.
-      if (request === this.filterMetadataRequest) {
-        taskStatus = "failed";
-        console.warn("Failed to load photo filter metadata", err);
-      } else {
-        taskStatus = "cancelled";
-      }
-    } finally {
-      if (request !== this.filterMetadataRequest) taskStatus = "cancelled";
-      task.finish(taskStatus);
-      if (request === this.filterMetadataRequest) {
-        this.filterMetadataLoading = false;
+  private applyPhotoMetadata(): void {
+    const enriched = sortPhotosOldestFirst(this.photoPipeline.enrich(this.photos));
+    this.photos = enriched;
+    const selectedPath = this.selectedPhoto?.path;
+    if (selectedPath) {
+      this.selectedPhoto = enriched.find((photo) => photo.path === selectedPath) ?? this.selectedPhoto;
+      if (this.fullViewIndex !== null) {
+        const sortedIndex = enriched.findIndex((photo) => photo.path === selectedPath);
+        if (sortedIndex >= 0) this.fullViewIndex = sortedIndex;
       }
     }
   }
@@ -1301,10 +1205,12 @@ export class WarbleApp extends LitElement {
       this.requestFolderImageIndex(selectedPath, this.includeSubfolders);
       const selected = findFolderByPath(this.imports, selectedPath);
       if (selected) {
-        this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
+        const photos = await invoke<Photo[]>("get_photos_in_folder", {
           folderPath: selected.path,
           recursive: this.includeSubfolders,
-        }));
+        });
+        if (this.selectedFolderId !== selectedPath) return;
+        this.setPhotos(photos);
         return;
       }
       const fallback = findFolderByPath(this.imports, update.folderKey);
@@ -1638,7 +1544,9 @@ export class WarbleApp extends LitElement {
       const wasOpen = previous !== undefined && previous !== null;
       const isOpen = this.fullViewIndex !== null;
       if (!wasOpen && isOpen) {
-        this.pausePhotoFilterInfo();
+        this.stopPhotoBackgroundWork();
+      } else if (wasOpen && !isOpen && this.selectedFolderId) {
+        this.startPhotoBackgroundWork();
       }
     }
     if (
@@ -1863,7 +1771,7 @@ export class WarbleApp extends LitElement {
       ${this.renderFooter()}
       ${this.renderContextMenu()}
       ${this.renderFolderContextMenu()}
-      <pf-settings></pf-settings>
+      <pf-settings @workspace-reset-starting=${() => this.stopPhotoBackgroundWork()}></pf-settings>
       ${this.busyLabel
         ? html`
             <div class="app-busy-overlay" aria-hidden="false">

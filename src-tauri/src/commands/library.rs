@@ -487,6 +487,11 @@ pub async fn remove_imported_folder(
     .await
 }
 
+#[tauri::command]
+pub async fn reset_workspace(app: AppHandle) -> Result<(), String> {
+    run_blocking(move || crate::library::reset_workspace(&app)).await
+}
+
 fn remove_imported_folder_blocking(
     app: &AppHandle,
     root_id: String,

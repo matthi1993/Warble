@@ -196,7 +196,12 @@ impl ScanCoordinator {
             queue.jobs.push_front(job.clone());
             if kind == ScanKind::FolderImages {
                 if let Some(index) = queue.jobs.iter().position(|queued| {
-                    queued.kind == ScanKind::FolderTree && queued.folder_key == job.folder_key
+                    queued.kind == ScanKind::FolderTree
+                        && queued.root_id == job.root_id
+                        && (queued.folder_key == job.folder_key
+                            || job
+                                .folder_key
+                                .starts_with(&format!("{}/", queued.folder_key)))
                 }) {
                     if let Some(tree_job) = queue.jobs.remove(index) {
                         queue.jobs.push_front(tree_job);

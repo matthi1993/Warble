@@ -8,7 +8,8 @@
 //! to hand the canvas encoded image bytes (or the embedded preview).
 //!
 //! Image reads use a small worker queue. The active photo is urgent;
-//! visible thumbnails and filter metadata use normal priority. The frontend
+//! visible thumbnails use normal priority; bulk filter metadata runs behind
+//! interactive image work. The frontend
 //! can cancel stale image requests during rapid navigation.
 
 use serde::Serialize;
@@ -140,7 +141,7 @@ pub async fn get_photo_filter_metadata(
         requests.push((key, resolved));
     }
 
-    tasks::run(Priority::Normal, request_id, move |cancel| {
+    tasks::run(Priority::Background, request_id, move |cancel| {
         let mut result = Vec::with_capacity(requests.len());
         for (path, resolved) in requests {
             cancel.check()?;

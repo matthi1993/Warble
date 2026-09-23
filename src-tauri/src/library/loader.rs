@@ -16,6 +16,21 @@ use imaging::{exif_cache, full_image, hd_image, thumbnails};
 
 static PORTABLE_INDEX_SYNC: Mutex<()> = Mutex::new(());
 
+pub fn reset_workspace(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let repo = state.repository()?;
+    let old_id = state.active_library_id()?;
+    let _sync = PORTABLE_INDEX_SYNC.lock().map_err(|e| e.to_string())?;
+
+    for root in repo.media_roots()? {
+        state.scan_coordinator.remove_root(app, &root.id);
+    }
+    let new_id = repo.reset_workspace()?;
+    state.set_active_library_id(new_id);
+    *state.catalog.lock().map_err(|e| e.to_string())? = LibraryCatalog::default();
+    state.device_storage.remove_library_grants(&old_id)
+}
+
 /// Canonical on-disk location of the active library database.
 pub fn library_db_path(app: &tauri::AppHandle) -> PathBuf {
     let mut path = app

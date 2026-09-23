@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
+import { confirm, open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   configureCacheSettings,
@@ -48,6 +48,7 @@ export class PfSettings extends LitElement {
       background: var(--pf-surface-2); color: var(--pf-text); padding: 0 11px; font: inherit; }
     button { cursor: pointer; touch-action: manipulation; }
     button.primary { background: var(--pf-accent); color: var(--pf-accent-contrast, white); border-color: transparent; }
+    button.danger { color: var(--pf-danger); border-color: var(--pf-danger); }
     button:disabled { opacity: .55; cursor: default; }
     .preset-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .feedback { margin: 0; color: var(--pf-text-muted); font-size: var(--pf-text-xs); }
@@ -89,6 +90,25 @@ export class PfSettings extends LitElement {
     try { await saveCacheSettings(this.draft); this.visible = false; }
     catch (error) { this.error = String(error); }
     finally { this.saving = false; }
+  }
+
+  private async resetWorkspace() {
+    if (this.saving) return;
+    const accepted = await confirm(
+      "Remove all imported folders, ratings, edits, cached metadata, and other SQLite library data? Your photos and sidecar files will NOT be deleted. Sidecar metadata may be restored if you add the same folders again.",
+      { title: "Reset workspace", kind: "warning", okLabel: "Reset workspace", cancelLabel: "Cancel" },
+    );
+    if (!accepted) return;
+    this.saving = true;
+    this.error = "";
+    try {
+      this.dispatchEvent(new CustomEvent("workspace-reset-starting", { bubbles: true, composed: true }));
+      await invoke("reset_workspace");
+      window.location.reload();
+    } catch (error) {
+      this.error = `Workspace reset failed: ${String(error)}`;
+      this.saving = false;
+    }
   }
 
   private async exportPresets() {
@@ -165,6 +185,11 @@ export class PfSettings extends LitElement {
               <button type="button" @click=${this.importPresets}>Import presets as JSON</button>
             </div>
             ${this.presetFeedback ? html`<p class="feedback" role="status">${this.presetFeedback}</p>` : nothing}
+          </section>
+          <section>
+            <h3>Workspace</h3>
+            <p class="note">Start with an empty library. This forgets imported folders and deletes all SQLite library data, including ratings, edits, metadata, and saved library settings. Photos and sidecar files on disk are never deleted. Adding the same folders again may restore metadata from sidecars.</p>
+            <div><button type="button" class="danger" ?disabled=${this.saving} @click=${this.resetWorkspace}>Reset workspace…</button></div>
           </section>
           ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
         </main>

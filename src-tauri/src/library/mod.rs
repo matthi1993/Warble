@@ -20,5 +20,6 @@ pub use loader::init_library_repository;
 pub use loader::init_menu;
 pub use loader::init_settings_and_caches;
 pub use loader::init_thumbnail_cache;
+pub use loader::reset_workspace;
 pub use loader::sync_portable_photo_keys;
 pub use scanner::ScanCoordinator;
