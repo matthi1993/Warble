@@ -18,12 +18,12 @@ lives under [`src-tauri/src/imaging/`](../src-tauri/src/imaging/).
 
 ## Folder preparation
 
-Import and refresh first publish the folder tree, without decoding photos or
-reading EXIF. Opening a folder queues image discovery; the current cached photo
-list stays readable while the filesystem scan runs. Once discovered, the
-selected folder's processing pipeline reads filter metadata in small,
-cancellable background batches and then warms up to 64 thumbnails. Results
-appear as they become ready; browsing does not wait for the entire pipeline.
+Import first publishes the folder tree, without decoding photos or reading
+EXIF. Opening a folder queues image discovery; the current catalog photo list
+stays readable while the filesystem scan runs. Once discovered, the selected
+folder's processing pipeline reads filter metadata in small, cancellable
+background batches and then warms up to 64 thumbnails. Results appear as
+they become ready; browsing does not wait for the entire pipeline.
 
 Visible cards request thumbnails on demand at a higher priority than metadata
 or warmup. HD and full-size previews are only requested when viewing a photo;
@@ -32,6 +32,16 @@ are processed when opened rather than doing library-wide decoding up front.
 
 Changing folders cancels work that is no longer useful. Existing thumbnails
 and metadata are reused when they are already available.
+
+## Synchronizing external changes
+
+Sync checks the chosen folder or all imported roots, recursively discovers
+photos, and reads adjacent XMP and Warble sidecars. A changed source photo
+invalidates its cached metadata and previews, which are rebuilt when requested.
+Sync does not eagerly decode the whole library. It must be started manually;
+there is no filesystem watcher. See
+[Photo processing and folder sync](processing-pipeline-and-sync.md) for
+fingerprints, sidecar precedence, error handling, and the exact stage order.
 
 ## Priorities
 

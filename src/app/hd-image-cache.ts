@@ -233,3 +233,11 @@ export function clearHdImageCache(): void {
   for (const bm of cache.values()) bm.close?.();
   cache.clear();
 }
+
+export function invalidateHdImages(paths: readonly string[]): void {
+  for (const path of paths) {
+    pending.get(path)?.cancel();
+    cache.get(path)?.close?.();
+    cache.delete(path);
+  }
+}

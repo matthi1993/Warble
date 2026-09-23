@@ -377,7 +377,7 @@ fn list_imported_folders_inner(state: &AppState) -> Result<Vec<Folder>, String> 
 pub async fn refresh_imported_folders(app: AppHandle) -> Result<Vec<Folder>, String> {
     let state = app.state::<AppState>();
     let repo = state.repository()?;
-    crate::library::enqueue_media_root_scans(&app, repo.as_ref(), &state);
+    crate::library::enqueue_media_root_scans(&app, repo.as_ref(), &state, true);
     list_imported_folders_inner(&state)
 }
 
@@ -420,7 +420,7 @@ pub async fn index_folder_images(
         .ok_or_else(|| "media root needs reconnecting on this device".to_string())?;
     state
         .scan_coordinator
-        .enqueue_images(&app, root_id, folder_path, root_path, recursive);
+        .enqueue_images(&app, root_id, folder_path, root_path, recursive, false);
     Ok(())
 }
 
@@ -442,9 +442,21 @@ fn refresh_folder_blocking(
         .next()
         .unwrap_or(&folder_path)
         .to_string();
-    state
-        .scan_coordinator
-        .enqueue_subtree(app, root_id.to_string(), folder_path, name, root_path);
+    state.scan_coordinator.enqueue_subtree(
+        app,
+        root_id.to_string(),
+        folder_path.clone(),
+        name,
+        root_path.clone(),
+    );
+    state.scan_coordinator.enqueue_images(
+        app,
+        root_id.to_string(),
+        folder_path,
+        root_path,
+        true,
+        true,
+    );
     list_imported_folders_inner(state)
 }
 

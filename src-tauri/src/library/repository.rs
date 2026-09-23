@@ -3,6 +3,7 @@
 //! The database stores only metadata — image files themselves stay on disk
 //! and are referenced by `<media-root UUID>/<relative path>` keys.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +14,16 @@ use rusqlite::{params, Connection};
 pub struct MediaRoot {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhotoSourceState {
+    pub image_mtime_ns: i64,
+    pub image_size: i64,
+    pub xmp_mtime_ns: Option<i64>,
+    pub xmp_size: Option<i64>,
+    pub warble_mtime_ns: Option<i64>,
+    pub warble_size: Option<i64>,
 }
 
 pub struct LibraryRepository {
@@ -166,6 +177,22 @@ impl LibraryRepository {
             migrate_to_v8(&mut conn)?;
         }
 
+        if current < 9 {
+            conn.execute_batch(
+                "CREATE TABLE photo_source_state (
+                    path TEXT PRIMARY KEY,
+                    image_mtime_ns INTEGER NOT NULL,
+                    image_size INTEGER NOT NULL,
+                    xmp_mtime_ns INTEGER,
+                    xmp_size INTEGER,
+                    warble_mtime_ns INTEGER,
+                    warble_size INTEGER
+                );
+                INSERT INTO schema_version (version) VALUES (9);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
         Ok(())
     }
 
@@ -295,6 +322,17 @@ impl LibraryRepository {
         Ok(out)
     }
 
+    pub fn was_warble_sidecar_indexed(&self, path: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM photo_source_state
+                           WHERE path = ?1 AND warble_mtime_ns IS NOT NULL)",
+            params![path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+    }
+
     pub fn set_photo_edit(&self, path: &str, edits_json: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -333,6 +371,58 @@ impl LibraryRepository {
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    pub fn prune_missing_photos(
+        &self,
+        folder_key: &str,
+        recursive: bool,
+        discovered: &HashSet<String>,
+    ) -> Result<bool, String> {
+        self.with_transaction(|tx| {
+            let keys = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT path FROM photo_source_state
+                         UNION SELECT path FROM photo_exif
+                         UNION SELECT path FROM photo_edits
+                         UNION SELECT path FROM photo_ratings
+                         UNION SELECT path FROM photo_variants",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?
+            };
+            let mut removed = false;
+            for key in keys {
+                let parent = Path::new(&key).parent();
+                let folder = Path::new(folder_key);
+                let in_scope = parent.is_some_and(|parent| {
+                    parent == folder || (recursive && parent.starts_with(folder))
+                });
+                if !in_scope || discovered.contains(&key) {
+                    continue;
+                }
+                for table in [
+                    "photo_source_state",
+                    "photo_exif",
+                    "photo_edits",
+                    "photo_ratings",
+                    "photo_variants",
+                ] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE path = ?1"),
+                        params![key],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                removed = true;
+            }
+            Ok(removed)
+        })
     }
 
     /// Upsert the chosen (format, variant) for a photo (keyed by its
@@ -396,6 +486,7 @@ impl LibraryRepository {
             "photo_edits",
             "photo_exif",
             "photo_ratings",
+            "photo_source_state",
             "photo_effects",
         ] {
             // Some older libraries may not have every optional table yet.
@@ -436,6 +527,7 @@ impl LibraryRepository {
             "photo_edits",
             "photo_exif",
             "photo_ratings",
+            "photo_source_state",
         ] {
             rewrite_root_paths(&tx, table, new_root_id, rewrites)?;
         }
@@ -473,6 +565,7 @@ impl LibraryRepository {
                 "photo_edits",
                 "photo_exif",
                 "photo_ratings",
+                "photo_source_state",
                 "app_settings",
                 "migration_legacy_bindings",
             ] {
@@ -484,6 +577,7 @@ impl LibraryRepository {
                 "photo_edits",
                 "photo_exif",
                 "photo_ratings",
+                "photo_source_state",
             ] {
                 tx.execute_batch(&format!(
                     "CREATE TRIGGER IF NOT EXISTS {table}_valid_root
@@ -859,6 +953,34 @@ fn write_setting(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prune_missing_photos_only_affects_selected_folder() {
+        let dir = std::env::temp_dir().join(format!("warble-prune-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        repo.add_media_root("root", "Photos").unwrap();
+        repo.set_photo_rating_row("root/keep.jpg", 4, "", 1)
+            .unwrap();
+        repo.set_photo_rating_row("root/deleted.jpg", 5, "", 1)
+            .unwrap();
+        repo.set_photo_rating_row("root/other/untouched.jpg", 3, "", 1)
+            .unwrap();
+
+        let discovered = HashSet::from(["root/keep.jpg".to_string()]);
+        assert!(repo
+            .prune_missing_photos("root", false, &discovered)
+            .unwrap());
+        let ratings = repo.all_photo_ratings().unwrap();
+        assert_eq!(ratings.len(), 2);
+        assert!(ratings.iter().any(|row| row.0 == "root/keep.jpg"));
+        assert!(ratings
+            .iter()
+            .any(|row| row.0 == "root/other/untouched.jpg"));
+
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn reset_workspace_forgets_sqlite_data_without_touching_photos() {

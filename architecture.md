@@ -4,6 +4,10 @@ High-level overview of the **Warble** frontend codebase. This document
 describes the layering rules, where to put new code, and which files
 own which concerns.
 
+For filesystem discovery, sidecar/SQLite reconciliation, and preview
+priorities, see [Photo processing and folder sync](<00 docs/processing-pipeline-and-sync.md>).
+The [documentation home](<00 docs/README.md>) links the user guides.
+
 ## Stack
 
 - **Lit 3** web components (TypeScript 5.6, decorators).
@@ -53,12 +57,12 @@ Tauri.** Safe to consume from anywhere. Each subfolder ships its own
 Cross-cutting business logic. Owns all Tauri `invoke()` calls and
 in-memory stores. Stateful but UI-agnostic.
 
-Conventions used by every store in this layer:
+Conventions used by many stores in this layer:
 
 - Singleton module-level state (`Map<id, value>`).
 - `Set<Listener>` subscribe / unsubscribe pattern.
-- Writes are debounced via `setTimeout` (`PERSIST_DEBOUNCE_MS = 150`)
-  with `flushXxx` to force-persist on navigation.
+- Some writes are debounced and can be forced with `flushXxx` on navigation
+  or before Sync. Ratings are serialized per photo and persisted immediately.
 
 Subfolders:
 
@@ -108,13 +112,15 @@ state machines.
   `full-image-cache.ts`, `full-image-worker.ts` — on-demand image
   decoding and caching. The backend queue prioritises the active photo;
   the frontend modules deduplicate requests and own `ImageBitmap` lifetimes.
+- `photo-processing-pipeline.ts` — staged metadata batches and bounded
+  thumbnail warmup for the selected folder.
 - `variant-store.ts` — file-format override store (still in `app/`
   because it sits between the variant store and on-disk preferences).
-- `types.ts`, `photo-variant.ts`, `edit-store.ts`, `rating-store.ts` —
-  **compatibility shims** that re-export from `@domain/*` and
-  `@services/*`. Kept so existing imports across the codebase don't
-  need to change in one big sweep. Prefer the canonical paths for
-  new code.
+
+The native `src-tauri/src/library/` owns the catalog and folder scans;
+`src-tauri/src/sidecar.rs` reconciles portable metadata with SQLite;
+`src-tauri/src/tasks/` runs prioritized image work. These operations are
+distinct from the frontend view and store layers.
 
 ## File size policy
 
@@ -139,8 +145,10 @@ Web components communicate **upwards** via DOM `CustomEvent` (bubbling
 never DOM queries. Stores notify subscribers, which trigger Lit's
 reactive update cycle by mutating `@state` fields.
 
-Tauri `invoke()` calls live only in `services/`. Components and views
-never call `invoke` directly — they go through a service.
+Tauri `invoke()` calls live in `services/` for shared business state and
+also in `app/` orchestration modules for library scans, selected-folder
+metadata, and image loading. Keep presentational widgets in `ui/` free of
+library policy.
 
 ## Adding new code
 

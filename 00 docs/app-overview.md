@@ -38,6 +38,10 @@ These topics are described in:
 - [Image loading and background work](image-loading-and-background-work.md)
 - [Editor tools](editor-tools.md)
 
+Browse the [documentation home](README.md) for all guides. For the exact
+processing stages and portable metadata rules, see
+[Photo processing and folder sync](processing-pipeline-and-sync.md).
+
 ## Code entry points
 
 The main application layout and navigation live in

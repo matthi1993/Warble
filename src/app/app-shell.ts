@@ -17,10 +17,13 @@ import {
 } from "@services/effects/effects-store";
 import {
   applyRatingShortcut,
+  flushPhotoRatings,
   loadPhotoRatings,
   reloadPhotoRatings,
 } from "@services/rating/rating-store";
-import { dropAllThumbnailState } from "./thumbnail-service";
+import { dropAllThumbnailState, invalidateThumbnails } from "./thumbnail-service";
+import { invalidateHdImages } from "./hd-image-cache";
+import { invalidateFullImages } from "./full-image-cache";
 import { PhotoProcessingPipeline } from "./photo-processing-pipeline";
 import "./photo-grid";
 import "./detail-panel";
@@ -61,6 +64,12 @@ interface FolderScanProgress {
 interface FolderImageUpdate {
   rootId: string;
   folderKey: string;
+}
+
+interface PhotoIndexUpdate {
+  folderKey: string;
+  changedImages: string[];
+  metadataChanged: boolean;
 }
 
 interface FolderUpdate {
@@ -634,6 +643,7 @@ export class WarbleApp extends LitElement {
   private unsubscribeFolderScanProgress: UnlistenFn | null = null;
   private unsubscribeFolderUpdates: UnlistenFn | null = null;
   private unsubscribeFolderImageUpdates: UnlistenFn | null = null;
+  private unsubscribePhotoIndexUpdates: UnlistenFn | null = null;
   private folderScanTasks = new Map<number, TaskHandle>();
   private folderImageRefreshTimer: number | null = null;
   private pendingRestoreFolderPath: string | null = null;
@@ -685,6 +695,10 @@ export class WarbleApp extends LitElement {
    this.unsubscribeFolderImageUpdates = await listen<FolderImageUpdate>(
      "folder-images-updated",
      (event) => this.onFolderImagesUpdated(event.payload),
+   );
+   this.unsubscribePhotoIndexUpdates = await listen<PhotoIndexUpdate>(
+     "photo-index-synced",
+     (event) => void this.onPhotoIndexSynced(event.payload),
    );
     // Menu-driven "Clear Thumbnail Cache" wipes the disk cache; here we
     // also drop the renderer-side binary JPEG LRU so on-screen cards
@@ -819,6 +833,8 @@ export class WarbleApp extends LitElement {
    this.unsubscribeFolderUpdates = null;
    this.unsubscribeFolderImageUpdates?.();
    this.unsubscribeFolderImageUpdates = null;
+  this.unsubscribePhotoIndexUpdates?.();
+  this.unsubscribePhotoIndexUpdates = null;
    if (this.folderImageRefreshTimer !== null) {
      window.clearTimeout(this.folderImageRefreshTimer);
      this.folderImageRefreshTimer = null;
@@ -1125,12 +1141,14 @@ export class WarbleApp extends LitElement {
     await Promise.all([
       flushAllPhotoEdits(),
       flushPhotoEffects(),
+      flushPhotoRatings(),
     ]);
   }
 
   /** Queue an independent background scan for every connected root. */
   private async refreshFolders() {
     try {
+      await this.flushPendingPhotoWrites();
       this.imports = await invoke<Folder[]>("refresh_imported_folders");
     } catch (err) {
       console.error("Failed to refresh imported folders", err);
@@ -1239,6 +1257,48 @@ export class WarbleApp extends LitElement {
       this.folderImageRefreshTimer = null;
       void this.refreshSelectedPhotosFromIndex();
     }, 100);
+  }
+
+  private async onPhotoIndexSynced(update: PhotoIndexUpdate): Promise<void> {
+    if (update.changedImages.length > 0) {
+      this.photoPipeline.invalidate(update.changedImages);
+      invalidateThumbnails(update.changedImages);
+      invalidateHdImages(update.changedImages);
+      invalidateFullImages(update.changedImages);
+      const changed = new Set(update.changedImages);
+      if (this.selectedPhoto && changed.has(this.selectedPhoto.path)) {
+        (this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null)
+          ?.refreshPhotoSource(this.selectedPhoto.path);
+      }
+      const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
+      grid?.renderRoot
+        .querySelectorAll("pf-thumbnail-card")
+        .forEach((card) => {
+          if (changed.has((card as HTMLElement & { path: string }).path)) {
+            (card as HTMLElement & { reload(): void }).reload();
+          }
+        });
+    }
+    if (update.metadataChanged) {
+      try {
+        await this.flushPendingPhotoWrites();
+      } catch (error) {
+        console.error("Could not reconcile photo metadata with pending local writes", error);
+        return;
+      }
+      await Promise.all([
+        reloadPhotoEdits(),
+        reloadPhotoEffects(),
+        reloadPhotoRatings(),
+      ]);
+    }
+    if (this.selectedFolderId && (
+      this.selectedFolderId === update.folderKey ||
+      this.selectedFolderId.startsWith(`${update.folderKey}/`) ||
+      (this.includeSubfolders && update.folderKey.startsWith(`${this.selectedFolderId}/`))
+    )) {
+      await this.refreshSelectedPhotosFromIndex();
+    }
   }
 
   private async refreshSelectedPhotosFromIndex(): Promise<void> {
@@ -1423,6 +1483,7 @@ export class WarbleApp extends LitElement {
   private async syncFolder(path: string, name: string) {
     this.folderContextMenu = null;
     try {
+      await this.flushPendingPhotoWrites();
       this.imports = await invoke<Folder[]>("refresh_folder", {
         folderPath: path,
       });

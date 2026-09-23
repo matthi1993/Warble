@@ -17,6 +17,10 @@ export class PhotoProcessingPipeline {
   private cancelThumbnailWarmup: (() => void) | null = null;
   private onLoadingChange: ((loading: boolean) => void) | null = null;
 
+  invalidate(paths: readonly string[]): void {
+    for (const path of paths) this.metadata.delete(path);
+  }
+
   enrich(photos: Photo[]): Photo[] {
     return photos.map((photo) => {
       const filterInfo = photo.filterInfo ?? this.metadata.get(photo.path);

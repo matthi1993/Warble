@@ -190,7 +190,7 @@ fn file_fingerprint(path: &Path) -> Option<(i64, i64)> {
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
     let size = meta.len() as i64;
     Some((mtime, size))

@@ -356,6 +356,10 @@ export class PfFullView extends LitElement {
     ) as PfImageCanvas | null;
   }
 
+  refreshPhotoSource(path: string): void {
+    if (this.currentPhoto?.path === path) this.canvasEl()?.reloadSource();
+  }
+
   private activeTool(): EditTool | null {
     return this.tools.find((t) => t.id === this.activeToolId) ?? null;
   }

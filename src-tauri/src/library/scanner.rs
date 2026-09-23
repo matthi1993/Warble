@@ -43,9 +43,18 @@ struct ImageUpdate {
     folder_key: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PhotoIndexUpdate {
+    folder_key: String,
+    changed_images: Vec<String>,
+    metadata_changed: bool,
+}
+
 #[derive(Default)]
 struct ScanQueue {
     jobs: VecDeque<ScanJob>,
+    active: Option<ScanJob>,
     worker_running: bool,
     root_generations: HashMap<String, u64>,
     job_generations: HashMap<String, u64>,
@@ -63,6 +72,7 @@ struct ScanJob {
     root_generation: u64,
     job_generation: u64,
     recursive: bool,
+    prune_missing: bool,
 }
 
 #[derive(Default)]
@@ -96,6 +106,7 @@ impl ScanCoordinator {
                 root_generation,
                 job_generation,
                 false,
+                false,
             );
             queue.jobs.push_back(job.clone());
             (cancelled, job)
@@ -125,6 +136,7 @@ impl ScanCoordinator {
             name,
             root_path,
             false,
+            false,
         );
     }
 
@@ -135,6 +147,7 @@ impl ScanCoordinator {
         folder_key: String,
         root_path: PathBuf,
         recursive: bool,
+        prune_missing: bool,
     ) {
         let name = folder_key
             .rsplit('/')
@@ -149,6 +162,7 @@ impl ScanCoordinator {
             name,
             root_path,
             recursive,
+            prune_missing,
         );
     }
 
@@ -174,11 +188,28 @@ impl ScanCoordinator {
         name: String,
         root_path: PathBuf,
         recursive: bool,
+        prune_missing: bool,
     ) {
         let (cancelled_job, job) = {
             let Ok(mut queue) = self.queue.lock() else {
                 return;
             };
+            if kind == ScanKind::FolderImages && !prune_missing {
+                let covers_request = |queued: &ScanJob| {
+                    queued.kind == ScanKind::FolderImages
+                        && queued.folder_key == folder_key
+                        && (queued.recursive || !recursive)
+                        && (queued.prune_missing || !recursive)
+                };
+                if queue.jobs.iter().any(|queued| covers_request(queued))
+                    || queue
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| covers_request(active))
+                {
+                    return;
+                }
+            }
             let cancelled = remove_queued_job(&mut queue.jobs, kind, &folder_key);
             let root_generation = *queue.root_generations.entry(root_id.clone()).or_default();
             let job_generation = next_job_generation(&mut queue, kind, &folder_key);
@@ -192,6 +223,7 @@ impl ScanCoordinator {
                 root_generation,
                 job_generation,
                 recursive,
+                prune_missing,
             );
             queue.jobs.push_front(job.clone());
             if kind == ScanKind::FolderImages {
@@ -245,8 +277,12 @@ impl ScanCoordinator {
                     Err(_) => return,
                 };
                 match queue.jobs.pop_front() {
-                    Some(job) => job,
+                    Some(job) => {
+                        queue.active = Some(job.clone());
+                        job
+                    }
                     None => {
+                        queue.active = None;
                         queue.worker_running = false;
                         return;
                     }
@@ -265,6 +301,9 @@ impl ScanCoordinator {
                 emit_progress(&app, progress(&job, "cancelled", None));
             }
             self.finish_job(&app, &job);
+            if let Ok(mut queue) = self.queue.lock() {
+                queue.active = None;
+            }
         }
     }
 
@@ -415,10 +454,31 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
             // hydration runs independently so switching folders never waits
             // behind metadata work from the previous folder.
             let sidecar_app = app.clone();
+            let job_folder_key = job.folder_key.clone();
+            let job_recursive = job.recursive;
+            let job_prune_missing = job.prune_missing;
             tauri::async_runtime::spawn_blocking(move || {
                 let state = sidecar_app.state::<AppState>();
                 if let Ok(repo) = state.repository() {
-                    crate::library::sync_portable_photo_keys(repo.as_ref(), &state, keys);
+                    if let Some(changes) = crate::library::sync_portable_photo_keys(
+                        repo.as_ref(),
+                        &state,
+                        keys,
+                        &job_folder_key,
+                        job_recursive,
+                        job_prune_missing,
+                    ) {
+                        if changes.metadata_changed || !changes.changed_images.is_empty() {
+                            let _ = sidecar_app.emit(
+                                "photo-index-synced",
+                                PhotoIndexUpdate {
+                                    folder_key: job_folder_key,
+                                    changed_images: changes.changed_images,
+                                    metadata_changed: changes.metadata_changed,
+                                },
+                            );
+                        }
+                    }
                 }
             });
             ScanOutcome::Done
@@ -436,6 +496,7 @@ fn new_job(
     root_generation: u64,
     job_generation: u64,
     recursive: bool,
+    prune_missing: bool,
 ) -> ScanJob {
     queue.next_job_id = queue.next_job_id.saturating_add(1);
     ScanJob {
@@ -448,6 +509,7 @@ fn new_job(
         root_generation,
         job_generation,
         recursive,
+        prune_missing,
     }
 }
 

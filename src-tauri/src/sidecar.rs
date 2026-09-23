@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::imaging::edits::PhotoEdits;
 use crate::imaging::exif::{ExifMetadata, IDENTITY};
-use crate::library::LibraryRepository;
+use crate::library::{LibraryRepository, PhotoSourceState};
 
 const SCHEMA_VERSION: u32 = 1;
 static SIDECAR_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -31,6 +31,8 @@ struct SourceFingerprint {
     filename: String,
     size: i64,
     modified_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modified_at_ns: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +97,7 @@ pub fn write_metadata(
     metadata: &ExifMetadata,
 ) -> Result<(), String> {
     let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
-    let mut sidecar = read_valid_warble(source).unwrap_or_default();
+    let mut sidecar = sidecar_for_write(source);
     sidecar.schema = SCHEMA_VERSION;
     sidecar.source = Some(fingerprint(source)?);
     sidecar.orientation = normalize_orientation(orientation);
@@ -108,7 +110,7 @@ pub fn write_metadata(
 /// Persist Warble's non-destructive edit recipe next to the source image.
 pub fn write_edits(source: &Path, edits: &PhotoEdits) -> Result<(), String> {
     let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
-    let mut sidecar = read_valid_warble(source).unwrap_or_default();
+    let mut sidecar = sidecar_for_write(source);
     sidecar.schema = SCHEMA_VERSION;
     sidecar.source = Some(fingerprint(source)?);
     sidecar.edits = edits.clone();
@@ -116,17 +118,18 @@ pub fn write_edits(source: &Path, edits: &PhotoEdits) -> Result<(), String> {
     write_warble(source, &sidecar)
 }
 
-/// `Some(None)` means that a valid sidecar explicitly has no per-photo
-/// effects; plain `None` means there is no usable sidecar yet.
+/// `Some(None)` means a readable sidecar explicitly has no per-photo
+/// effects; plain `None` means there is no usable sidecar yet. Effects are
+/// retained when image bytes change, unlike cached EXIF.
 pub fn read_effects(source: &Path) -> Option<Option<serde_json::Value>> {
-    Some(read_valid_warble(source)?.effects)
+    Some(read_warble(source)?.effects)
 }
 
 /// Persist per-photo sharpening/grain (whose detailed schema is owned by the
 /// frontend) without forcing the Rust side to duplicate it.
 pub fn write_effects(source: &Path, effects: Option<&serde_json::Value>) -> Result<(), String> {
     let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
-    let mut sidecar = read_valid_warble(source).unwrap_or_default();
+    let mut sidecar = sidecar_for_write(source);
     sidecar.schema = SCHEMA_VERSION;
     sidecar.source = Some(fingerprint(source)?);
     sidecar.effects = effects.cloned();
@@ -140,25 +143,148 @@ pub fn write_effects(source: &Path, effects: Option<&serde_json::Value>) -> Resu
 pub fn sync_photo_index_batch(
     repo: &LibraryRepository,
     photos: &[(&str, &Path)],
-) -> Result<(), String> {
+) -> Result<PhotoSyncResult, String> {
     let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
     repo.with_transaction(|tx| {
+        let mut changes = PhotoSyncResult::default();
         for (key, source) in photos {
-            sync_photo_index_tx(tx, key, source)?;
+            let before = tx.query_row(
+                "SELECT image_mtime_ns, image_size, xmp_mtime_ns, xmp_size,
+                        warble_mtime_ns, warble_size
+                 FROM photo_source_state WHERE path = ?1",
+                params![key],
+                |row| {
+                    Ok(PhotoSourceState {
+                        image_mtime_ns: row.get(0)?,
+                        image_size: row.get(1)?,
+                        xmp_mtime_ns: row.get(2)?,
+                        xmp_size: row.get(3)?,
+                        warble_mtime_ns: row.get(4)?,
+                        warble_size: row.get(5)?,
+                    })
+                },
+            );
+            let previous = match before {
+                Ok(value) => Some(value),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            let current = source_state(source)?;
+            if previous.as_ref().is_some_and(|old| {
+                old.image_mtime_ns != current.image_mtime_ns || old.image_size != current.image_size
+            }) {
+                tx.execute("DELETE FROM photo_exif WHERE path = ?1", params![key])
+                    .map_err(|e| e.to_string())?;
+                changes.changed_images.push((*key).to_string());
+            }
+            if previous.as_ref() != Some(&current) {
+                changes.metadata_changed = true;
+            }
+            let xmp_rating_removed = previous.as_ref().is_some_and(|old| {
+                old.xmp_mtime_ns.is_some()
+                    && (old.xmp_mtime_ns != current.xmp_mtime_ns
+                        || old.xmp_size != current.xmp_size)
+            });
+            let warble_removed = previous.as_ref().is_some_and(|old| {
+                old.warble_mtime_ns.is_some() && current.warble_mtime_ns.is_none()
+            });
+            sync_photo_index_tx(tx, key, source, xmp_rating_removed, warble_removed)?;
+            let current = source_state(source)?;
+            tx.execute(
+                "INSERT INTO photo_source_state
+                    (path, image_mtime_ns, image_size, xmp_mtime_ns, xmp_size,
+                     warble_mtime_ns, warble_size)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(path) DO UPDATE SET
+                    image_mtime_ns = excluded.image_mtime_ns,
+                    image_size = excluded.image_size,
+                    xmp_mtime_ns = excluded.xmp_mtime_ns,
+                    xmp_size = excluded.xmp_size,
+                    warble_mtime_ns = excluded.warble_mtime_ns,
+                    warble_size = excluded.warble_size",
+                params![
+                    key,
+                    current.image_mtime_ns,
+                    current.image_size,
+                    current.xmp_mtime_ns,
+                    current.xmp_size,
+                    current.warble_mtime_ns,
+                    current.warble_size,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        Ok(changes)
     })
 }
 
-fn sync_photo_index_tx(tx: &Transaction<'_>, key: &str, source: &Path) -> Result<(), String> {
-    sync_rating_tx(tx, key, source)?;
+#[derive(Default)]
+pub struct PhotoSyncResult {
+    pub changed_images: Vec<String>,
+    pub metadata_changed: bool,
+}
+
+pub fn source_state(source: &Path) -> Result<PhotoSourceState, String> {
+    let image = fs::metadata(source).map_err(|error| error.to_string())?;
+    let (xmp_mtime_ns, xmp_size) = optional_file_state(&xmp_path(source))?;
+    let (warble_mtime_ns, warble_size) = optional_file_state(&warble_path(source))?;
+    Ok(PhotoSourceState {
+        image_mtime_ns: modified_ns(&image),
+        image_size: image.len() as i64,
+        xmp_mtime_ns,
+        xmp_size,
+        warble_mtime_ns,
+        warble_size,
+    })
+}
+
+fn optional_file_state(path: &Path) -> Result<(Option<i64>, Option<i64>), String> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok((Some(modified_ns(&metadata)), Some(metadata.len() as i64))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((None, None)),
+        Err(error) => Err(format!("failed to inspect {}: {error}", path.display())),
+    }
+}
+
+fn modified_ns(metadata: &fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+fn sync_photo_index_tx(
+    tx: &Transaction<'_>,
+    key: &str,
+    source: &Path,
+    xmp_rating_removed: bool,
+    warble_removed: bool,
+) -> Result<(), String> {
+    sync_rating_tx(tx, key, source, xmp_rating_removed)?;
+
+    if warble_removed {
+        tx.execute("DELETE FROM photo_edits WHERE path = ?1", params![key])
+            .map_err(|error| error.to_string())?;
+        tx.execute("DELETE FROM photo_exif WHERE path = ?1", params![key])
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    if warble_path(source).exists() && read_warble(source).is_none() {
+        return Err(format!(
+            "cannot import unreadable sidecar for {}",
+            source.display()
+        ));
+    }
 
     // A rescan may seed a legacy sidecar while the editor is open. Keep that
     // read-modify-write operation in the same critical section as edits and
     // effects so one valid update cannot replace another one.
 
-    if let Some(sidecar) = read_valid_warble(source) {
-        if sidecar.metadata_ready {
+    if let Some(sidecar) = read_warble(source) {
+        if sidecar.metadata_ready && read_valid_warble(source).is_some() {
             let fingerprint = fingerprint(source)?;
             let metadata_json =
                 serde_json::to_string(&sidecar.metadata).map_err(|e| e.to_string())?;
@@ -173,7 +299,9 @@ fn sync_photo_index_tx(tx: &Transaction<'_>, key: &str, source: &Path) -> Result
                     metadata = excluded.metadata",
                 params![
                     key,
-                    fingerprint.modified_at,
+                    fingerprint
+                        .modified_at_ns
+                        .unwrap_or(fingerprint.modified_at),
                     fingerprint.size,
                     normalize_orientation(sidecar.orientation) as i64,
                     metadata_json
@@ -244,16 +372,25 @@ pub fn write_rating(
     }
 }
 
-fn sync_rating_tx(tx: &Transaction<'_>, key: &str, source: &Path) -> Result<(), String> {
+fn sync_rating_tx(
+    tx: &Transaction<'_>,
+    key: &str,
+    source: &Path,
+    xmp_rating_removed: bool,
+) -> Result<(), String> {
     if let Some(Some((rating, label))) = read_xmp_rating(source) {
         let existing = tx_photo_rating(tx, key)?;
         let unchanged = existing
             .as_ref()
             .map(|(old_rating, old_label, _)| *old_rating == rating && *old_label == label)
             .unwrap_or(false);
-        let rated_at = existing
-            .map(|(_, _, rated_at)| rated_at)
-            .unwrap_or_else(now_secs);
+        let rated_at = if unchanged {
+            existing
+                .map(|(_, _, rated_at)| rated_at)
+                .unwrap_or_else(now_secs)
+        } else {
+            now_secs()
+        };
         if rating == 0 && label.is_empty() {
             tx.execute("DELETE FROM photo_ratings WHERE path = ?1", params![key])
                 .map_err(|e| e.to_string())?;
@@ -269,6 +406,12 @@ fn sync_rating_tx(tx: &Transaction<'_>, key: &str, source: &Path) -> Result<(), 
             )
             .map_err(|e| e.to_string())?;
         }
+        return Ok(());
+    }
+
+    if xmp_rating_removed {
+        tx.execute("DELETE FROM photo_ratings WHERE path = ?1", params![key])
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -308,12 +451,34 @@ fn tx_photo_edit(tx: &Transaction<'_>, key: &str) -> Result<Option<String>, Stri
 }
 
 fn read_valid_warble(source: &Path) -> Option<WarbleSidecar> {
-    let raw = fs::read_to_string(warble_path(source)).ok()?;
-    let sidecar = serde_json::from_str::<WarbleSidecar>(&raw).ok()?;
-    if sidecar.schema != SCHEMA_VERSION || sidecar.source.as_ref()? != &fingerprint(source).ok()? {
+    let sidecar = read_warble(source)?;
+    let current = fingerprint(source).ok()?;
+    let recorded = sidecar.source.as_ref()?;
+    if recorded.filename != current.filename
+        || recorded.size != current.size
+        || recorded.modified_at != current.modified_at
+        || recorded.modified_at_ns != current.modified_at_ns
+    {
         return None;
     }
     Some(sidecar)
+}
+
+fn read_warble(source: &Path) -> Option<WarbleSidecar> {
+    let raw = fs::read_to_string(warble_path(source)).ok()?;
+    let sidecar = serde_json::from_str::<WarbleSidecar>(&raw).ok()?;
+    (sidecar.schema == SCHEMA_VERSION).then_some(sidecar)
+}
+
+fn sidecar_for_write(source: &Path) -> WarbleSidecar {
+    let valid = read_valid_warble(source).is_some();
+    let mut sidecar = read_warble(source).unwrap_or_default();
+    if !valid {
+        sidecar.metadata_ready = false;
+        sidecar.metadata = ExifMetadata::default();
+        sidecar.orientation = IDENTITY;
+    }
+    sidecar
 }
 
 fn write_warble(source: &Path, sidecar: &WarbleSidecar) -> Result<(), String> {
@@ -436,6 +601,11 @@ fn fingerprint(source: &Path) -> Result<SourceFingerprint, String> {
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0);
+    let modified_at_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64);
     let filename = source
         .file_name()
         .and_then(|name| name.to_str())
@@ -445,6 +615,7 @@ fn fingerprint(source: &Path) -> Result<SourceFingerprint, String> {
         filename,
         size: metadata.len() as i64,
         modified_at,
+        modified_at_ns,
     })
 }
 
@@ -501,6 +672,48 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_imports_external_changes_without_losing_edits() {
+        let dir = std::env::temp_dir().join(format!("warble-sync-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("photo.jpg");
+        fs::write(&source, b"first version").unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        repo.add_media_root("root", "Photos").unwrap();
+        let key = "root/photo.jpg";
+        let edits = PhotoEdits {
+            tone: Some(crate::imaging::edits::ToneEdit {
+                exposure: 1.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        write_edits(&source, &edits).unwrap();
+        write_rating(&repo, key, &source, 5, "green", 1).unwrap();
+        let initial = sync_photo_index_batch(&repo, &[(key, &source)]).unwrap();
+        assert!(initial.metadata_changed);
+        assert!(initial.changed_images.is_empty());
+        repo.set_photo_exif(key, 0, 0, 1, "{}").unwrap();
+
+        fs::write(&source, b"replacement photo content").unwrap();
+        fs::write(xmp_path(&source), new_xmp_packet(2, "blue")).unwrap();
+        let changes = sync_photo_index_batch(&repo, &[(key, &source)]).unwrap();
+        assert_eq!(changes.changed_images, vec![key.to_string()]);
+        assert_eq!(repo.all_photo_ratings().unwrap()[0].1, 2);
+        assert_eq!(repo.all_photo_ratings().unwrap()[0].2, "blue");
+        assert!(repo.get_photo_exif(key).unwrap().is_none());
+        assert_eq!(repo.all_photo_edits().unwrap().len(), 1);
+        assert!(read_metadata(&source).is_none());
+
+        fs::remove_file(xmp_path(&source)).unwrap();
+        fs::remove_file(warble_path(&source)).unwrap();
+        sync_photo_index_batch(&repo, &[(key, &source)]).unwrap();
+        assert!(repo.all_photo_ratings().unwrap().is_empty());
+        assert!(repo.all_photo_edits().unwrap().is_empty());
+        assert_eq!(fs::read(&source).unwrap(), b"replacement photo content");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn xmp_round_trip_preserves_unrelated_fields() {

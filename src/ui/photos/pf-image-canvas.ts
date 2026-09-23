@@ -699,6 +699,17 @@ export class PfImageCanvas extends LitElement {
     else window.setTimeout(run, 0);
   }
 
+  reloadSource(): void {
+    this.bitmap = null;
+    this.bitmapForPath = null;
+    this.fullBitmap = null;
+    this.fullBitmapForPath = null;
+    this.thumbBitmap?.close?.();
+    this.thumbBitmap = null;
+    this.thumbForPath = null;
+    void this.startLoad();
+  }
+
   private async startLoad() {
     this.loadAbort?.abort();
     // Any pending full-res load is for the previous path; cancel both

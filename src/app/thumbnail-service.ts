@@ -74,7 +74,7 @@ export function requestThumbnail(
         background: priority === "background",
       })
         .then((bytes) => {
-          remember(path, bytes);
+          if (pending.get(path) === entry) remember(path, bytes);
           return bytes;
         })
         .catch((error) => {
@@ -159,4 +159,15 @@ export function isCancellation(error: unknown): boolean {
 /** Drop renderer-resident bytes. Existing requests finish or are cancelled by their owners. */
 export function dropAllThumbnailState(): void {
   cache.clear();
+}
+
+export function invalidateThumbnails(paths: readonly string[]): void {
+  for (const path of paths) {
+    cache.delete(path);
+    const entry = pending.get(path);
+    if (entry) {
+      cancelTaskRequest(entry.requestId);
+      pending.delete(path);
+    }
+  }
 }

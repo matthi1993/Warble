@@ -54,6 +54,7 @@ interface PendingEntry {
   /** Number of live callers still interested in the result. When this
    * drops to 0 we cancel the backend task. */
   refcount: number;
+  invalidated: boolean;
 }
 
 const pending = new Map<string, PendingEntry>();
@@ -183,6 +184,7 @@ function startLoad(path: string): PendingEntry {
     promise: undefined as unknown as Promise<ImageBitmap>,
     requestId,
     refcount: 1,
+    invalidated: false,
   };
 
   entry.promise = (async (): Promise<ImageBitmap> => {
@@ -192,6 +194,10 @@ function startLoad(path: string): PendingEntry {
         requestId,
       });
       const bm = await decode(buf);
+      if (entry.invalidated) {
+        bm.close?.();
+        throw new DOMException("aborted", "AbortError");
+      }
       store(path, bm);
       return bm;
     } catch (error) {
@@ -227,5 +233,18 @@ function store(path: string, bm: ImageBitmap): void {
     const oldest = cache.get(oldestKey);
     cache.delete(oldestKey);
     oldest?.close?.();
+  }
+}
+
+export function invalidateFullImages(paths: readonly string[]): void {
+  for (const path of paths) {
+    const entry = pending.get(path);
+    if (entry) {
+      entry.invalidated = true;
+      cancelTaskRequest(entry.requestId);
+      pending.delete(path);
+    }
+    cache.get(path)?.close?.();
+    cache.delete(path);
   }
 }

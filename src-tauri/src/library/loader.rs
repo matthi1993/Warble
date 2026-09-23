@@ -207,6 +207,7 @@ pub fn enqueue_media_root_scans(
     app: &tauri::AppHandle,
     repo: &LibraryRepository,
     state: &AppState,
+    sync_images: bool,
 ) {
     let Ok(roots) = repo.media_roots() else {
         return;
@@ -221,16 +222,33 @@ pub fn enqueue_media_root_scans(
         };
         state
             .scan_coordinator
-            .enqueue_root(app, root.id, root.name, path.clone());
+            .enqueue_root(app, root.id.clone(), root.name, path.clone());
+        if sync_images {
+            state.scan_coordinator.enqueue_images(
+                app,
+                root.id.clone(),
+                root.id,
+                path.clone(),
+                true,
+                true,
+            );
+        }
     }
 }
 
 /// Rebuild the local per-photo index from files which travel with the image.
 /// Filesystem access remains isolated per photo, while the SQLite updates are
 /// committed in one batch after the scan.
-pub fn sync_portable_photo_keys(repo: &LibraryRepository, state: &AppState, keys: Vec<String>) {
+pub fn sync_portable_photo_keys(
+    repo: &LibraryRepository,
+    state: &AppState,
+    keys: Vec<String>,
+    folder_key: &str,
+    recursive: bool,
+    prune_missing: bool,
+) -> Option<crate::sidecar::PhotoSyncResult> {
     let Ok(_sync_guard) = PORTABLE_INDEX_SYNC.lock() else {
-        return;
+        return None;
     };
     let mut effects = repo
         .get_setting("photo_effects_v1")
@@ -241,6 +259,7 @@ pub fn sync_portable_photo_keys(repo: &LibraryRepository, state: &AppState, keys
         })
         .unwrap_or_default();
     let original_effects = effects.clone();
+    let discovered: std::collections::HashSet<String> = keys.iter().cloned().collect();
     let mut indexed_photos = Vec::new();
     for key in keys {
         let result = state.resolve_library_path(&key).and_then(|source| {
@@ -256,8 +275,18 @@ pub fn sync_portable_photo_keys(repo: &LibraryRepository, state: &AppState, keys
                     // Do not create an empty file for every photo at startup.
                     // An actual effect, edit, or metadata read will create the
                     // portable sidecar when that image needs one.
-                    if let Some(effect) = effects.get(&key) {
-                        crate::sidecar::write_effects(&source, Some(effect))?;
+                    if let Some(effect) = effects.get(&key).cloned() {
+                        if crate::sidecar::warble_path(&source).exists() {
+                            return Err(format!(
+                                "cannot import unreadable sidecar for {}",
+                                source.display()
+                            ));
+                        }
+                        if repo.was_warble_sidecar_indexed(&key)? {
+                            effects.remove(&key);
+                        } else {
+                            crate::sidecar::write_effects(&source, Some(&effect))?;
+                        }
                     }
                 }
             }
@@ -272,10 +301,31 @@ pub fn sync_portable_photo_keys(repo: &LibraryRepository, state: &AppState, keys
         .iter()
         .map(|(key, source)| (key.as_str(), source.as_path()))
         .collect();
-    if let Err(error) = crate::sidecar::sync_photo_index_batch(repo, &indexed_refs) {
-        eprintln!("failed to commit portable photo state batch: {error}");
+    let mut result = crate::sidecar::PhotoSyncResult::default();
+    for batch in indexed_refs.chunks(64) {
+        match crate::sidecar::sync_photo_index_batch(repo, batch) {
+            Ok(changes) => {
+                result.changed_images.extend(changes.changed_images);
+                result.metadata_changed |= changes.metadata_changed;
+            }
+            Err(error) => eprintln!("failed to commit portable photo state batch: {error}"),
+        }
+    }
+    if prune_missing {
+        match repo.prune_missing_photos(folder_key, recursive, &discovered) {
+            Ok(removed) => result.metadata_changed |= removed,
+            Err(error) => eprintln!("failed to prune missing photos: {error}"),
+        }
+        effects.retain(|key, _| {
+            let parent = Path::new(key).parent();
+            let folder = Path::new(folder_key);
+            !parent
+                .is_some_and(|parent| parent == folder || (recursive && parent.starts_with(folder)))
+                || discovered.contains(key)
+        });
     }
     if effects != original_effects {
+        result.metadata_changed = true;
         match serde_json::to_string(&effects) {
             Ok(raw) => {
                 if let Err(error) = repo.set_setting("photo_effects_v1", &raw) {
@@ -285,6 +335,7 @@ pub fn sync_portable_photo_keys(repo: &LibraryRepository, state: &AppState, keys
             Err(error) => eprintln!("failed to serialize local photo-effects index: {error}"),
         }
     }
+    Some(result)
 }
 
 /// Restore persisted roots as lightweight placeholders. Connected roots are
@@ -332,7 +383,7 @@ fn hydrate_media_roots_after_startup(
                 return;
             }
             restore_media_root_placeholders(repo.as_ref(), &state);
-            enqueue_media_root_scans(&queued_app, repo.as_ref(), &state);
+            enqueue_media_root_scans(&queued_app, repo.as_ref(), &state, false);
             let _ = queued_app.emit("folders-rehydrated", ());
         });
     });
@@ -347,7 +398,7 @@ fn hydrate_media_roots_after_startup(
     let state = app.state::<AppState>();
     restore_security_scoped_roots(app.handle(), &state, &library_id);
     restore_media_root_placeholders(repo.as_ref(), &state);
-    enqueue_media_root_scans(app.handle(), repo.as_ref(), &state);
+    enqueue_media_root_scans(app.handle(), repo.as_ref(), &state, false);
 }
 
 fn persist_legacy_bindings(repo: &LibraryRepository, state: &AppState, library_id: &str) {

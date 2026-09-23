@@ -20,6 +20,8 @@ interface PersistedRow {
 }
 
 const ratings = new Map<string, PhotoRating>();
+const pendingWrites = new Map<string, Promise<void>>();
+const failedWrites = new Map<string, unknown>();
 const listeners = new Set<(path: string) => void>();
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
@@ -62,22 +64,42 @@ export function getPhotoRating(path: string): PhotoRating {
 }
 
 function persist(path: string, value: PhotoRating): void {
-  void invoke<number>("set_photo_rating", {
+  const previous = pendingWrites.get(path) ?? Promise.resolve();
+  const write = previous.catch(() => {}).then(() => invoke<number>("set_photo_rating", {
     path,
     rating: value.rating,
     label: value.label,
-  })
+  }))
     .then((ratedAt) => {
       // Backend returns the canonical timestamp it just persisted
       // (or 0 if the row was deleted). Update the in-memory row so
       // subscribers see the same value the DB has.
       const cur = ratings.get(path);
       if (!cur) return;
+      if (cur.rating !== value.rating || cur.label !== value.label) return;
       if (cur.ratedAt === ratedAt) return;
       ratings.set(path, { ...cur, ratedAt });
       notify(path);
-    })
-    .catch((err) => console.error("Failed to persist photo rating", err));
+    });
+  pendingWrites.set(path, write);
+  const finished = () => {
+    if (pendingWrites.get(path) === write) pendingWrites.delete(path);
+  };
+  void write.then(() => {
+    failedWrites.delete(path);
+    finished();
+  }, (error) => {
+    failedWrites.set(path, error);
+    console.error("Failed to persist photo rating", error);
+    finished();
+  });
+}
+
+export async function flushPhotoRatings(): Promise<void> {
+  await Promise.allSettled([...pendingWrites.values()]);
+  if (failedWrites.size > 0) {
+    throw new Error(`Could not save ratings for ${failedWrites.size} photo(s) to XMP`);
+  }
 }
 
 export function setPhotoStars(path: string, rating: number): void {

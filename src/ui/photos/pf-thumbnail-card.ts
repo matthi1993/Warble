@@ -211,7 +211,7 @@ export class PfThumbnailCard extends LitElement {
     this.pending = handle;
     try {
       const bytes = await handle.promise;
-      if (this.path !== requestedPath) return;
+      if (this.path !== requestedPath || this.pending !== handle) return;
       this.clearThumbnailUrl();
       this.thumbnailUrl = URL.createObjectURL(
         new Blob([bytes], { type: "image/jpeg" })
@@ -221,15 +221,15 @@ export class PfThumbnailCard extends LitElement {
         new CustomEvent("thumbnail-load", { bubbles: true, composed: true })
       );
     } catch (e) {
-      if (isCancellation(e) || this.path !== requestedPath) return;
+      if (isCancellation(e) || this.path !== requestedPath || this.pending !== handle) return;
       this.error = String(e);
       this.loadedPath = requestedPath;
       this.dispatchEvent(
         new CustomEvent("thumbnail-error", { bubbles: true, composed: true })
       );
     } finally {
-      if (this.pending === handle) this.pending = null;
-      if (this.path === requestedPath) {
+      if (this.pending === handle) {
+        this.pending = null;
         this.loading = false;
       }
     }

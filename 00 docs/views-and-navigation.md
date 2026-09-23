@@ -16,8 +16,10 @@ and movement between views.
 ## Folder sidebar
 
 The sidebar lists imported folders as a tree. It supports adding folders,
-refreshing their contents, reconnecting unavailable roots, and removing a root
-from the library. Selecting a folder replaces the photos shown in the grid.
+manually syncing external changes, reconnecting unavailable roots, and removing
+a root from the library. Selecting a folder replaces the photos shown in the
+grid. Sync checks nested folders too, without preloading every preview; see
+[Library and browsing](library-and-browsing.md) for the folder workflow.
 
 ## Photo grid
 
