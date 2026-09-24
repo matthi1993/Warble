@@ -22,16 +22,16 @@ export const fullViewStyles = css`
     z-index: 30;
     transition: opacity 200ms ease;
   }
-  :host([fullscreen]) .toolbar-wrap,
-  :host([fullscreen]) .bottombar-wrap {
+  :host([immersive]) .toolbar-wrap,
+  :host([immersive]) .bottombar-wrap {
     position: absolute;
     left: var(--pf-fullview-left-inset, 0px);
     right: 0;
   }
-  :host([fullscreen]) .toolbar-wrap { top: 0; }
-  :host([fullscreen]) .bottombar-wrap { bottom: 0; }
-  :host([fullscreen][controls-hidden]) .toolbar-wrap,
-  :host([fullscreen][controls-hidden]) .bottombar-wrap {
+  :host([immersive]) .toolbar-wrap { top: 0; }
+  :host([immersive]) .bottombar-wrap { bottom: 0; }
+  :host([immersive][controls-hidden]) .toolbar-wrap,
+  :host([immersive][controls-hidden]) .bottombar-wrap {
     opacity: 0;
     pointer-events: none;
   }
@@ -222,7 +222,7 @@ export const fullViewStyles = css`
     min-width: 0;
     position: relative;
   }
-  :host([fullscreen]) .stage-row {
+  :host([immersive]) .stage-row {
     position: absolute;
     inset: 0;
   }
@@ -298,7 +298,7 @@ export const fullViewStyles = css`
     z-index: 11;
     pointer-events: none;
   }
-  :host([fullscreen][controls-hidden]) .fv-rating-overlay {
+  :host([immersive][controls-hidden]) .fv-rating-overlay {
     visibility: hidden;
   }
   .close-btn {
@@ -351,8 +351,8 @@ export const fullViewStyles = css`
   :host(:not([edit-panel-open])) pf-edit-side-panel {
     display: none;
   }
-  :host([fullscreen]) .edit-side-rail,
-  :host([fullscreen]) pf-edit-side-panel {
+  :host([immersive]) .edit-side-rail,
+  :host([immersive]) pf-edit-side-panel {
     position: absolute;
     top: var(--pf-fv-toolbar-height, 48px);
     bottom: var(--pf-fv-footer-height, 48px);
@@ -360,17 +360,17 @@ export const fullViewStyles = css`
     z-index: 12;
     box-sizing: border-box;
   }
-  :host([fullscreen]) .edit-side-rail {
+  :host([immersive]) .edit-side-rail {
     width: 32px;
   }
-  :host([fullscreen][edit-panel-open]) .edit-side-rail {
+  :host([immersive][edit-panel-open]) .edit-side-rail {
     right: min(280px, 90vw);
   }
-  :host([fullscreen]) pf-edit-side-panel {
+  :host([immersive]) pf-edit-side-panel {
     width: min(280px, 90vw);
   }
-  :host([fullscreen][controls-hidden]) .edit-side-rail,
-  :host([fullscreen][controls-hidden]) pf-edit-side-panel {
+  :host([immersive][controls-hidden]) .edit-side-rail,
+  :host([immersive][controls-hidden]) pf-edit-side-panel {
     opacity: 0;
     pointer-events: none;
   }
@@ -473,12 +473,12 @@ export const fullViewStyles = css`
   /* iPad/touch refinements: retain the visual design while meeting Apple's
      44pt target size and respecting the home indicator/notch safe areas. */
   @media (pointer: coarse) {
-    :host([fullscreen]) .toolbar {
+    :host([immersive]) .toolbar {
       padding-top: max(var(--pf-space-2), env(safe-area-inset-top));
       padding-left: max(var(--pf-space-3), env(safe-area-inset-left));
       padding-right: max(var(--pf-space-3), env(safe-area-inset-right));
     }
-    :host([fullscreen]) .bottombar {
+    :host([immersive]) .bottombar {
       padding-bottom: max(var(--pf-space-2), env(safe-area-inset-bottom));
       padding-left: max(var(--pf-space-3), env(safe-area-inset-left));
       padding-right: max(var(--pf-space-3), env(safe-area-inset-right));
@@ -500,7 +500,7 @@ export const fullViewStyles = css`
       flex-basis: 44px;
       width: 44px;
     }
-    :host([fullscreen]) .edit-side-rail {
+    :host([immersive]) .edit-side-rail {
       width: 44px;
     }
   }

@@ -118,7 +118,10 @@ export class PfFullView extends LitElement {
   index = 0;
 
   @property({ type: Boolean, reflect: true })
-  fullscreen = false;
+  immersive = false;
+
+  @property({ type: Boolean })
+  windowFullscreen = false;
 
   @state()
   private bg: BgColor = DEFAULT_VIEW_STATE.bg;
@@ -349,8 +352,8 @@ export class PfFullView extends LitElement {
         smoothing: this.smoothing,
       });
     }
-    if (changed.has("fullscreen")) {
-      if (!this.fullscreen) {
+    if (changed.has("immersive")) {
+      if (!this.immersive) {
         this.stopPresentation();
         this.controlsHidden = false;
       }
@@ -676,6 +679,13 @@ export class PfFullView extends LitElement {
     );
   };
 
+  private toggleImmersive = () => {
+    this.dispatchEvent(new CustomEvent("toggle-immersive-view", {
+      bubbles: true,
+      composed: true,
+    }));
+  };
+
   private isIPad(): boolean {
     const ua = navigator.userAgent ?? "";
     return /iPad/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
@@ -686,7 +696,7 @@ export class PfFullView extends LitElement {
       this.stopPresentation();
       return;
     }
-    if (!this.fullscreen) return;
+    if (!this.immersive) return;
     this.controlsHidden = !this.controlsHidden;
     this.openMenu = null;
     this.notifyControlsVisibility();
@@ -705,12 +715,11 @@ export class PfFullView extends LitElement {
       this.stopPresentation();
       return;
     }
-    // Desktop keeps the established double-click 100%↔fit action. On iPad a
-    // double-tap toggles the app-level immersive viewer; native iOS window
-    // fullscreen cannot be exited programmatically.
+    // Desktop keeps the double-click 100%↔fit action. On iPad a double-tap
+    // toggles the immersive viewer instead of native iOS fullscreen.
     if (!this.isIPad()) return;
     event.preventDefault();
-    this.toggleFullscreen();
+    this.toggleImmersive();
   };
 
   private onImageSwipe = (event: CustomEvent<{ delta: number }>) => {
@@ -1331,7 +1340,7 @@ export class PfFullView extends LitElement {
        photo,
        index: this.index,
        total,
-       fullscreen: this.fullscreen,
+      fullscreen: this.windowFullscreen,
        selection: currentSelection(photo),
        openMenu: this.openMenu,
        variantHasEdits: this.variantHasEdits,
@@ -1386,7 +1395,7 @@ export class PfFullView extends LitElement {
                 class="fv-rating-overlay"
                 .path=${path}
                 ?fullscreen=${true}
-                ?forceVisible=${!this.fullscreen || !this.controlsHidden}
+                ?forceVisible=${!this.immersive || !this.controlsHidden}
                 style="--pf-rating-inset: 16px; --pf-rating-star-size: 14px; --pf-rating-label-size: 8px;"
               ></pf-rating-overlay>`
             : null}
@@ -1399,6 +1408,7 @@ export class PfFullView extends LitElement {
       </div>
      <div class="bottombar-wrap">
        ${renderBottombar({
+      immersive: this.immersive,
       bg: this.bg,
       proofingSize: this.proofingSize,
       frameSize: this.frameSize,
@@ -1419,6 +1429,7 @@ export class PfFullView extends LitElement {
        onSetSmoothing: this.setSmoothing,
        postProcessEnabled: getPostProcess().enabled,
       onPlaySlideshow: this.requestPresentation,
+      onToggleImmersive: this.toggleImmersive,
         onTogglePostProcess: () =>
           setPostProcessEnabled(!getPostProcess().enabled),
      })}

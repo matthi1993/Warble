@@ -154,6 +154,7 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
 }
 
 export interface BottombarOptions {
+  immersive: boolean;
   bg: BgColor;
   proofingSize: ProofingSize;
   frameSize: FrameSize;
@@ -174,6 +175,7 @@ export interface BottombarOptions {
   onSetSmoothing: (q: ImageSmoothingQuality) => void;
   postProcessEnabled: boolean;
   onTogglePostProcess: () => void;
+  onToggleImmersive: () => void;
   onPlaySlideshow: () => void;
 }
 
@@ -322,6 +324,11 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
           </div>
         </div>` : null}
       </span>
+      <button class="menu-trigger" type="button" aria-pressed=${opts.immersive}
+        title=${opts.immersive ? "Exit immersive view" : "Enter immersive view"}
+        @click=${opts.onToggleImmersive}>
+        <pf-icon name="focus"></pf-icon> Immersive
+      </button>
       <button class="menu-trigger" type="button" title="Start slideshow" @click=${opts.onPlaySlideshow}>
         <pf-icon name="play"></pf-icon> Play
       </button>

@@ -796,6 +796,9 @@ export class WarbleApp extends LitElement {
  private windowFullscreen = false;
 
   @state()
+  private immersiveView = false;
+
+  @state()
   private contextMenu: {
     path: string;
     filename: string;
@@ -1284,6 +1287,7 @@ export class WarbleApp extends LitElement {
 
     // `f` toggles window fullscreen from any view.
     if (e.key === "f" || e.key === "F") {
+      if (isIPad()) return;
       e.preventDefault();
       void this.toggleWindowFullscreen();
       return;
@@ -1311,6 +1315,12 @@ export class WarbleApp extends LitElement {
         e.preventDefault();
         e.stopPropagation();
         this.folderContextMenu = null;
+        return;
+      }
+      if (this.immersiveView) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.immersiveView = false;
         return;
       }
       if (this.windowFullscreen) {
@@ -1390,15 +1400,7 @@ export class WarbleApp extends LitElement {
   };
 
   private async setWindowFullscreen(enable: boolean) {
-    // An iPad app already owns its UIWindow, and iOS ignores requests to
-    // leave native window fullscreen. Keep photo fullscreen as a reversible
-    // UI state there; the iOS bundle config supplies the immersive window and
-    // hidden status bar. This also avoids depending on WebKit's unsupported
-    // DOM Fullscreen API.
-    if (isIPad()) {
-      this.windowFullscreen = enable;
-      return;
-    }
+    if (isIPad()) return;
     try {
       await getCurrentWindow().setFullscreen(enable);
       this.windowFullscreen = enable;
@@ -1431,6 +1433,10 @@ export class WarbleApp extends LitElement {
 
   private onToggleFullscreenRequest = () => {
     void this.toggleWindowFullscreen();
+  };
+
+  private onToggleImmersiveView = () => {
+    this.immersiveView = !this.immersiveView;
   };
 
   private async importFolder() {
@@ -1952,11 +1958,13 @@ export class WarbleApp extends LitElement {
 
   private onFullViewClose = () => {
     this.fullViewIndex = null;
+    this.immersiveView = false;
   };
 
   private onSlideshowStart = async () => {
-    if (!this.windowFullscreen) await this.setWindowFullscreen(true);
-    if (!this.windowFullscreen) return;
+    if (!isIPad() && !this.windowFullscreen) await this.setWindowFullscreen(true);
+    if (!isIPad() && !this.windowFullscreen) return;
+    this.immersiveView = true;
     (this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null)?.startPresentation();
   };
 
@@ -2015,13 +2023,13 @@ export class WarbleApp extends LitElement {
     if (changed.has("sidebarCollapsed")) {
       this.classList.toggle("sidebar-collapsed", this.sidebarCollapsed);
     }
-    if (changed.has("windowFullscreen") || changed.has("fullViewIndex")) {
+    if (changed.has("immersiveView") || changed.has("fullViewIndex")) {
       this.classList.toggle("full-view-open", this.fullViewIndex !== null);
       this.classList.toggle(
         "fs-fullview",
-        this.windowFullscreen && this.fullViewIndex !== null
+        this.immersiveView && this.fullViewIndex !== null
       );
-      if (!this.windowFullscreen || this.fullViewIndex === null) {
+      if (!this.immersiveView || this.fullViewIndex === null) {
         this.classList.remove("fs-controls-hidden");
       }
     }
@@ -2254,7 +2262,8 @@ export class WarbleApp extends LitElement {
           ? html`<pf-full-view
             .photos=${this.photos}
             .index=${this.fullViewIndex}
-            ?fullscreen=${this.windowFullscreen}
+            ?immersive=${this.immersiveView}
+            ?windowFullscreen=${this.windowFullscreen}
             .editPanelOpenWindowed=${this.editPanelOpen}
             @full-view-navigate=${this.onFullViewNavigate}
             @full-view-close=${this.onFullViewClose}
@@ -2263,6 +2272,7 @@ export class WarbleApp extends LitElement {
             @edit-panel-open-changed=${this.onEditPanelOpenChanged}
             @full-view-controls-visibility=${this.onFullViewControlsVisibilityChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
+            @toggle-immersive-view=${this.onToggleImmersiveView}
           ></pf-full-view>`
         : null}
 

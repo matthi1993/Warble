@@ -253,7 +253,7 @@ export class PfDetailPanel extends LitElement {
               label="Open full view"
               @click=${this.openFullView}
             ></pf-icon-button>`}
-        ${this.fullViewOpen
+        ${this.fullViewOpen || isIPad()
           ? null
           : html`<pf-icon-button
               class="fullscreen-btn"
