@@ -13,6 +13,7 @@ pub use photo::{is_photo_extension, parse_variant, Photo};
 pub use portable_path::split_portable_key;
 pub use repository::{LibraryRepository, PhotoSourceState};
 
+pub use loader::delete_photo_keys;
 pub use loader::enqueue_media_root_scan;
 pub use loader::enqueue_media_root_scans;
 pub use loader::init_hd_image_cache;

@@ -174,6 +174,7 @@ export interface BottombarOptions {
   onSetSmoothing: (q: ImageSmoothingQuality) => void;
   postProcessEnabled: boolean;
   onTogglePostProcess: () => void;
+  onPlaySlideshow: () => void;
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
@@ -321,6 +322,9 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
           </div>
         </div>` : null}
       </span>
+      <button class="menu-trigger" type="button" title="Start slideshow" @click=${opts.onPlaySlideshow}>
+        <pf-icon name="play"></pf-icon> Play
+      </button>
     </div>
   `;
 }

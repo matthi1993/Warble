@@ -81,6 +81,9 @@ export class PfImageCanvas extends LitElement {
     canvas.dragging {
       cursor: grabbing;
     }
+    :host([presenting]) canvas {
+      cursor: none !important;
+    }
     :host([cropMode]) canvas {
       cursor: default;
     }
@@ -136,6 +139,9 @@ export class PfImageCanvas extends LitElement {
 
   @property({ type: String })
   path: string | null = null;
+
+  @property({ type: Boolean, reflect: true })
+  presenting = false;
 
   @property({ type: Number })
   frameSize = 0;
@@ -695,6 +701,7 @@ export class PfImageCanvas extends LitElement {
       this.draw();
       this.warmupTonePipeline();
       this.scheduleFullImageLoad(path, ac);
+      this.dispatchEvent(new CustomEvent("image-ready", { detail: { path } }));
       return;
     }
 
@@ -869,12 +876,18 @@ export class PfImageCanvas extends LitElement {
       this.recomputeFit();
       this.draw();
       this.warmupTonePipeline();
+      this.dispatchEvent(new CustomEvent("image-ready", { detail: { path } }));
     } catch (err) {
       if (ac.signal.aborted || this.path !== path) return;
       console.error("full image load failed", err);
       this.status = "error";
       this.errorMsg = String(err);
+      this.dispatchEvent(new CustomEvent("image-error", { detail: { path } }));
     }
+  }
+
+  get imageReady(): boolean {
+    return this.status === "ready" && this.bitmapForPath === this.path;
   }
 
   private get currentBitmap(): ImageBitmap | null {
@@ -1681,7 +1694,7 @@ export class PfImageCanvas extends LitElement {
 
     // At fitted zoom, a deliberate horizontal gesture navigates. Once the
     // user has pinched in, the same one-finger gesture remains image panning.
-    const isFitting = Math.abs(this.scale - this.fitScale) < 1e-3;
+    const isFitting = this.presenting || Math.abs(this.scale - this.fitScale) < 1e-3;
     if (
       isFitting &&
       elapsed <= 650 &&

@@ -17,13 +17,23 @@ export class PhotoProcessingPipeline {
   private cancelThumbnailWarmup: (() => void) | null = null;
   private onLoadingChange: ((loading: boolean) => void) | null = null;
 
+  seed(results: readonly FilterMetadataResult[]): void {
+    for (const { path, ...info } of results) this.metadata.set(path, info);
+  }
+
+  restore(results: readonly FilterMetadataResult[]): void {
+    this.stop();
+    this.metadata.clear();
+    this.seed(results);
+  }
+
   invalidate(paths: readonly string[]): void {
     for (const path of paths) this.metadata.delete(path);
   }
 
   enrich(photos: Photo[]): Photo[] {
     return photos.map((photo) => {
-      const filterInfo = photo.filterInfo ?? this.metadata.get(photo.path);
+      const filterInfo = this.metadata.get(photo.path) ?? photo.filterInfo;
       return filterInfo ? { ...photo, filterInfo } : photo;
     });
   }
@@ -83,7 +93,7 @@ export class PhotoProcessingPipeline {
               requestId,
             });
             if (generation !== this.generation) return;
-            for (const result of results) this.metadata.set(result.path, result);
+            this.seed(results);
             onMetadata();
           } catch (error) {
             if (generation !== this.generation) return;

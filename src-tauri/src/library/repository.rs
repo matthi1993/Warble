@@ -425,6 +425,41 @@ impl LibraryRepository {
         })
     }
 
+    pub fn delete_photo_paths(&self, paths: &[String]) -> Result<(), String> {
+        self.with_transaction(|tx| {
+            let mut effects = read_setting(tx, "photo_effects_v1")?
+                .map(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw))
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            for path in paths {
+                for table in [
+                    "photo_source_state",
+                    "photo_exif",
+                    "photo_edits",
+                    "photo_ratings",
+                    "photo_variants",
+                ] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE path = ?1"),
+                        params![path],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                if let Some(effects) = effects.as_mut() {
+                    effects.remove(path);
+                }
+            }
+            if let Some(effects) = effects {
+                tx.execute(
+                    "UPDATE app_settings SET value = ?1 WHERE key = 'photo_effects_v1'",
+                    params![serde_json::to_string(&effects).map_err(|error| error.to_string())?],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    }
+
     /// Upsert the chosen (format, variant) for a photo (keyed by its
     /// primary file path).
     pub fn set_photo_variant(&self, path: &str, format: &str, variant: &str) -> Result<(), String> {
@@ -953,6 +988,68 @@ fn write_setting(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_photo_keys_clears_all_indexes_without_touching_siblings() {
+        let dir = std::env::temp_dir().join(format!("warble-delete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        for key in ["root/photo.CR3", "root/photo.jpg"] {
+            repo.set_photo_rating_row(key, 5, "", 1).unwrap();
+            repo.set_photo_edit(key, "{}").unwrap();
+            repo.set_photo_variant(key, "jpg", "base").unwrap();
+            repo.set_photo_exif(key, 1, 1, 1, "{}").unwrap();
+            repo.with_transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO photo_source_state
+                        (path, image_mtime_ns, image_size) VALUES (?1, 1, 1)",
+                    params![key],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        repo.set_setting(
+            "photo_effects_v1",
+            r#"{"root/photo.CR3":{"grain":1},"root/photo.jpg":{"grain":2}}"#,
+        )
+        .unwrap();
+
+        repo.delete_photo_paths(&["root/photo.CR3".to_string()])
+            .unwrap();
+        for table in [
+            "photo_source_state",
+            "photo_exif",
+            "photo_edits",
+            "photo_ratings",
+            "photo_variants",
+        ] {
+            repo.with_transaction(|tx| {
+                let deleted: i64 = tx
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE path = 'root/photo.CR3'"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let kept: i64 = tx
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE path = 'root/photo.jpg'"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert_eq!((deleted, kept), (0, 1), "{table}");
+                Ok(())
+            })
+            .unwrap();
+        }
+        let effects = repo.get_setting("photo_effects_v1").unwrap().unwrap();
+        assert!(!effects.contains("photo.CR3"));
+        assert!(effects.contains("photo.jpg"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn prune_missing_photos_only_affects_selected_folder() {

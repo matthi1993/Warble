@@ -16,6 +16,13 @@ use imaging::{exif_cache, full_image, hd_image, thumbnails};
 
 static PORTABLE_INDEX_SYNC: Mutex<()> = Mutex::new(());
 
+pub fn delete_photo_keys(repo: &LibraryRepository, keys: &[String]) -> Result<(), String> {
+    let _sync = PORTABLE_INDEX_SYNC
+        .lock()
+        .map_err(|error| error.to_string())?;
+    repo.delete_photo_paths(keys)
+}
+
 pub fn reset_workspace(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let repo = state.repository()?;
@@ -244,6 +251,7 @@ pub fn sync_portable_photo_keys(
     state: &AppState,
     keys: Vec<String>,
     folder_key: &str,
+    root_path: &Path,
     recursive: bool,
     prune_missing: bool,
 ) -> Option<crate::sidecar::PhotoSyncResult> {
@@ -276,7 +284,9 @@ pub fn sync_portable_photo_keys(
                     // An actual effect, edit, or metadata read will create the
                     // portable sidecar when that image needs one.
                     if let Some(effect) = effects.get(&key).cloned() {
-                        if crate::sidecar::warble_path(&source).exists() {
+                        if crate::sidecar::warble_path(&source).exists()
+                            || crate::sidecar::legacy_warble_path(&source).exists()
+                        {
                             return Err(format!(
                                 "cannot import unreadable sidecar for {}",
                                 source.display()
@@ -311,6 +321,14 @@ pub fn sync_portable_photo_keys(
             Err(error) => eprintln!("failed to commit portable photo state batch: {error}"),
         }
     }
+    #[cfg(not(target_os = "ios"))]
+    let prune_missing = prune_missing
+        && crate::library::split_portable_key(folder_key).is_ok_and(|(_, relative)| {
+            std::fs::read_dir(root_path).is_ok()
+                && std::fs::read_dir(root_path.join(relative)).is_ok()
+        });
+    #[cfg(target_os = "ios")]
+    let _ = root_path;
     if prune_missing {
         match repo.prune_missing_photos(folder_key, recursive, &discovered) {
             Ok(removed) => result.metadata_changed |= removed,

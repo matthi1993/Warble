@@ -64,11 +64,36 @@ impl Default for WarbleSidecar {
     }
 }
 
-/// Sidecar name deliberately includes the original extension. This keeps a
-/// JPEG/RAW pair with the same stem unambiguous:
-/// `IMG_0001.CR3.warble.json`, not `IMG_0001.warble.json`.
+/// Keep the original extension to distinguish JPEG/RAW pairs, and prefix
+/// the filename so the app-specific sidecar is hidden in file explorers.
 pub fn warble_path(source: &Path) -> PathBuf {
+    source.with_file_name(format!(
+        ".{}.warble.json",
+        source.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+pub fn legacy_warble_path(source: &Path) -> PathBuf {
     append_filename(source, ".warble.json")
+}
+
+fn existing_warble_path(source: &Path) -> PathBuf {
+    let hidden = warble_path(source);
+    if hidden.exists() {
+        hidden
+    } else {
+        legacy_warble_path(source)
+    }
+}
+
+fn migrate_warble(source: &Path) -> Result<(), String> {
+    let legacy = legacy_warble_path(source);
+    let hidden = warble_path(source);
+    if legacy.exists() && !hidden.exists() {
+        fs::rename(&legacy, &hidden)
+            .map_err(|error| format!("failed to hide {}: {error}", legacy.display()))?;
+    }
+    Ok(())
 }
 
 /// XMP uses the convention expected by most DAM applications: the extension
@@ -145,6 +170,9 @@ pub fn sync_photo_index_batch(
     photos: &[(&str, &Path)],
 ) -> Result<PhotoSyncResult, String> {
     let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
+    for (_, source) in photos {
+        migrate_warble(source)?;
+    }
     repo.with_transaction(|tx| {
         let mut changes = PhotoSyncResult::default();
         for (key, source) in photos {
@@ -227,7 +255,7 @@ pub struct PhotoSyncResult {
 pub fn source_state(source: &Path) -> Result<PhotoSourceState, String> {
     let image = fs::metadata(source).map_err(|error| error.to_string())?;
     let (xmp_mtime_ns, xmp_size) = optional_file_state(&xmp_path(source))?;
-    let (warble_mtime_ns, warble_size) = optional_file_state(&warble_path(source))?;
+    let (warble_mtime_ns, warble_size) = optional_file_state(&existing_warble_path(source))?;
     Ok(PhotoSourceState {
         image_mtime_ns: modified_ns(&image),
         image_size: image.len() as i64,
@@ -272,7 +300,7 @@ fn sync_photo_index_tx(
         return Ok(());
     }
 
-    if warble_path(source).exists() && read_warble(source).is_none() {
+    if existing_warble_path(source).exists() && read_warble(source).is_none() {
         return Err(format!(
             "cannot import unreadable sidecar for {}",
             source.display()
@@ -465,7 +493,7 @@ fn read_valid_warble(source: &Path) -> Option<WarbleSidecar> {
 }
 
 fn read_warble(source: &Path) -> Option<WarbleSidecar> {
-    let raw = fs::read_to_string(warble_path(source)).ok()?;
+    let raw = fs::read_to_string(existing_warble_path(source)).ok()?;
     let sidecar = serde_json::from_str::<WarbleSidecar>(&raw).ok()?;
     (sidecar.schema == SCHEMA_VERSION).then_some(sidecar)
 }
@@ -483,7 +511,13 @@ fn sidecar_for_write(source: &Path) -> WarbleSidecar {
 
 fn write_warble(source: &Path, sidecar: &WarbleSidecar) -> Result<(), String> {
     let raw = serde_json::to_vec(sidecar).map_err(|e| e.to_string())?;
-    atomic_write(&warble_path(source), &raw)
+    atomic_write(&warble_path(source), &raw)?;
+    let legacy = legacy_warble_path(source);
+    if legacy.exists() {
+        fs::remove_file(&legacy)
+            .map_err(|error| format!("failed to remove {}: {error}", legacy.display()))?;
+    }
+    Ok(())
 }
 
 /// `None` means no XMP file could be read; `Some(None)` means an XMP packet
@@ -672,6 +706,23 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_warble_sidecar_is_hidden_on_sync() {
+        let dir = std::env::temp_dir().join(format!("warble-hide-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("photo.CR3");
+        fs::write(&source, b"raw").unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        write_edits(&source, &PhotoEdits::default()).unwrap();
+        fs::rename(warble_path(&source), legacy_warble_path(&source)).unwrap();
+        assert!(read_warble(&source).is_some());
+
+        sync_photo_index_batch(&repo, &[("root/photo.CR3", &source)]).unwrap();
+        assert!(warble_path(&source).exists());
+        assert!(!legacy_warble_path(&source).exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn sync_imports_external_changes_without_losing_edits() {

@@ -127,6 +127,58 @@ pub struct PhotoFilterInfo {
     pub date_taken: Option<String>,
 }
 
+fn filter_info(path: String, metadata: &crate::imaging::exif::ExifMetadata) -> PhotoFilterInfo {
+    let camera = metadata
+        .camera_model
+        .clone()
+        .or_else(|| metadata.camera_make.clone());
+    let lens = metadata
+        .lens_model
+        .clone()
+        .or_else(|| metadata.lens_make.clone());
+    let focal_length_mm = metadata.focal_length_mm.or_else(|| {
+        metadata
+            .focal_length
+            .as_deref()
+            .and_then(parse_focal_length_mm)
+    });
+    let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
+    PhotoFilterInfo {
+        path,
+        camera,
+        lens,
+        focal_length_mm,
+        date_taken,
+    }
+}
+
+/// Read only existing fingerprint-valid EXIF cache entries. Never parse source
+/// photos here; the usual background metadata pipeline fills cache misses.
+#[tauri::command]
+pub async fn get_cached_photo_filter_metadata(
+    photo_paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<PhotoFilterInfo>, String> {
+    let mut requests = Vec::with_capacity(photo_paths.len());
+    for key in photo_paths {
+        if let Ok(resolved) = state.resolve_library_path(&key) {
+            requests.push((key, resolved));
+        }
+    }
+
+    tasks::run(Priority::Background, None, move |cancel| {
+        let mut result = Vec::new();
+        for (path, resolved) in requests {
+            cancel.check()?;
+            if let Some((_, metadata)) = exif_cache::get(&path, &resolved) {
+                result.push(filter_info(path, &metadata));
+            }
+        }
+        Ok(result)
+    })
+    .await
+}
+
 /// Read filter metadata for a requested batch. Each item is served by the
 /// same fingerprinted EXIF cache used by image rendering and the detail panel.
 #[tauri::command]
@@ -146,31 +198,7 @@ pub async fn get_photo_filter_metadata(
         for (path, resolved) in requests {
             cancel.check()?;
             let metadata = exif_cache::get_or_compute(&path, &resolved);
-            let camera = metadata
-                .camera_model
-                .clone()
-                .or_else(|| metadata.camera_make.clone());
-            let lens = metadata
-                .lens_model
-                .clone()
-                .or_else(|| metadata.lens_make.clone());
-            // Older cache rows predate the numeric field. Recover their
-            // value from the existing display string without forcing a
-            // second source-file parse.
-            let focal_length_mm = metadata.focal_length_mm.or_else(|| {
-                metadata
-                    .focal_length
-                    .as_deref()
-                    .and_then(parse_focal_length_mm)
-            });
-            let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
-            result.push(PhotoFilterInfo {
-                path,
-                camera,
-                lens,
-                focal_length_mm,
-                date_taken,
-            });
+            result.push(filter_info(path, &metadata));
         }
         Ok(result)
     })

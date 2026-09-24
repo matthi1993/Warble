@@ -26,6 +26,7 @@ import {
   type PhotoFormat,
 } from "@domain/photo";
 import {
+  reloadVariantOverrides,
   setVariantOverride,
   subscribeVariantOverrides,
 } from "@services/library/variant-store";
@@ -65,7 +66,7 @@ import {
   setPostProcessEnabled,
   subscribePostProcess,
 } from "@services/post-process/post-process-store";
-import { hasEffects } from "@services/effects/effects-store";
+import { flushPhotoEffects, hasEffects, reloadPhotoEffects } from "@services/effects/effects-store";
 import { fullViewStyles } from "./views/full-view/styles";
 import {
   renderBottombar,
@@ -83,13 +84,21 @@ import {
   resolvedPath,
 } from "./views/full-view/variant-selector";
 import { ExifLoader } from "./views/full-view/exif-loader";
+import { loadHdImage } from "@services/images/hd-image-cache";
+import {
+  loadSlideshowSettings,
+  saveSlideshowSettings,
+  SLIDESHOW_DURATIONS,
+  type SlideshowSettings,
+  type SlideshowTransition,
+} from "@services/view-state/slideshow-settings";
 import {
   buildShortcuts,
   dispatchShortcut,
   type ShortcutDef,
 } from "./views/full-view/shortcuts";
 
-type SidePanelTab = "info" | "edit" | "post";
+type SidePanelTab = "info" | "edit" | "post" | "slideshow";
 
 /** Module-level clipboard for cmd+c / cmd+v across photos. Each
  *  entry is keyed by tool id; the blob is whatever the tool's
@@ -191,6 +200,21 @@ export class PfFullView extends LitElement {
   @state()
   private activeTab: SidePanelTab | null = null;
 
+  @state()
+  private slideshowSettings: SlideshowSettings = loadSlideshowSettings();
+
+  @state()
+  private customDuration = !SLIDESHOW_DURATIONS.some((duration) => duration === this.slideshowSettings.durationSeconds);
+
+  @property({ type: Boolean, reflect: true })
+  private presenting = false;
+  get presentationActive(): boolean {
+    return this.presenting;
+  }
+  private slideTimer: number | null = null;
+  private preloadAbort: AbortController | null = null;
+  private transitionPath: string | null = null;
+
   /** Press-and-hold preview of the original (un-edited) image. */
   @state()
   private previewOriginal = false;
@@ -287,6 +311,7 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.stopPresentation();
     this.unsubscribeEffectEnabled?.();
     this.unsubscribeEffectEnabled = null;
     this.footerObserver?.disconnect();
@@ -336,6 +361,7 @@ export class PfFullView extends LitElement {
     }
     if (changed.has("fullscreen")) {
       if (!this.fullscreen) {
+        this.stopPresentation();
         this.controlsHidden = false;
         this.editPanelRevealed = false;
       } else {
@@ -344,6 +370,9 @@ export class PfFullView extends LitElement {
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
     if (changed.has("photos") || changed.has("index")) {
+      if (this.presenting && (changed.has("photos") || (changed.has("index") && this.transitionPath !== this.editTargetPath()))) {
+        this.stopPresentation();
+      }
       const prevTarget = this.editTargetPath();
       if (prevTarget) void flushPhotoEdit(prevTarget);
       // Navigating cancels any active tool (crop hijack). Tool state
@@ -353,12 +382,10 @@ export class PfFullView extends LitElement {
         this.activeToolId = null;
       }
       this.previewOriginal = false;
-     if (!this.editMode) {
-       if (this.activeTab !== null) {
-         this.activeTab = null;
-         this.editPanelOpen = false;
-       }
-     }
+      if (!this.editMode && (this.activeTab === "edit" || this.activeTab === "post")) {
+        this.activeTab = null;
+        this.editPanelOpen = false;
+      }
     }
     if (changed.has("activeTab")) {
       this.editPanelOpen = this.activeTab !== null;
@@ -430,8 +457,18 @@ export class PfFullView extends LitElement {
     if (
       origin instanceof HTMLInputElement ||
       origin instanceof HTMLTextAreaElement ||
+      origin instanceof HTMLSelectElement ||
       (origin instanceof HTMLElement && origin.isContentEditable)
     ) {
+      return;
+    }
+    if (e.code === "Space") return;
+    if (this.presenting) {
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey &&
+          (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        this.go(e.key === "ArrowRight" ? 1 : -1);
+      }
       return;
     }
     // `f`, `Escape`, and `g` are owned by the app shell so it can
@@ -501,9 +538,17 @@ export class PfFullView extends LitElement {
     this.openMenu = null;
   }
 
-  private go(delta: number) {
+  private go(delta: number, automatic = false) {
     const next = this.index + delta;
     if (next < 0 || next >= this.photos.length) return;
+    if (this.presenting && !automatic) {
+      if (this.slideTimer !== null) window.clearTimeout(this.slideTimer);
+      this.slideTimer = null;
+      this.preloadAbort?.abort();
+      this.preloadAbort = null;
+      this.captureSlide();
+      this.transitionPath = resolvedPath(this.photos[next]);
+    }
     this.dispatchEvent(
       new CustomEvent("full-view-navigate", {
         detail: { index: next },
@@ -512,6 +557,128 @@ export class PfFullView extends LitElement {
       })
     );
   }
+
+  private updateSlideshowSettings(change: Partial<SlideshowSettings>) {
+    this.slideshowSettings = { ...this.slideshowSettings, ...change };
+    saveSlideshowSettings(this.slideshowSettings);
+  }
+
+  private onSlideshowDurationChange = (event: Event) => {
+    const value = (event.target as HTMLSelectElement).value;
+    this.customDuration = value === "custom";
+    if (!this.customDuration) this.updateSlideshowSettings({ durationSeconds: Number(value) });
+  };
+
+  private onCustomDurationChange = (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const seconds = Number(input.value);
+    if (Number.isInteger(seconds) && seconds >= 1 && seconds <= 86400) {
+      this.updateSlideshowSettings({ durationSeconds: seconds });
+    } else {
+      input.value = String(this.slideshowSettings.durationSeconds);
+    }
+  };
+
+  private requestPresentation = () => {
+    this.dispatchEvent(new CustomEvent("slideshow-start", { bubbles: true, composed: true }));
+  };
+
+  startPresentation(): void {
+    if (this.presenting || !this.currentPhoto) return;
+    this.presenting = true;
+    this.controlsHidden = true;
+    this.editPanelRevealed = false;
+    this.openMenu = null;
+    this.dispatchEvent(new CustomEvent("full-view-controls-visibility", {
+      detail: { hidden: true }, bubbles: true, composed: true,
+    }));
+    if (this.canvasEl()?.imageReady) this.scheduleNextSlide();
+  }
+
+  stopPresentation(): void {
+    if (!this.presenting) return;
+    this.presenting = false;
+    if (this.slideTimer !== null) window.clearTimeout(this.slideTimer);
+    this.slideTimer = null;
+    this.preloadAbort?.abort();
+    this.preloadAbort = null;
+    this.transitionPath = null;
+    const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+    if (overlay) overlay.style.display = "none";
+    this.controlsHidden = false;
+    this.dispatchEvent(new CustomEvent("full-view-controls-visibility", {
+      detail: { hidden: false }, bubbles: true, composed: true,
+    }));
+  }
+
+  private scheduleNextSlide(): void {
+    if (!this.presenting) return;
+    if (this.index >= this.photos.length - 1) {
+      this.slideTimer = window.setTimeout(() => {
+        this.slideTimer = null;
+        this.stopPresentation();
+      }, this.slideshowSettings.durationSeconds * 1000);
+      return;
+    }
+    const next = this.photos[this.index + 1];
+    const path = resolvedPath(next);
+    if (!path) {
+      this.stopPresentation();
+      return;
+    }
+    const abort = new AbortController();
+    this.preloadAbort = abort;
+    const preload = loadHdImage(path, { signal: abort.signal }).catch((error: unknown) => {
+      if (!abort.signal.aborted) console.warn("Slideshow preload failed", error);
+    });
+    this.slideTimer = window.setTimeout(async () => {
+      this.slideTimer = null;
+      await preload;
+      if (!this.presenting || abort.signal.aborted || this.preloadAbort !== abort) return;
+      this.preloadAbort = null;
+      this.captureSlide();
+      this.transitionPath = path;
+      this.go(1, true);
+    }, this.slideshowSettings.durationSeconds * 1000);
+  }
+
+  private captureSlide(): void {
+    const source = this.canvasEl()?.renderRoot.querySelector("canvas");
+    const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+    if (!source || !overlay) return;
+    if (overlay.style.display !== "block" || overlay.style.opacity !== "1") {
+      overlay.width = source.width;
+      overlay.height = source.height;
+      overlay.getContext("2d")?.drawImage(source, 0, 0);
+    }
+    overlay.style.transition = "none";
+    overlay.style.opacity = "1";
+    overlay.style.display = "block";
+  }
+
+  private onSlideImageReady = (event: CustomEvent<{ path: string }>) => {
+    if (!this.presenting || event.detail.path !== this.editTargetPath()) return;
+    if (this.transitionPath === event.detail.path) {
+      this.transitionPath = null;
+      const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+      if (overlay) {
+        if (this.slideshowSettings.transition === "instant") {
+          overlay.style.display = "none";
+        } else {
+          requestAnimationFrame(() => {
+            if (!this.presenting) return;
+            overlay.style.transition = "opacity 500ms ease";
+            overlay.style.opacity = "0";
+          });
+        }
+      }
+    }
+    if (this.slideTimer === null && this.preloadAbort === null) this.scheduleNextSlide();
+  };
+
+  private onSlideImageError = (event: CustomEvent<{ path: string }>) => {
+    if (this.presenting && event.detail.path === this.editTargetPath()) this.stopPresentation();
+  };
 
   private close = () => {
     this.dispatchEvent(
@@ -534,6 +701,10 @@ export class PfFullView extends LitElement {
   }
 
   private onImageActivate = () => {
+    if (this.presenting) {
+      this.stopPresentation();
+      return;
+    }
     if (!this.fullscreen) return;
     this.controlsHidden = !this.controlsHidden;
     if (this.activeTab !== null) {
@@ -577,6 +748,10 @@ export class PfFullView extends LitElement {
   };
 
   private onImageDoubleActivate = (event: Event) => {
+    if (this.presenting) {
+      this.stopPresentation();
+      return;
+    }
     // Desktop keeps the established double-click 100%↔fit action. On iPad a
     // double-tap toggles the app-level immersive viewer; native iOS window
     // fullscreen cannot be exited programmatically.
@@ -868,13 +1043,15 @@ export class PfFullView extends LitElement {
     this.deletingVariant = true;
     try {
       await this.paintBusyState();
+      await flushPhotoEffects();
       await invoke("trash_photo_variant", { photoPath: sourcePath });
+      await Promise.all([reloadPhotoEffects(), reloadVariantOverrides()]);
       const fallback = this.preferredRemainingSelection(
         photo,
         selection.format,
         selection.variant,
       );
-      if (fallback) setVariantOverride(photo.path, fallback);
+      if (fallback && photo.path !== sourcePath) setVariantOverride(photo.path, fallback);
       const hasRemainingFiles = photo.files?.some((file) => file.path !== sourcePath) ?? false;
       await this.dispatchCatalogChange(
         hasRemainingFiles ? "variant-delete" : "photo-delete",
@@ -906,7 +1083,9 @@ export class PfFullView extends LitElement {
     this.openMenu = null;
     try {
       await this.paintBusyState();
+      await flushPhotoEffects();
       await invoke("trash_photo_group", { photoPath: photo.path });
+      await Promise.all([reloadPhotoEffects(), reloadVariantOverrides()]);
       await this.dispatchCatalogChange("photo-delete", photo);
     } catch (error) {
       console.error("Failed to delete photo", error);
@@ -1018,6 +1197,7 @@ export class PfFullView extends LitElement {
       { id: "info", icon: "info", label: "Info" },
      { id: "edit", icon: "pencil", label: "Edit" },
      { id: "post", icon: "wand", label: "Post Process" },
+    { id: "slideshow", icon: "play", label: "Slideshow" },
     ];
     return html`
       <div class="edit-side-rail" @click=${(e: Event) => e.stopPropagation()}>
@@ -1061,6 +1241,34 @@ export class PfFullView extends LitElement {
       }
      case "post":
         return html`<pf-post-process-card></pf-post-process-card>`;
+      case "slideshow":
+        return html`<section class="slideshow-settings">
+          <h2>Slideshow</h2>
+          <label for="slide-duration">Time per photo</label>
+          <span class="slideshow-select-wrap">
+            <select id="slide-duration" @change=${this.onSlideshowDurationChange}>
+              ${SLIDESHOW_DURATIONS.map((seconds) => html`<option value=${seconds}
+                ?selected=${!this.customDuration && this.slideshowSettings.durationSeconds === seconds}>
+                ${seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${seconds / 60}min` : "1h"}
+              </option>`)}
+              <option value="custom" ?selected=${this.customDuration}>Custom</option>
+            </select>
+            <pf-icon name="chevron-down"></pf-icon>
+          </span>
+          ${this.customDuration ? html`<label for="slide-custom-duration">Seconds per photo</label>
+            <input id="slide-custom-duration" type="number" min="1" max="86400" step="1"
+              .value=${String(this.slideshowSettings.durationSeconds)} @change=${this.onCustomDurationChange} />` : null}
+          <label for="slide-transition">Transition</label>
+          <span class="slideshow-select-wrap">
+            <select id="slide-transition"
+              @change=${(event: Event) => this.updateSlideshowSettings({ transition: (event.target as HTMLSelectElement).value as SlideshowTransition })}>
+              <option value="fade" ?selected=${this.slideshowSettings.transition === "fade"}>Fade</option>
+              <option value="instant" ?selected=${this.slideshowSettings.transition === "instant"}>Instant</option>
+            </select>
+            <pf-icon name="chevron-down"></pf-icon>
+          </span>
+          <button type="button" @click=${this.requestPresentation}><pf-icon name="play"></pf-icon> Play</button>
+        </section>`;
       default:
         return null;
     }
@@ -1192,6 +1400,7 @@ export class PfFullView extends LitElement {
         <div class="stage">
           <pf-image-canvas
             .path=${path}
+            ?presenting=${this.presenting}
             .proofingSize=${this.proofingSize}
             .frameSize=${this.frameSize}
             .frameColor=${this.bgCss(this.frameColor)}
@@ -1212,9 +1421,13 @@ export class PfFullView extends LitElement {
             @image-activate=${this.onImageActivate}
             @image-double-activate=${this.onImageDoubleActivate}
             @image-swipe=${this.onImageSwipe}
+            @image-ready=${this.onSlideImageReady}
+            @image-error=${this.onSlideImageError}
             @image-preview-start=${this.onImagePreviewStart}
             @image-preview-end=${this.onImagePreviewEnd}
           ></pf-image-canvas>
+          <canvas class="slideshow-overlay" aria-hidden="true"
+            @transitionend=${(event: TransitionEvent) => { (event.target as HTMLCanvasElement).style.display = "none"; }}></canvas>
           ${path
             ? html`<pf-rating-overlay
                 class="fv-rating-overlay"
@@ -1225,9 +1438,9 @@ export class PfFullView extends LitElement {
               ></pf-rating-overlay>`
             : null}
         </div>
-        ${this.editMode
+        ${!this.presenting
       ? this.renderSideRail() : null}
-      ${this.editMode && this.activeTab !== null
+      ${!this.presenting && this.activeTab !== null
           ? this.renderEditPanel()
           : null}
       </div>
@@ -1252,6 +1465,7 @@ export class PfFullView extends LitElement {
        onSetSizing: this.setSizing,
        onSetSmoothing: this.setSmoothing,
        postProcessEnabled: getPostProcess().enabled,
+      onPlaySlideshow: this.requestPresentation,
         onTogglePostProcess: () =>
           setPostProcessEnabled(!getPostProcess().enabled),
      })}

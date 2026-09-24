@@ -471,6 +471,7 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
             let job_folder_key = job.folder_key.clone();
             let job_recursive = job.recursive;
             let job_prune_missing = job.prune_missing;
+            let job_root_path = job.root_path.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let state = sidecar_app.state::<AppState>();
                 if let Ok(repo) = state.repository() {
@@ -479,6 +480,7 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
                         &state,
                         keys,
                         &job_folder_key,
+                        &job_root_path,
                         job_recursive,
                         job_prune_missing,
                     ) {
