@@ -137,23 +137,37 @@ export class WarbleApp extends LitElement {
    :host(.sidebar-collapsed) aside.sidebar {
      display: none;
    }
-   /* Fullscreen full-view: collapse the grid so pf-full-view fills
-      the entire window. All other grid areas are hidden. */
    :host(.fs-fullview) {
-     grid-template-rows: 1fr;
-     grid-template-columns: 1fr;
+     position: relative;
+     grid-template-rows: minmax(0, 1fr);
+     grid-template-columns: minmax(0, 1fr);
      grid-template-areas: "fullview";
      padding: 0;
+     --pf-fullview-left-inset: 296px;
    }
-   :host(.fs-fullview) > .sidebar-rail,
-   :host(.fs-fullview) > aside.sidebar,
+   :host(.fs-fullview.sidebar-collapsed) {
+     --pf-fullview-left-inset: 36px;
+   }
+   :host(.fs-fullview) > .sidebar-rail {
+     position: absolute;
+     inset: 0 auto 0 0;
+     width: 36px;
+     z-index: 40;
+   }
+   :host(.fs-fullview) > aside.sidebar {
+     position: absolute;
+     inset: 0 auto 0 36px;
+     width: 260px;
+     z-index: 40;
+   }
+   :host(.fs-fullview.fs-controls-hidden) > .sidebar-rail,
+   :host(.fs-fullview.fs-controls-hidden) > aside.sidebar {
+     opacity: 0;
+     pointer-events: none;
+   }
    :host(.fs-fullview) > main.content,
    :host(.fs-fullview) > aside.detail,
    :host(.fs-fullview) > footer.app-footer {
-     display: none;
-   }
-   :host(.fs-fullview) pf-full-view[controls-hidden] ~ .fs-hotzone-left,
-   :host(.fs-fullview) pf-full-view[controls-hidden] ~ .fs-overlay-left {
      display: none;
    }
    :host(.fs-fullview) pf-full-view {
@@ -161,54 +175,6 @@ export class WarbleApp extends LitElement {
     grid-row: 1;
     grid-column: 1;
   }
-  /* Edge hotzones that reveal the sidebar / detail panel as
-     overlays when the mouse approaches the screen edges in
-     fullscreen full-view mode. */
-  .fs-hotzone-left,
-  .fs-hotzone-right {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    width: 12px;
-    z-index: 1001;
-  }
-  .fs-hotzone-left {
-    left: 0;
-  }
-
-  .fs-overlay-left {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    z-index: 1002;
-    box-shadow: 0 0 24px rgba(0, 0, 0, 0.4);
-    overflow: hidden;
-    left: 0;
-    width: 296px;
-    display: flex;
-  }
-  .fs-overlay-left .sidebar-rail {
-    width: 36px;
-    flex: 0 0 36px;
-    border-right: 1px solid var(--pf-border);
-    background: var(--pf-surface);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding-top: var(--pf-space-2);
-    box-sizing: border-box;
-  }
-  .fs-overlay-left aside.sidebar {
-    flex: 1;
-    min-width: 0;
-    border-right: 1px solid var(--pf-border);
-    background: var(--pf-surface);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-
     /* Permanent left-rail that always reserves room for the sidebar
        toggle. Keeping this column in the grid — even when the
        sidebar itself is collapsed — prevents the toggle from
@@ -546,9 +512,9 @@ export class WarbleApp extends LitElement {
       display: flex;
       align-items: center;
       gap: var(--pf-space-3);
-      padding-top: var(--pf-space-2);
+      padding-top: 0;
       padding-right: var(--pf-space-4);
-      padding-bottom: max(var(--pf-space-2), env(safe-area-inset-bottom));
+      padding-bottom: 0, env(safe-area-inset-bottom));
       padding-left: var(--pf-space-4);
       border-top: 1px solid var(--pf-border);
       background: var(--pf-surface);
@@ -638,13 +604,10 @@ export class WarbleApp extends LitElement {
       :host(.sidebar-collapsed) {
         grid-template-columns: 44px 0 minmax(0, 1fr) 304px;
       }
-      .fs-overlay-left .sidebar-rail {
-        width: 44px;
-        flex-basis: 44px;
-      }
-      .fs-overlay-left {
-        width: 304px;
-      }
+      :host(.fs-fullview) { --pf-fullview-left-inset: 304px; }
+      :host(.fs-fullview.sidebar-collapsed) { --pf-fullview-left-inset: 44px; }
+      :host(.fs-fullview) > .sidebar-rail { width: 44px; }
+      :host(.fs-fullview) > aside.sidebar { left: 44px; }
       .ctx-menu {
         min-width: 220px;
       }
@@ -658,6 +621,10 @@ export class WarbleApp extends LitElement {
         grid-template-areas: "rail sidebar main" "footer footer footer";
       }
       :host(.sidebar-collapsed) { grid-template-columns: 36px 0 minmax(0, 1fr); }
+      :host(.fs-fullview) {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "fullview";
+      }
       aside.detail { display: none; }
       .detail-toggle { display: inline-flex; }
       :host(.detail-open) aside.detail {
@@ -682,6 +649,7 @@ export class WarbleApp extends LitElement {
     @media (pointer: coarse) and (min-width: 701px) and (max-width: 1080px) {
       :host { grid-template-columns: 44px 260px minmax(0, 1fr); }
       :host(.sidebar-collapsed) { grid-template-columns: 44px 0 minmax(0, 1fr); }
+      :host(.fs-fullview) { grid-template-columns: minmax(0, 1fr); }
     }
     @media (max-width: 700px) {
       :host, :host(.sidebar-collapsed) {
@@ -689,6 +657,7 @@ export class WarbleApp extends LitElement {
         grid-template-areas: "main" "footer";
       }
       :host > .sidebar-rail, :host > aside.sidebar { display: none; }
+      :host(.fs-fullview) { --pf-fullview-left-inset: 0px; }
       :host(.mobile-sidebar-open) > aside.sidebar {
         display: flex;
         position: fixed;
@@ -722,7 +691,6 @@ export class WarbleApp extends LitElement {
       pf-full-view { grid-column: 1; }
       footer.app-footer { padding-inline: var(--pf-space-3); }
       :host(.fs-fullview) {
-        grid-template-columns: minmax(0, 1fr);
         grid-template-rows: minmax(0, 1fr);
         grid-template-areas: "fullview";
       }
@@ -823,15 +791,9 @@ export class WarbleApp extends LitElement {
 
 
 
-  /** Mirror of the OS window's fullscreen state. Toggled by the `f`
-   * shortcut and the maximize buttons in the detail panel and full
-   * view. Drives `pf-full-view`'s overlay styling. */
+  /** Mirror of the OS window's fullscreen state. */
   @state()
  private windowFullscreen = false;
-
- /** Whether the left sidebar overlay is revealed in fullscreen. */
- @state()
- private fsLeftReveal = false;
 
   @state()
   private contextMenu: {
@@ -1066,7 +1028,6 @@ export class WarbleApp extends LitElement {
   async connectedCallback() {
    super.connectedCallback();
    window.addEventListener("keydown", this.onGlobalKey);
-   window.addEventListener("mousemove", this.onMouseMove);
    this.unsubscribeAppBusy = subscribeAppBusy((label) => {
      this.busyLabel = label;
    });
@@ -1249,7 +1210,6 @@ export class WarbleApp extends LitElement {
    for (const task of this.folderScanTasks.values()) task.finish("cancelled");
    this.folderScanTasks.clear();
    window.removeEventListener("keydown", this.onGlobalKey);
-   window.removeEventListener("mousemove", this.onMouseMove);
     this.unsubscribeCacheCleared?.();
     this.unsubscribeCacheCleared = null;
     this.unsubscribeAppBusy?.();
@@ -1286,24 +1246,6 @@ export class WarbleApp extends LitElement {
    * keys; we run after it on the bubble phase, so this code never
    * fights with the full view over arrow/p/b/0/1/2.
    */
-
-  private onMouseMove = (e: MouseEvent) => {
-    if (!this.windowFullscreen || this.fullViewIndex === null) {
-      this.fsLeftReveal = false;
-      return;
-    }
-    const fullView = this.renderRoot.querySelector("pf-full-view");
-    if (fullView?.hasAttribute("controls-hidden")) {
-      this.fsLeftReveal = false;
-      this.fsLeftOverOverlay = false;
-      return;
-    }
-    this.fsLeftReveal = e.clientX <= 12 || this.fsLeftOverOverlay;
-  };
-
-  /** Tracks whether the cursor is currently over the left overlay so
-   *  it stays visible even after leaving the hotzone. */
-  private fsLeftOverOverlay = false;
 
   private onGlobalKey = (e: KeyboardEvent) => {
     // Events crossing nested shadow roots retarget `e.target` to the host.
@@ -2022,12 +1964,8 @@ export class WarbleApp extends LitElement {
     this.editPanelOpen = e.detail.open;
   };
 
-  private onFullViewControlsVisibilityChanged = (
-    e: CustomEvent<{ hidden: boolean }>
-  ) => {
-    if (!e.detail.hidden) return;
-    this.fsLeftReveal = false;
-    this.fsLeftOverOverlay = false;
+  private onFullViewControlsVisibilityChanged = (e: CustomEvent<{ hidden: boolean }>) => {
+    this.classList.toggle("fs-controls-hidden", e.detail.hidden);
   };
 
   private toggleSidebar = () => {
@@ -2084,8 +2022,7 @@ export class WarbleApp extends LitElement {
         this.windowFullscreen && this.fullViewIndex !== null
       );
       if (!this.windowFullscreen || this.fullViewIndex === null) {
-        this.fsLeftReveal = false;
-        this.fsLeftOverOverlay = false;
+        this.classList.remove("fs-controls-hidden");
       }
     }
     if (changed.has("fullViewIndex")) {
@@ -2327,44 +2264,6 @@ export class WarbleApp extends LitElement {
             @full-view-controls-visibility=${this.onFullViewControlsVisibilityChanged}
             @toggle-window-fullscreen=${this.onToggleFullscreenRequest}
           ></pf-full-view>`
-        : null}
-
-      ${this.windowFullscreen && this.fullViewIndex !== null
-        ? html`
-            <div
-              class="fs-hotzone-left"
-              aria-hidden="true"
-            ></div>
-
-            ${this.fsLeftReveal
-              ? html`
-                  <div
-                    class="fs-overlay-left"
-                    @mouseenter=${() => (this.fsLeftOverOverlay = true)}
-                    @mouseleave=${() => {
-                      this.fsLeftOverOverlay = false;
-                      this.fsLeftReveal = false;
-                    }}
-                  >
-                    <div class="sidebar-rail">
-                      <pf-icon-button
-                        icon=${this.sidebarCollapsed
-                          ? "panel-left-open"
-                          : "panel-left-close"}
-                        label=${this.sidebarCollapsed
-                          ? "Show sidebar"
-                          : "Hide sidebar"}
-                        @click=${this.toggleSidebar}
-                      ></pf-icon-button>
-                    </div>
-                    ${this.sidebarCollapsed
-                      ? null
-                      : this.renderSidebar()}
-                  </div>
-                `
-              : null}
-
-          `
         : null}
 
       ${this.renderFooter()}

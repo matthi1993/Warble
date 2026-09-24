@@ -143,20 +143,18 @@ export class PfFullView extends LitElement {
 
   /** Suppresses the persistence side-effect during the initial hydrate. */
   private hydrated = false;
+  private chromeObserver: ResizeObserver | null = null;
 
-  private footerObserver: ResizeObserver | null = null;
-
-  updated(): void {
-    if (this.footerObserver) return;
+  firstUpdated(): void {
+    const toolbar = this.renderRoot.querySelector<HTMLElement>(".toolbar-wrap");
     const footer = this.renderRoot.querySelector<HTMLElement>(".bottombar-wrap");
-    if (!footer) return;
-    this.footerObserver = new ResizeObserver(() => {
-      this.style.setProperty(
-        "--pf-fv-footer-height",
-        `${footer.getBoundingClientRect().height + 12}px`,
-      );
+    if (!toolbar || !footer) return;
+    this.chromeObserver = new ResizeObserver(() => {
+      this.style.setProperty("--pf-fv-toolbar-height", `${toolbar.getBoundingClientRect().height}px`);
+      this.style.setProperty("--pf-fv-footer-height", `${footer.getBoundingClientRect().height}px`);
     });
-    this.footerObserver.observe(footer);
+    this.chromeObserver.observe(toolbar);
+    this.chromeObserver.observe(footer);
   }
 
   @state()
@@ -189,12 +187,6 @@ export class PfFullView extends LitElement {
   *  Equivalent to `activeTab !== null`. */
   @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
   editPanelOpen = false;
-
-  /** Whether the fullscreen editor is currently revealed. The panel stays
-   *  open in the selected tab while its surface hides away from the right
-   *  edge, just like the fullscreen folder overlay on the left. */
-  @property({ type: Boolean, reflect: true, attribute: "edit-panel-revealed" })
-  private editPanelRevealed = false;
 
   /** Active side-panel tab, or null if the panel is collapsed. */
   @state()
@@ -289,7 +281,6 @@ export class PfFullView extends LitElement {
     super.connectedCallback();
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("click", this.onDocClick, { capture: true });
-    window.addEventListener("mousemove", this.onFullscreenMouseMove);
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
@@ -312,10 +303,10 @@ export class PfFullView extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.stopPresentation();
+    this.chromeObserver?.disconnect();
+    this.chromeObserver = null;
     this.unsubscribeEffectEnabled?.();
     this.unsubscribeEffectEnabled = null;
-    this.footerObserver?.disconnect();
-    this.footerObserver = null;
     this.exifLoader.syncToPath(null);
     const t = this.editTargetPath();
     if (t) void flushPhotoEdit(t);
@@ -325,7 +316,6 @@ export class PfFullView extends LitElement {
     window.removeEventListener("click", this.onDocClick, {
       capture: true,
     } as unknown as EventListenerOptions);
-    window.removeEventListener("mousemove", this.onFullscreenMouseMove);
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
     this.unsubscribeEdits?.();
@@ -363,9 +353,6 @@ export class PfFullView extends LitElement {
       if (!this.fullscreen) {
         this.stopPresentation();
         this.controlsHidden = false;
-        this.editPanelRevealed = false;
-      } else {
-        this.editPanelRevealed = this.activeTab !== null;
       }
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
@@ -389,7 +376,6 @@ export class PfFullView extends LitElement {
     }
     if (changed.has("activeTab")) {
       this.editPanelOpen = this.activeTab !== null;
-      this.editPanelRevealed = this.fullscreen && this.activeTab !== null;
     }
     this.syncToolsFromStore();
     this.exifLoader.syncToPath(this.editTargetPath());
@@ -587,11 +573,8 @@ export class PfFullView extends LitElement {
     if (this.presenting || !this.currentPhoto) return;
     this.presenting = true;
     this.controlsHidden = true;
-    this.editPanelRevealed = false;
     this.openMenu = null;
-    this.dispatchEvent(new CustomEvent("full-view-controls-visibility", {
-      detail: { hidden: true }, bubbles: true, composed: true,
-    }));
+    this.notifyControlsVisibility();
     if (this.canvasEl()?.imageReady) this.scheduleNextSlide();
   }
 
@@ -606,9 +589,7 @@ export class PfFullView extends LitElement {
     const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
     if (overlay) overlay.style.display = "none";
     this.controlsHidden = false;
-    this.dispatchEvent(new CustomEvent("full-view-controls-visibility", {
-      detail: { hidden: false }, bubbles: true, composed: true,
-    }));
+    this.notifyControlsVisibility();
   }
 
   private scheduleNextSlide(): void {
@@ -707,45 +688,17 @@ export class PfFullView extends LitElement {
     }
     if (!this.fullscreen) return;
     this.controlsHidden = !this.controlsHidden;
-    if (this.activeTab !== null) {
-      this.editPanelRevealed = !this.controlsHidden;
-    }
     this.openMenu = null;
-    this.dispatchEvent(
-      new CustomEvent("full-view-controls-visibility", {
-        detail: { hidden: this.controlsHidden },
-        bubbles: true,
-        composed: true,
-      })
-    );
+    this.notifyControlsVisibility();
   };
 
-  private onFullscreenMouseMove = (event: MouseEvent) => {
-    if (!this.fullscreen || this.activeTab === null) return;
-
-    const nearRightEdge = event.clientX >= window.innerWidth - 12;
-    let overRevealedPanel = false;
-    if (this.editPanelRevealed) {
-      overRevealedPanel = Array.from(
-        this.renderRoot.querySelectorAll<HTMLElement>(
-          ".edit-side-rail, pf-edit-side-panel"
-        )
-      ).some((panel) => {
-        const rect = panel.getBoundingClientRect();
-        return (
-          event.clientX >= rect.left &&
-          event.clientX <= rect.right &&
-          event.clientY >= rect.top &&
-          event.clientY <= rect.bottom
-        );
-      });
-    }
-
-    const shouldReveal = nearRightEdge || overRevealedPanel;
-    if (shouldReveal !== this.editPanelRevealed) {
-      this.editPanelRevealed = shouldReveal;
-    }
-  };
+  private notifyControlsVisibility(): void {
+    this.dispatchEvent(new CustomEvent("full-view-controls-visibility", {
+      detail: { hidden: this.controlsHidden },
+      bubbles: true,
+      composed: true,
+    }));
+  }
 
   private onImageDoubleActivate = (event: Event) => {
     if (this.presenting) {
