@@ -2,6 +2,8 @@
 
 ![App Icon](app-icon.png)
 
+#This is a work in progress. The App was build using AI.#
+
 Warble is photo viewer with small editing and presentation features built for mac. Built with Vite, TypeScript, and Tauri.
 
 ## Documentation
@@ -26,7 +28,7 @@ pnpm tauri build
 pnpm tauri ios build
 ```
 
-### Running the Production App on macOS
+### Running the App on macOS
 
 After building, you can find the macOS app in the `src-tauri/target/release/bundle/macos/` folder. Double-click the `.app` file to launch Warble on your Mac.
 
