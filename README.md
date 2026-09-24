@@ -6,8 +6,7 @@ Warble is photo viewer with small editing and presentation features built for ma
 
 ## Documentation
 
-See the [documentation home and table of contents](<00 docs/README.md>) for
-guides, architecture, and the [processing and folder Sync reference](<00 docs/processing-pipeline-and-sync.md>).
+See the [documentation index](<00 docs/README.md>) for feature guides and technical overviews.
 
 ## Getting Started
 

@@ -1,31 +1,21 @@
 # Warble documentation
 
-Start with the [app overview](app-overview.md) to understand the workflow, or
-go straight to the topic you need. The guides describe what the app does; the
-implementation references explain how the frontend and native backend do it.
+## Features
 
-## Table of contents
+Start here to understand the app's main workflows.
 
-### Using Warble
+1. [Library and browsing](01-features/01-library-and-browsing.md) — folders, grid, filters, ratings, and variants.
+2. [Viewing photos](01-features/02-viewing-photos.md) — detail and full view, navigation, and previews.
+3. [Editing photos](01-features/03-editing-photos.md) — photo edits, Post, and saving a variant.
+4. [Background work](01-features/04-background-work.md) — what loads first and what happens when you move on.
 
-1. [App overview](app-overview.md) — what the app does and where to begin.
-2. [Views and navigation](views-and-navigation.md) — sidebar, grid, detail,
-   full view, and keyboard navigation.
-3. [Library and browsing](library-and-browsing.md) — adding/reconnecting
-   folders, Sync, filters, variants, ratings, and resetting the workspace.
-4. [Image loading and background work](image-loading-and-background-work.md) —
-   preview behavior, cache settings, and task status from a user's perspective.
-5. [Editor tools](editor-tools.md) — editing model and tool structure.
+## Technical
 
-### Maintaining Warble
+Start with the architecture page, then follow the area you need.
 
-6. [Photo processing and folder sync](processing-pipeline-and-sync.md) — the
-   stage-by-stage pipeline, filesystem/SQLite/sidecar ownership, Sync,
-   writeback, priorities, and cache invalidation.
-7. [Code architecture](../architecture.md) — project layers and where new code
-   belongs.
+1. [Architecture](02-technical/01-architecture.md) — layers and main entry points.
+2. [Library and sync](02-technical/02-library-and-sync.md) — discovery and portable photo state.
+3. [Images and background work](02-technical/03-images-and-background-work.md) — loading, caches, and task priorities.
+4. [Image editing](02-technical/04-image-editing.md) — rendering, tool state, and adding a tool.
 
-The [project README](../README.md) covers setup and packaging. When changing
-folder or metadata behavior, update the user guide and the
-[processing reference](processing-pipeline-and-sync.md) together so the
-observed behavior and implementation stay aligned.
+For setup and packaging, see the [project README](../README.md).
