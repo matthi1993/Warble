@@ -10,4 +10,6 @@ export interface Folder {
   children: Folder[];
   /** False when this device has not yet been granted access to the root. */
   available: boolean;
+  /** True while this root has queued or active background scan work. */
+  scanning?: boolean;
 }

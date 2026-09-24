@@ -69,13 +69,13 @@
   :root:not([data-theme]) {
     color-scheme: dark;
 
-    --pf-bg: #0a0a0a;
-    --pf-surface: #171717;
-    --pf-surface-2: #1f1f1f;
+    --pf-bg: #131719;
+    --pf-surface: #191e20;
+    --pf-surface-2: #242a2c;
     --pf-surface-hover: rgba(249, 115, 22, 0.12);
 
-    --pf-border: #262626;
-    --pf-border-strong: #404040;
+    --pf-border: #30383a;
+    --pf-border-strong: #4a5355;
 
     --pf-text: #fafafa;
     --pf-text-muted: #a3a3a3;
@@ -97,13 +97,13 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --pf-bg: #0a0a0a;
-  --pf-surface: #171717;
-  --pf-surface-2: #1f1f1f;
+  --pf-bg: #131719;
+  --pf-surface: #191e20;
+  --pf-surface-2: #242a2c;
   --pf-surface-hover: rgba(249, 115, 22, 0.12);
 
-  --pf-border: #262626;
-  --pf-border-strong: #404040;
+  --pf-border: #30383a;
+  --pf-border-strong: #4a5355;
 
   --pf-text: #fafafa;
   --pf-text-muted: #a3a3a3;

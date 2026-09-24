@@ -12,55 +12,18 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-
-/** Unsharp-mask sharpening. Applied as a per-photo effect (with a
- *  format-aware default — RAW gets a light pass, JPG gets nothing)
- *  and reused as a separate global pass by the post-process layer.
- *
- *  The shader builds a blurred copy of the source at a mip level
- *  proportional to `radius`, subtracts it from the source to get a
- *  high-pass mask, gates the mask by `threshold` (so flat regions
- *  / noise are spared), and adds `strength` × mask back to the
- *  source. Standard unsharp-mask math. */
-export interface SharpenSettings {
-  /** 0..200 — overall amount of high-frequency contrast added
-   *  back. 0 disables the sharpening pass entirely. 100 maps to
-   *  a moderate Lightroom-style boost. */
-  strength: number;
-  /** 0.3..3 — radius of the blur used to build the high-pass
-   *  mask, in source pixels. Smaller values target only the
-   *  finest detail; larger values create halos around edges. */
-  radius: number;
-  /** 0..50 — minimum local contrast (0–255 luminance delta) that
-   *  must be exceeded before a pixel is sharpened. Protects skin
-   *  / sky / sensor noise from being amplified. */
-  threshold: number;
-}
-
-export interface GrainSettings {
-  /** 0.1..100 — diameter of the organic grain. Post-process grain is
-   * interpreted in normalised image space, not source pixels. */
-  size: number;
-  /** 0..100 — strength of the organic, softly-shaped film grain. */
-  amount: number;
-  /** 0..100 — strength of the additional monochrome per-pixel noise. */
-  fine: number;
-}
-
-export function defaultGrain(): GrainSettings {
-  return { size: 25, amount: 0, fine: 0 };
-}
-
-export function isGrainZero(
-  grain: GrainSettings | null | undefined
-): boolean {
-  return !grain || (grain.amount <= 0 && grain.fine <= 0);
-}
+import {
+  defaultGrain, defaultSharpen, type GrainSettings, type SharpenSettings,
+} from "@domain/edits";
+export {
+  defaultBloom, defaultGrain, defaultSharpen, isBloomZero,
+  isGrainZero, isSharpenZero,
+} from "@domain/edits";
+export type { BloomSettings, GrainSettings, SharpenSettings } from "@domain/edits";
 
 export interface PhotoEffects {
   /** `null` means "no per-photo override stored" — the canvas
-   *  falls back to a format-aware default (see
-   *  {@link defaultSharpenForFormat}). An explicit
+   *  falls back to the default. An explicit
    *  `SharpenSettings` (even one with `strength: 0`) is treated
    *  as a deliberate user choice and overrides the default. */
   sharpen: SharpenSettings | null;
@@ -69,33 +32,6 @@ export interface PhotoEffects {
 }
 
 const LEGACY_STORAGE_KEY = "warble.effects.v1";
-
-/** Sensible "no sharpening" baseline. Radius / threshold are kept
- *  at the values the per-format defaults use so toggling strength
- *  on doesn't snap the other sliders to weird positions. */
-export function defaultSharpen(): SharpenSettings {
-  return { strength: 0, radius: 1, threshold: 0 };
-}
-
-/** Per-format starting point for the per-photo sharpen card. RAW
- *  files arrive un-sharpened from the demosaic pipeline and benefit
- *  from a light pass — Lightroom ships ~40 strength / 1.0 radius /
- *  0 threshold for the same reason. JPGs already carry whatever
- *  sharpening the camera applied, so we default to off. */
-export function defaultSharpenForFormat(
-  format: "jpg" | "raw" | null | undefined
-): SharpenSettings {
-  if (format === "raw") {
-    return { strength: 40, radius: 1, threshold: 0 };
-  }
-  return defaultSharpen();
-}
-
-export function isSharpenZero(
-  s: SharpenSettings | null | undefined
-): boolean {
-  return !s || s.strength <= 0;
-}
 
 type Listener = (path: string) => void;
 
@@ -206,7 +142,7 @@ export function loadPhotoEffects(): Promise<void> {
   return loadPromise;
 }
 
-/** Replace the in-memory effects with those in a newly opened library. */
+/** Replace in-memory effects after a folder-sidecar rescan. */
 export function reloadPhotoEffects(): Promise<void> {
   loadGeneration += 1;
   loaded = false;
@@ -217,8 +153,7 @@ export function reloadPhotoEffects(): Promise<void> {
   return loadPromise;
 }
 
-/** Flush the slider debounce and wait for SQLite before a library snapshot or
- * hot-swap. */
+/** Flush the slider debounce before a media root is disconnected. */
 export async function flushPhotoEffects(): Promise<void> {
   if (loadPromise) await loadPromise;
   if (persistTimer !== null) {
@@ -241,18 +176,14 @@ export function getPhotoEffects(path: string): PhotoEffects | null {
 /** Read the explicitly-stored sharpen settings for `path`. Returns
  *  `null` if the user has never touched the slider — callers that
  *  need a renderable value should fall back to
- *  {@link defaultSharpenForFormat}. */
+ *  {@link defaultSharpen}. */
 export function getPhotoSharpen(path: string | null): SharpenSettings | null {
   if (!path) return null;
   return effects.get(path)?.sharpen ?? null;
 }
 
-/** Store an explicit per-photo sharpen override. We
- *  KEEP `strength: 0` rather than collapsing to `null`, because a
- *  user-zeroed value must beat the format default (otherwise
- *  disabling sharpening on a RAW would silently re-enable it on
- *  the next reload). Pass `null` to clear the override and fall
- *  back to {@link defaultSharpenForFormat}. */
+/** Store an explicit per-photo sharpen override. Keep `strength: 0`
+ *  as an explicit value; pass `null` to use the default. */
 export function setPhotoSharpen(
   path: string,
   sharpen: SharpenSettings | null

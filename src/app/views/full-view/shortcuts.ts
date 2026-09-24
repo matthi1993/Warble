@@ -22,7 +22,7 @@ export interface ShortcutDef {
   readonly description: string;
   /** True if the shortcut only fires while the viewer is in edit
    *  mode (i.e. the active variant is an editable format — JPEG or
-   *  RAW). */
+  *  JPEG). */
   readonly editModeOnly?: boolean;
   /** Imperative action against the viewer host. */
   readonly run: (host: PfFullView) => void;
@@ -61,8 +61,8 @@ export function buildShortcuts(): readonly ShortcutDef[] {
     {
       label: "P",
       keys: ["p", "P"],
-      description: "Cycle proof / fit",
-      run: (h) => call(h, "cycleFit"),
+      description: "Cycle frame size",
+      run: (h) => call(h, "cycleFrameSize"),
     },
     {
       label: "⌫",
@@ -82,7 +82,7 @@ export function buildShortcuts(): readonly ShortcutDef[] {
       keys: ["c", "C"],
       description: "Crop tool",
       editModeOnly: true,
-      run: (h) => call(h, "toggleTool", (h as any).cropTool),
+      run: (h) => call(h, "toggleToolById", "crop"),
     },
     {
       label: "B",

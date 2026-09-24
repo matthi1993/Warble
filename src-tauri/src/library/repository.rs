@@ -1,8 +1,9 @@
-//! SQLite-backed persistence for the portable library catalog.
+//! SQLite-backed persistence for the device-local library catalog.
 //!
 //! The database stores only metadata — image files themselves stay on disk
 //! and are referenced by `<media-root UUID>/<relative path>` keys.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +14,16 @@ use rusqlite::{params, Connection};
 pub struct MediaRoot {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhotoSourceState {
+    pub image_mtime_ns: i64,
+    pub image_size: i64,
+    pub xmp_mtime_ns: Option<i64>,
+    pub xmp_size: Option<i64>,
+    pub warble_mtime_ns: Option<i64>,
+    pub warble_size: Option<i64>,
 }
 
 pub struct LibraryRepository {
@@ -30,6 +41,19 @@ impl LibraryRepository {
         };
         repo.migrate()?;
         Ok(repo)
+    }
+
+    /// Execute several related catalog updates in one SQLite transaction.
+    /// This is used when hydrating many sidecars after a filesystem scan.
+    pub fn with_transaction<T>(
+        &self,
+        operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let result = operation(&tx)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(result)
     }
 
     fn migrate(&self) -> Result<(), String> {
@@ -151,6 +175,22 @@ impl LibraryRepository {
 
         if current < 8 {
             migrate_to_v8(&mut conn)?;
+        }
+
+        if current < 9 {
+            conn.execute_batch(
+                "CREATE TABLE photo_source_state (
+                    path TEXT PRIMARY KEY,
+                    image_mtime_ns INTEGER NOT NULL,
+                    image_size INTEGER NOT NULL,
+                    xmp_mtime_ns INTEGER,
+                    xmp_size INTEGER,
+                    warble_mtime_ns INTEGER,
+                    warble_size INTEGER
+                );
+                INSERT INTO schema_version (version) VALUES (9);",
+            )
+            .map_err(|e| e.to_string())?;
         }
 
         Ok(())
@@ -282,6 +322,17 @@ impl LibraryRepository {
         Ok(out)
     }
 
+    pub fn was_warble_sidecar_indexed(&self, path: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM photo_source_state
+                           WHERE path = ?1 AND warble_mtime_ns IS NOT NULL)",
+            params![path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+    }
+
     pub fn set_photo_edit(&self, path: &str, edits_json: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -320,6 +371,93 @@ impl LibraryRepository {
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    pub fn prune_missing_photos(
+        &self,
+        folder_key: &str,
+        recursive: bool,
+        discovered: &HashSet<String>,
+    ) -> Result<bool, String> {
+        self.with_transaction(|tx| {
+            let keys = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT path FROM photo_source_state
+                         UNION SELECT path FROM photo_exif
+                         UNION SELECT path FROM photo_edits
+                         UNION SELECT path FROM photo_ratings
+                         UNION SELECT path FROM photo_variants",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?
+            };
+            let mut removed = false;
+            for key in keys {
+                let parent = Path::new(&key).parent();
+                let folder = Path::new(folder_key);
+                let in_scope = parent.is_some_and(|parent| {
+                    parent == folder || (recursive && parent.starts_with(folder))
+                });
+                if !in_scope || discovered.contains(&key) {
+                    continue;
+                }
+                for table in [
+                    "photo_source_state",
+                    "photo_exif",
+                    "photo_edits",
+                    "photo_ratings",
+                    "photo_variants",
+                ] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE path = ?1"),
+                        params![key],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                removed = true;
+            }
+            Ok(removed)
+        })
+    }
+
+    pub fn delete_photo_paths(&self, paths: &[String]) -> Result<(), String> {
+        self.with_transaction(|tx| {
+            let mut effects = read_setting(tx, "photo_effects_v1")?
+                .map(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw))
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            for path in paths {
+                for table in [
+                    "photo_source_state",
+                    "photo_exif",
+                    "photo_edits",
+                    "photo_ratings",
+                    "photo_variants",
+                ] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE path = ?1"),
+                        params![path],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                if let Some(effects) = effects.as_mut() {
+                    effects.remove(path);
+                }
+            }
+            if let Some(effects) = effects {
+                tx.execute(
+                    "UPDATE app_settings SET value = ?1 WHERE key = 'photo_effects_v1'",
+                    params![serde_json::to_string(&effects).map_err(|error| error.to_string())?],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     /// Upsert the chosen (format, variant) for a photo (keyed by its
@@ -383,6 +521,7 @@ impl LibraryRepository {
             "photo_edits",
             "photo_exif",
             "photo_ratings",
+            "photo_source_state",
             "photo_effects",
         ] {
             // Some older libraries may not have every optional table yet.
@@ -418,14 +557,23 @@ impl LibraryRepository {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        for table in ["photo_variants", "photo_edits", "photo_exif", "photo_ratings"] {
+        for table in [
+            "photo_variants",
+            "photo_edits",
+            "photo_exif",
+            "photo_ratings",
+            "photo_source_state",
+        ] {
             rewrite_root_paths(&tx, table, new_root_id, rewrites)?;
         }
         rewrite_root_settings(&tx, new_root_id, rewrites)?;
 
         for (old_root_id, _) in rewrites {
-            tx.execute("DELETE FROM media_roots WHERE id = ?1", params![old_root_id])
-                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM media_roots WHERE id = ?1",
+                params![old_root_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         tx.execute(
             "INSERT INTO media_roots (id, name, added_at) VALUES (?1, ?2, ?3)",
@@ -439,6 +587,54 @@ impl LibraryRepository {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row("SELECT id FROM library_info LIMIT 1", [], |row| row.get(0))
             .map_err(|e| e.to_string())
+    }
+
+    /// Forget this workspace without touching image files or their sidecars.
+    /// Keeping the schema intact lets existing connections continue to work.
+    pub fn reset_workspace(&self) -> Result<String, String> {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        self.with_transaction(|tx| {
+            for table in [
+                "media_roots",
+                "photo_variants",
+                "photo_edits",
+                "photo_exif",
+                "photo_ratings",
+                "photo_source_state",
+                "app_settings",
+                "migration_legacy_bindings",
+            ] {
+                tx.execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(|e| e.to_string())?;
+            }
+            for table in [
+                "photo_variants",
+                "photo_edits",
+                "photo_exif",
+                "photo_ratings",
+                "photo_source_state",
+            ] {
+                tx.execute_batch(&format!(
+                    "CREATE TRIGGER IF NOT EXISTS {table}_valid_root
+                     BEFORE INSERT ON {table}
+                     WHEN NOT EXISTS (
+                         SELECT 1 FROM media_roots
+                         WHERE id = substr(NEW.path, 1, instr(NEW.path, '/') - 1)
+                     )
+                     BEGIN SELECT RAISE(IGNORE); END;"
+                ))
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute("DELETE FROM library_info", [])
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO library_info (id, revision) VALUES (?1, 1)",
+                params![new_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        Ok(new_id)
     }
 
     /// Legacy absolute paths exist only in this local migration hand-off
@@ -503,24 +699,6 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-
-    /// Write a clean, defragmented copy of the live database to `dest`
-    /// using SQLite's `VACUUM INTO`. Safe to call while the source DB
-    /// is open and being read/written; produces a single self-contained
-    /// file at `dest` (no WAL/SHM sidecars). The destination must not
-    /// already exist.
-    pub fn vacuum_into(&self, dest: &Path) -> Result<(), String> {
-        let dest_str = dest
-            .to_str()
-            .ok_or_else(|| "destination path is not valid UTF-8".to_string())?;
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // `VACUUM INTO` does not accept bound parameters; quote the
-        // path by doubling single quotes (SQLite identifier rule).
-        let quoted = dest_str.replace('\'', "''");
-        conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
 }
 
 fn rewrite_root_paths(
@@ -544,12 +722,7 @@ fn rewrite_root_paths(
                 .map_err(|e| e.to_string())?
         };
         for old_path in paths {
-            let new_path = remap_root_path(
-                &old_path,
-                old_root_id,
-                new_root_id,
-                relative_prefix,
-            )?;
+            let new_path = remap_root_path(&old_path, old_root_id, new_root_id, relative_prefix)?;
             tx.execute(
                 &format!("UPDATE {table} SET path = ?1 WHERE path = ?2"),
                 params![new_path, old_path],
@@ -571,8 +744,7 @@ fn rewrite_root_settings(
         }
     }
     if let Some(raw) = read_setting(tx, "app_view")? {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         if let Some(path) = value.get("path").and_then(|entry| entry.as_str()) {
             if let Some(mapped) = remap_from_any_root(path, new_root_id, rewrites)? {
                 value["path"] = serde_json::Value::String(mapped);
@@ -591,8 +763,8 @@ fn rewrite_root_settings(
             .ok_or_else(|| "photo_effects_v1 is not a JSON object".to_string())?;
         let mut migrated = serde_json::Map::new();
         for (path, effects) in object {
-            let mapped = remap_from_any_root(path, new_root_id, rewrites)?
-                .unwrap_or_else(|| path.clone());
+            let mapped =
+                remap_from_any_root(path, new_root_id, rewrites)?.unwrap_or_else(|| path.clone());
             migrated.insert(mapped, effects.clone());
         }
         write_setting(
@@ -745,12 +917,6 @@ fn migrate_to_v8(conn: &mut Connection) -> Result<(), String> {
         )?;
     }
 
-    // This value used to leak a device path into the shared library.
-    tx.execute(
-        "DELETE FROM app_settings WHERE key = 'last_library_path'",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
     tx.execute("DROP TABLE imported_folders", [])
         .map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO schema_version (version) VALUES (8)", [])
@@ -824,6 +990,135 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deleting_photo_keys_clears_all_indexes_without_touching_siblings() {
+        let dir = std::env::temp_dir().join(format!("warble-delete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        for key in ["root/photo.CR3", "root/photo.jpg"] {
+            repo.set_photo_rating_row(key, 5, "", 1).unwrap();
+            repo.set_photo_edit(key, "{}").unwrap();
+            repo.set_photo_variant(key, "jpg", "base").unwrap();
+            repo.set_photo_exif(key, 1, 1, 1, "{}").unwrap();
+            repo.with_transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO photo_source_state
+                        (path, image_mtime_ns, image_size) VALUES (?1, 1, 1)",
+                    params![key],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        repo.set_setting(
+            "photo_effects_v1",
+            r#"{"root/photo.CR3":{"grain":1},"root/photo.jpg":{"grain":2}}"#,
+        )
+        .unwrap();
+
+        repo.delete_photo_paths(&["root/photo.CR3".to_string()])
+            .unwrap();
+        for table in [
+            "photo_source_state",
+            "photo_exif",
+            "photo_edits",
+            "photo_ratings",
+            "photo_variants",
+        ] {
+            repo.with_transaction(|tx| {
+                let deleted: i64 = tx
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE path = 'root/photo.CR3'"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let kept: i64 = tx
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE path = 'root/photo.jpg'"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert_eq!((deleted, kept), (0, 1), "{table}");
+                Ok(())
+            })
+            .unwrap();
+        }
+        let effects = repo.get_setting("photo_effects_v1").unwrap().unwrap();
+        assert!(!effects.contains("photo.CR3"));
+        assert!(effects.contains("photo.jpg"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prune_missing_photos_only_affects_selected_folder() {
+        let dir = std::env::temp_dir().join(format!("warble-prune-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        repo.add_media_root("root", "Photos").unwrap();
+        repo.set_photo_rating_row("root/keep.jpg", 4, "", 1)
+            .unwrap();
+        repo.set_photo_rating_row("root/deleted.jpg", 5, "", 1)
+            .unwrap();
+        repo.set_photo_rating_row("root/other/untouched.jpg", 3, "", 1)
+            .unwrap();
+
+        let discovered = HashSet::from(["root/keep.jpg".to_string()]);
+        assert!(repo
+            .prune_missing_photos("root", false, &discovered)
+            .unwrap());
+        let ratings = repo.all_photo_ratings().unwrap();
+        assert_eq!(ratings.len(), 2);
+        assert!(ratings.iter().any(|row| row.0 == "root/keep.jpg"));
+        assert!(ratings
+            .iter()
+            .any(|row| row.0 == "root/other/untouched.jpg"));
+
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reset_workspace_forgets_sqlite_data_without_touching_photos() {
+        let dir = std::env::temp_dir().join(format!("warble-reset-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("original.jpg");
+        std::fs::write(&photo, b"original photo bytes").unwrap();
+        let repo = LibraryRepository::open(&dir.join("library.warble")).unwrap();
+        let old_id = repo.library_id().unwrap();
+        repo.add_media_root("root", "Photos").unwrap();
+        repo.set_photo_rating_row("root/original.jpg", 5, "red", 1)
+            .unwrap();
+        repo.set_photo_edit("root/original.jpg", "{}").unwrap();
+        repo.set_photo_variant("root/original.jpg", "jpg", "base")
+            .unwrap();
+        repo.set_photo_exif("root/original.jpg", 1, 20, 1, "{}")
+            .unwrap();
+        repo.set_setting("last_folder", "root").unwrap();
+
+        let new_id = repo.reset_workspace().unwrap();
+        assert_ne!(old_id, new_id);
+        assert_eq!(repo.library_id().unwrap(), new_id);
+        assert!(repo.media_roots().unwrap().is_empty());
+        assert!(repo.all_photo_ratings().unwrap().is_empty());
+        assert!(repo.all_photo_edits().unwrap().is_empty());
+        assert!(repo.all_photo_variants().unwrap().is_empty());
+        assert!(repo.get_photo_exif("root/original.jpg").unwrap().is_none());
+        assert!(repo.get_setting("last_folder").unwrap().is_none());
+        repo.set_photo_rating_row("root/original.jpg", 5, "red", 1)
+            .unwrap();
+        repo.set_photo_exif("root/original.jpg", 1, 20, 1, "{}")
+            .unwrap();
+        assert!(repo.all_photo_ratings().unwrap().is_empty());
+        assert!(repo.get_photo_exif("root/original.jpg").unwrap().is_none());
+        assert_eq!(std::fs::read(&photo).unwrap(), b"original photo bytes");
+
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn migrates_legacy_absolute_paths_to_portable_keys() {
         let dir = std::env::temp_dir().join(format!("warble-migration-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -892,10 +1187,7 @@ mod tests {
 
     #[test]
     fn consolidates_child_roots_without_losing_metadata() {
-        let dir = std::env::temp_dir().join(format!(
-            "warble-consolidate-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("warble-consolidate-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("library.warble");
         let repo = LibraryRepository::open(&db).unwrap();
@@ -911,11 +1203,8 @@ mod tests {
             r#"{"path":"child-b/portrait.jpg","view":"full"}"#,
         )
         .unwrap();
-        repo.set_setting(
-            "photo_effects_v1",
-            r#"{"child-a/trip.jpg":{"grain":null}}"#,
-        )
-        .unwrap();
+        repo.set_setting("photo_effects_v1", r#"{"child-a/trip.jpg":{"grain":null}}"#)
+            .unwrap();
 
         repo.consolidate_media_roots(
             "parent",
@@ -930,15 +1219,15 @@ mod tests {
         let roots = repo.media_roots().unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].id, "parent");
-        assert_eq!(
-            repo.all_photo_variants().unwrap()[0].0,
-            "parent/A/trip.jpg"
-        );
+        assert_eq!(repo.all_photo_variants().unwrap()[0].0, "parent/A/trip.jpg");
         assert_eq!(
             repo.all_photo_ratings().unwrap()[0].0,
             "parent/B/portrait.jpg"
         );
-        assert_eq!(repo.get_setting("last_folder").unwrap().unwrap(), "parent/A");
+        assert_eq!(
+            repo.get_setting("last_folder").unwrap().unwrap(),
+            "parent/A"
+        );
         assert!(repo
             .get_setting("app_view")
             .unwrap()

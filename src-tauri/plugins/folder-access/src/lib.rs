@@ -10,14 +10,30 @@ pub struct FolderGrant {
     pub bookmark: String,
 }
 
-#[derive(Deserialize)]
-struct PickResponse {
-    folders: Vec<FolderGrant>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedFolder {
+    pub path: String,
+    pub bookmark: String,
+    pub entry_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderEntry {
+    pub relative_path: String,
+    pub is_directory: bool,
+    pub is_file: bool,
 }
 
 #[derive(Deserialize)]
-struct LibraryResponse {
-    selection: Option<FolderGrant>,
+pub struct FolderEntries {
+    pub entries: Vec<FolderEntry>,
+}
+
+#[derive(Deserialize)]
+struct PickResponse {
+    folders: Vec<FolderGrant>,
 }
 
 #[derive(Deserialize)]
@@ -62,39 +78,36 @@ pub fn resolve_bookmark<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-pub fn pick_library<R: Runtime>(app: &AppHandle<R>) -> Result<Option<FolderGrant>, String> {
+/// Resolve a folder bookmark, retain its security scope, and ask the native
+/// file coordinator to enumerate the subtree. This materializes directory
+/// listings exposed by remote iOS File Providers before Rust scans them.
+pub fn prepare_folder<R: Runtime>(
+    app: &AppHandle<R>,
+    bookmark: &str,
+) -> Result<PreparedFolder, String> {
     app.state::<FolderAccess<R>>()
         .0
-        .run_mobile_plugin::<LibraryResponse>("pickLibrary", ())
-        .map(|response| response.selection)
+        .run_mobile_plugin::<PreparedFolder>("prepareFolder", BookmarkPayload { bookmark })
         .map_err(|e| e.to_string())
 }
 
-pub fn export_library<R: Runtime>(
+pub fn scan_folder<R: Runtime>(
     app: &AppHandle<R>,
-    source: &str,
-) -> Result<Option<FolderGrant>, String> {
+    bookmark: &str,
+    relative_path: &str,
+    recursive: bool,
+) -> Result<Vec<FolderEntry>, String> {
     app.state::<FolderAccess<R>>()
         .0
-        .run_mobile_plugin::<LibraryResponse>("exportLibrary", ExportPayload { source })
-        .map(|response| response.selection)
-        .map_err(|e| e.to_string())
-}
-
-pub fn replace_library<R: Runtime>(
-    app: &AppHandle<R>,
-    source: &str,
-    destination: &str,
-) -> Result<FolderGrant, String> {
-    app.state::<FolderAccess<R>>()
-        .0
-        .run_mobile_plugin::<FolderGrant>(
-            "replaceLibrary",
-            ReplacePayload {
-                source,
-                destination,
+        .run_mobile_plugin::<FolderEntries>(
+            "scanFolder",
+            ScanFolderPayload {
+                bookmark,
+                relative_path,
+                recursive,
             },
         )
+        .map(|response| response.entries)
         .map_err(|e| e.to_string())
 }
 
@@ -136,14 +149,11 @@ struct BookmarkPayload<'a> {
 }
 
 #[derive(Serialize)]
-struct ReplacePayload<'a> {
-    source: &'a str,
-    destination: &'a str,
-}
-
-#[derive(Serialize)]
-struct ExportPayload<'a> {
-    source: &'a str,
+#[serde(rename_all = "camelCase")]
+struct ScanFolderPayload<'a> {
+    bookmark: &'a str,
+    relative_path: &'a str,
+    recursive: bool,
 }
 
 #[derive(Serialize)]

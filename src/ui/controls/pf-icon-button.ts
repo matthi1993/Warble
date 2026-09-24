@@ -53,6 +53,25 @@ export class PfIconButton extends LitElement {
     pf-icon {
       font-size: 1.05rem;
     }
+    .spinner {
+      width: 0.9rem;
+      height: 0.9rem;
+      box-sizing: border-box;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    :host([loading]) button:disabled {
+      opacity: 1;
+      cursor: progress;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation-duration: 1.4s; }
+    }
     @media (pointer: coarse) {
       button {
         width: 44px;
@@ -73,14 +92,20 @@ export class PfIconButton extends LitElement {
   @property({ type: Boolean, reflect: true })
   danger = false;
 
+  @property({ type: Boolean, reflect: true })
+  loading = false;
+
   render() {
     return html`<button
       type="button"
       aria-label=${this.label}
+      aria-busy=${this.loading ? "true" : "false"}
       title=${this.label}
       ?disabled=${this.disabled}
     >
-      <pf-icon name=${this.icon}></pf-icon>
+      ${this.loading
+        ? html`<span class="spinner" aria-hidden="true"></span>`
+        : html`<pf-icon name=${this.icon}></pf-icon>`}
     </button>`;
   }
 }

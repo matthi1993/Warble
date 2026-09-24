@@ -8,6 +8,7 @@
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen",
     "fs:default",
+    "fs:allow-write-text-file",
     "shell:default",
     "dialog:default"
   ]

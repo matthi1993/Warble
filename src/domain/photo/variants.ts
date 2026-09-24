@@ -1,19 +1,17 @@
 /**
  * Pure helpers for photos that have multiple files sharing the same stem.
  *
- * Two orthogonal axes:
- *   - **Format** — `jpg` vs `raw` (other extensions are ignored by the toggle).
- *   - **Variant** — `base` (the primary file, no parens on the stem) plus any
+ * JPEG variants use `base` (the primary file, no parens on the stem) plus any
  *     additional `Stem (key).ext` siblings (e.g. `Foo (1).jpg`, `Foo (edit).jpg`).
  *
  * Each (format, variant) pair maps to at most one file on disk.
  */
 import type { Photo, PhotoFile } from "./types";
 
-export type PhotoFormat = "jpg" | "raw";
+export type PhotoFormat = "jpg";
 
 const JPG_EXTS = ["jpg", "jpeg"];
-const RAW_EXTS = [
+export const RAW_EXTS = [
   "raf",
   "raw",
   "arw",
@@ -28,7 +26,6 @@ const RAW_EXTS = [
 export function classifyFormat(ext: string): PhotoFormat | null {
   const e = ext.toLowerCase();
   if (JPG_EXTS.includes(e)) return "jpg";
-  if (RAW_EXTS.includes(e)) return "raw";
   return null;
 }
 
@@ -36,7 +33,7 @@ function filesOf(photo: Photo): PhotoFile[] {
   return photo.files ?? [];
 }
 
-/** Available formats on a photo, in stable order: jpg, raw. */
+/** Available editable formats on a photo. */
 export function availableFormats(photo: Photo): PhotoFormat[] {
   const seen = new Set<PhotoFormat>();
   for (const f of filesOf(photo)) {
@@ -45,7 +42,6 @@ export function availableFormats(photo: Photo): PhotoFormat[] {
   }
   const out: PhotoFormat[] = [];
   if (seen.has("jpg")) out.push("jpg");
-  if (seen.has("raw")) out.push("raw");
   return out;
 }
 

@@ -1,6 +1,6 @@
 //! Tauri commands for per-photo star ratings (0..=5) and color
-//! labels. Persisted in the SQLite `photo_ratings` table; the
-//! original file on disk is never modified.
+//! labels. They are mirrored to an adjacent XMP sidecar and indexed in the
+//! device-local SQLite `photo_ratings` table; the original image is unchanged.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,18 +43,19 @@ pub fn set_photo_rating(
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
     let repo = state.repository()?;
+    let source = state.resolve_library_path(&path)?;
     let rating = rating.clamp(0, 5);
     let label = sanitize_label(&label);
-    if rating == 0 && label.is_empty() {
-        repo.delete_photo_rating(&path)?;
-        return Ok(0);
-    }
     let rated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    repo.set_photo_rating_row(&path, rating, &label, rated_at)?;
-    Ok(rated_at)
+    crate::sidecar::write_rating(&repo, &path, &source, rating, &label, rated_at)?;
+    Ok(if rating == 0 && label.is_empty() {
+        0
+    } else {
+        rated_at
+    })
 }
 
 fn sanitize_label(label: &str) -> String {

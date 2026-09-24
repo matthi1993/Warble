@@ -7,6 +7,7 @@ mod library;
 #[cfg(desktop)]
 mod menu;
 mod settings;
+mod sidecar;
 mod tasks;
 
 use app_state::AppState;
@@ -22,9 +23,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Spin up the priority task pool early so worker threads
-            // are warm before the first image request.
-            let _ = tasks::pool();
             library::init_thumbnail_cache(app);
             library::init_hd_image_cache(app);
             library::init_library_repository(app);
@@ -37,19 +35,27 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             commands::select_folders_dialog,
-            commands::import_folder,
+            commands::import_folders,
             commands::bind_media_root,
             commands::list_imported_folders,
             commands::refresh_imported_folders,
             commands::refresh_folder,
+            commands::index_folder_images,
+            commands::refresh_photo_parent,
             commands::remove_imported_folder,
+            commands::reset_workspace,
             commands::get_photos_in_folder,
+            commands::get_folder_photo_counts,
+            commands::get_all_photos,
             commands::get_thumbnail,
             commands::get_full_image_bytes,
-            commands::get_raw_image_bytes,
             commands::get_hd_image_bytes,
             commands::cancel_image_request,
+            commands::promote_image_request,
             commands::get_exif_metadata,
+            commands::set_photo_metadata,
+            commands::get_cached_photo_filter_metadata,
+            commands::get_photo_filter_metadata,
             commands::get_cache_settings,
             commands::set_thumbnail_cache_max,
             commands::set_hd_image_cache_max,
@@ -58,15 +64,14 @@ pub fn run() {
             commands::clear_thumbnail_cache,
             commands::clear_hd_image_cache,
             commands::clear_full_image_memory_cache,
-            commands::set_background_pool_workers,
             commands::set_cache_settings,
             commands::get_cache_disk_usage,
-            commands::get_task_stats,
-            commands::cancel_all_tasks,
             commands::reveal_in_file_manager,
             commands::open_photo_in_app,
+            commands::open_raw_in_default_app,
             commands::get_photo_variants,
             commands::set_photo_variant,
+            commands::photo_variant_exists,
             commands::save_photo_variant,
             commands::trash_photo_variant,
             commands::trash_photo_group,
@@ -85,12 +90,6 @@ pub fn run() {
             commands::clear_photo_edit,
             commands::get_photo_ratings,
             commands::set_photo_rating,
-            commands::get_open_library_path,
-            commands::select_library_dialog,
-            commands::save_library,
-            commands::save_library_as,
-            commands::save_open_library,
-            commands::load_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

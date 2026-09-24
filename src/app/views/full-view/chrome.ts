@@ -10,22 +10,28 @@
 import { html, type TemplateResult } from "lit";
 import type { Photo } from "@domain/photo";
 import {
-  availableFormats,
   availableVariants,
+  RAW_EXTS,
   type PhotoFormat,
 } from "@domain/photo";
 import type {
-  ImageFit,
   ImageSizing,
   ImageSmoothingQuality,
-} from "@ui/photos/pf-image-canvas";
-import type { BgColor } from "@services/view-state/view-state-service";
+} from "@features/image-viewer/pf-image-canvas";
+import {
+  FRAME_RADII,
+  FRAME_SIZES,
+  PROOFING_SIZES,
+  type BgColor,
+  type FrameSize,
+  type FrameRadius,
+  type ProofingSize,
+} from "@services/view-state/view-state-service";
 
 export type FullViewMenu =
   | "bg"
-  | "fit"
-  | "sizing"
-  | "smoothing"
+  | "frame"
+  | "view"
   | "format"
   | "variant";
 
@@ -42,19 +48,22 @@ export interface ToolbarOptions {
     variant: string
   ) => boolean;
   onToggleMenu: (which: FullViewMenu) => void;
-  onSetFormat: (f: PhotoFormat) => void;
+  onOpenRaw: (path: string) => void;
   onSetVariant: (key: string) => void;
   onDeletePhoto: () => void;
   onOpenIn: () => void;
   deletingPhoto: boolean;
+  fileActionBusy: boolean;
   openingIn: boolean;
+  openingRaw: boolean;
+  showFullscreenToggle: boolean;
   onToggleFullscreen: () => void;
   onClose: () => void;
 }
 
 export function renderToolbar(opts: ToolbarOptions): TemplateResult {
   const { photo, index, total, fullscreen, selection: sel, openMenu } = opts;
-  const formats = availableFormats(photo);
+  const rawFile = photo.files?.find((file) => RAW_EXTS.includes(file.extension.toLowerCase()));
   const variants = sel !== null ? availableVariants(photo, sel.format) : [];
   return html`
     <div class="toolbar">
@@ -63,22 +72,12 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
         <span class="counter">${index + 1} / ${total}</span>
       </div>
       <div class="toolbar-center">
-        ${sel !== null && formats.length > 1
-          ? html`<div
-              class="format-switch"
-              role="group"
-              aria-label="File format"
-            >
-              ${formats.map(
-                (f) => html`<button
-                  aria-pressed=${sel.format === f}
-                  @click=${() => opts.onSetFormat(f)}
-                >
-                  ${f}
-                </button>`
-              )}
-            </div>`
-          : null}
+        ${rawFile ? html`<button
+          class="menu-trigger"
+          type="button"
+          ?disabled=${opts.openingRaw}
+          @click=${() => opts.onOpenRaw(rawFile.path)}
+        >${opts.openingRaw ? "Opening RAW…" : "Open RAW in…"}</button>` : null}
         ${sel !== null && variants.length >= 1
           ? html`<span class="menu-wrap">
               <button
@@ -126,27 +125,28 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
           icon="trash"
           danger
           label=${opts.deletingPhoto ? "Moving photo to Bin…" : "Delete photo and all variants (Delete)"}
-          ?disabled=${opts.deletingPhoto}
+          ?loading=${opts.deletingPhoto}
+          ?disabled=${opts.deletingPhoto || opts.fileActionBusy}
           @click=${opts.onDeletePhoto}
         ></pf-icon-button>
       </div>
       <div class="toolbar-right">
-        <pf-icon-button
-          icon=${fullscreen ? "minimize" : "maximize"}
-          label=${fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          @click=${opts.onToggleFullscreen}
-        ></pf-icon-button>
+        ${opts.showFullscreenToggle
+          ? html`<pf-icon-button
+              icon=${fullscreen ? "minimize" : "maximize"}
+              label=${fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              @click=${opts.onToggleFullscreen}
+            ></pf-icon-button>`
+          : null}
         <button
           class="close-btn"
           type="button"
-          aria-label="Close full view"
-          title="Close (Esc)"
+          aria-label="Back to grid"
+          title="Back to grid (Esc)"
           @click=${opts.onClose}
           @pointerdown=${(e: Event) => e.stopPropagation()}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M6 6 L18 18 M18 6 L6 18" stroke-linecap="round" />
-          </svg>
+          <pf-icon name="grid"></pf-icon>
         </button>
       </div>
     </div>
@@ -154,30 +154,33 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
 }
 
 export interface BottombarOptions {
+  immersive: boolean;
   bg: BgColor;
-  fit: ImageFit;
+  proofingSize: ProofingSize;
+  frameSize: FrameSize;
+  frameColor: BgColor;
+  frameRadius: FrameRadius;
   sizing: ImageSizing;
   smoothing: ImageSmoothingQuality;
   openMenu: FullViewMenu | null;
   bgCss: (bg: BgColor) => string;
   bgLabel: (bg: BgColor) => string;
-  fitLabel: (m: ImageFit) => string;
-  sizingLabel: (s: ImageSizing) => string;
-  smoothingLabel: (q: ImageSmoothingQuality) => string;
   onToggleMenu: (which: FullViewMenu) => void;
   onSetBg: (bg: BgColor) => void;
-  onSetFit: (m: ImageFit) => void;
+  onSetProofingSize: (size: ProofingSize) => void;
+  onSetFrameSize: (size: FrameSize) => void;
+  onSetFrameColor: (color: BgColor) => void;
+  onSetFrameRadius: (radius: FrameRadius) => void;
   onSetSizing: (s: ImageSizing) => void;
   onSetSmoothing: (q: ImageSmoothingQuality) => void;
-  /** Master post-process switch, shown as a quick toggle next to
-   *  "Scale" so the user can flip the global look on/off without
-   *  opening the side panel. */
   postProcessEnabled: boolean;
   onTogglePostProcess: () => void;
+  onToggleImmersive: () => void;
+  onPlaySlideshow: () => void;
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
-  const { bg, fit, sizing, smoothing, openMenu } = opts;
+  const { bg, proofingSize, frameSize, frameColor, frameRadius, sizing, smoothing, openMenu } = opts;
   return html`
     <div class="bottombar">
       <span class="menu-wrap">
@@ -193,21 +196,25 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
           <pf-icon name="chevron-down"></pf-icon>
         </button>
         ${openMenu === "bg"
-          ? html`<div class="menu-popup" role="menu">
-              ${(["black", "grey", "white"] as BgColor[]).map(
-                (b) => html`<button
-                  class="menu-item"
-                  role="menuitemradio"
-                  aria-pressed=${bg === b}
-                  @click=${() => opts.onSetBg(b)}
-                >
-                  <span
-                    class="swatch"
-                    style="background:${opts.bgCss(b)}"
-                  ></span>
-                  ${opts.bgLabel(b)}
-                </button>`
-              )}
+          ? html`<div class="menu-popup settings-menu" role="group" aria-label="Background settings">
+              <div class="settings-section" role="group" aria-label="Background color">
+                <span class="settings-section-label">Color</span>
+                <div class="settings-options">
+                  ${(["black", "grey", "white"] as BgColor[]).map((b) => html`<button
+                    class="menu-item" type="button" aria-pressed=${bg === b}
+                    @click=${() => opts.onSetBg(b)}
+                  ><span class="swatch" style="background:${opts.bgCss(b)}"></span>${opts.bgLabel(b)}</button>`)}
+                </div>
+              </div>
+              <div class="settings-section" role="group" aria-label="Proofing margin size">
+                <span class="settings-section-label">Proofing</span>
+                <div class="settings-options">
+                  ${PROOFING_SIZES.map((size) => html`<button
+                    class="menu-item" type="button" aria-pressed=${proofingSize === size}
+                    @click=${() => opts.onSetProofingSize(size)}
+                  >${size === 0 ? "None" : `${size}px`}</button>`)}
+                </div>
+              </div>
             </div>`
           : null}
       </span>
@@ -216,69 +223,70 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
           class="menu-trigger"
           type="button"
           aria-haspopup="menu"
-          aria-expanded=${openMenu === "fit"}
-          @click=${() => opts.onToggleMenu("fit")}
+          aria-expanded=${openMenu === "frame"}
+          @click=${() => opts.onToggleMenu("frame")}
         >
-          Margin: ${opts.fitLabel(fit)}
+          <span class="swatch" style="background:${opts.bgCss(frameColor)}"></span>
+          Frame: ${frameSize === 0 ? "None" : `${frameSize}px`}
           <pf-icon name="chevron-down"></pf-icon>
         </button>
-        ${openMenu === "fit"
-          ? html`<div class="menu-popup" role="menu">
-              <button
-                class="menu-item"
-                role="menuitemradio"
-                aria-pressed=${fit === "contain"}
-                @click=${() => opts.onSetFit("contain")}
-                title="No margin — image flush to the panel edges"
-              >
-                None
-              </button>
-              <button
-                class="menu-item"
-                role="menuitemradio"
-                aria-pressed=${fit === "tight"}
-                @click=${() => opts.onSetFit("tight")}
-                title="Tight margin"
-              >
-                Tight
-              </button>
-              <button
-                class="menu-item"
-                role="menuitemradio"
-                aria-pressed=${fit === "proof"}
-                @click=${() => opts.onSetFit("proof")}
-                title="Generous proof margin"
-              >
-                Proof
-              </button>
-            </div>`
-          : null}
+        ${openMenu === "frame" ? html`<div class="menu-popup settings-menu" role="group" aria-label="Frame settings">
+          <div class="settings-section" role="group" aria-label="Frame size">
+            <span class="settings-section-label">Size</span>
+            <div class="settings-options">
+              ${FRAME_SIZES.map((size) => html`<button
+                class="menu-item" type="button" aria-pressed=${frameSize === size}
+                @click=${() => opts.onSetFrameSize(size)}
+              >${size === 0 ? "None" : `${size}px`}</button>`)}
+            </div>
+          </div>
+          <div class="settings-section" role="group" aria-label="Frame color">
+            <span class="settings-section-label">Color</span>
+            <div class="settings-options">
+              ${(["white", "grey", "black"] as BgColor[]).map((color) => html`<button
+                class="menu-item" type="button" aria-pressed=${frameColor === color}
+                @click=${() => opts.onSetFrameColor(color)}
+              ><span class="swatch" style="background:${opts.bgCss(color)}"></span>${opts.bgLabel(color)}</button>`)}
+            </div>
+          </div>
+          <div class="settings-section" role="group" aria-label="Inner corner radius">
+            <span class="settings-section-label">Inner corners</span>
+            <div class="settings-options">
+              ${FRAME_RADII.map((radius) => html`<button
+                class="menu-item" type="button" aria-pressed=${frameRadius === radius}
+                @click=${() => opts.onSetFrameRadius(radius)}
+              >${radius === 0 ? "Square" : `${radius}px`}</button>`)}
+            </div>
+          </div>
+        </div>` : null}
       </span>
       <span class="menu-wrap">
         <button
           class="menu-trigger"
           type="button"
           aria-haspopup="menu"
-          aria-expanded=${openMenu === "sizing"}
-          @click=${() => opts.onToggleMenu("sizing")}
+          aria-expanded=${openMenu === "view"}
+          @click=${() => opts.onToggleMenu("view")}
         >
-          Scale: ${opts.sizingLabel(sizing)}
+          View
           <pf-icon name="chevron-down"></pf-icon>
         </button>
-        ${openMenu === "sizing"
-          ? html`<div class="menu-popup" role="menu">
+        ${openMenu === "view" ? html`<div class="menu-popup settings-menu view-menu" role="group" aria-label="View settings">
+          <div class="settings-section" role="group" aria-label="Scale">
+            <span class="settings-section-label">Scale</span>
+            <div class="settings-options">
               <button
                 class="menu-item"
-                role="menuitemradio"
+                type="button"
                 aria-pressed=${sizing === "fit"}
                 @click=${() => opts.onSetSizing("fit")}
-                title="Image fully visible inside the margin"
+                title="Image fully visible inside the frame"
               >
                 Contain
               </button>
               <button
                 class="menu-item"
-                role="menuitemradio"
+                type="button"
                 aria-pressed=${sizing === "fill"}
                 @click=${() => opts.onSetSizing("fill")}
                 title="Image fills the stage (may crop)"
@@ -287,53 +295,43 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
               </button>
               <button
                 class="menu-item"
-                role="menuitemradio"
+                type="button"
                 aria-pressed=${sizing === "hybrid"}
                 @click=${() => opts.onSetSizing("hybrid")}
                 title="Cover for wide landscape (≥3:2), contain otherwise"
               >
                 Hybrid
               </button>
-            </div>`
-          : null}
-     </span>
-     <span class="menu-wrap">
-       <button
-         class="menu-trigger"
-         type="button"
-         aria-haspopup="menu"
-         aria-expanded=${openMenu === "smoothing"}
-         @click=${() => opts.onToggleMenu("smoothing")}
-       >
-         Quality: ${opts.smoothingLabel(smoothing)}
-         <pf-icon name="chevron-down"></pf-icon>
-       </button>
-       ${openMenu === "smoothing"
-         ? html`<div class="menu-popup" role="menu">
-             ${(["low", "medium", "high"] as ImageSmoothingQuality[]).map(
-               (q) => html`<button
-                 class="menu-item"
-                 role="menuitemradio"
-                 aria-pressed=${smoothing === q}
-                 @click=${() => opts.onSetSmoothing(q)}
-               >
-                 ${q.charAt(0).toUpperCase() + q.slice(1)}
-               </button>`
-             )}
-           </div>`
-         : null}
-     </span>
-     <span class="menu-wrap">
-       <button
-         class="menu-trigger"
-         type="button"
-         aria-pressed=${opts.postProcessEnabled}
-          title="Toggle post-processing (grain, dust, post curve)"
-          @click=${opts.onTogglePostProcess}
-        >
-          Post: ${opts.postProcessEnabled ? "On" : "Off"}
-        </button>
+            </div>
+          </div>
+          <div class="settings-section" role="group" aria-label="Quality">
+            <span class="settings-section-label">Quality</span>
+            <div class="settings-options">
+              ${(["low", "medium", "high"] as ImageSmoothingQuality[]).map((q) => html`<button
+                class="menu-item" type="button" aria-pressed=${smoothing === q}
+                @click=${() => opts.onSetSmoothing(q)}
+              >${q.charAt(0).toUpperCase() + q.slice(1)}</button>`)}
+            </div>
+          </div>
+          <div class="settings-section" role="group" aria-label="Post-Processing">
+            <span class="settings-section-label">Post-Processing</span>
+            <div class="settings-options">
+              <button class="menu-item" type="button" aria-pressed=${opts.postProcessEnabled}
+                title="Toggle post-processing (grain, dust, post curve)"
+                @click=${opts.onTogglePostProcess}
+              >${opts.postProcessEnabled ? "On" : "Off"}</button>
+            </div>
+          </div>
+        </div>` : null}
       </span>
+      <button class="menu-trigger" type="button" aria-pressed=${opts.immersive}
+        title=${opts.immersive ? "Exit immersive view" : "Enter immersive view"}
+        @click=${opts.onToggleImmersive}>
+        <pf-icon name="focus"></pf-icon> Immersive
+      </button>
+      <button class="menu-trigger" type="button" title="Start slideshow" @click=${opts.onPlaySlideshow}>
+        <pf-icon name="play"></pf-icon> Play
+      </button>
     </div>
   `;
 }

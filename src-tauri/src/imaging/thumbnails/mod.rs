@@ -4,23 +4,13 @@
 //! 2. On miss, decode the source. JPEGs (and embedded RAW previews) take a
 //!    fast DCT-scaled path; everything else falls back to `image`.
 //! 3. Resize to the target width with `fast_image_resize` (SIMD).
-//! 4. Re-encode JPEG, persist to the disk cache, return base64.
-
-//! Thumbnail rendering pipeline.
-//!
-//! 1. Look up an on-disk cached JPEG keyed by `(path, mtime, size)`.
-//! 2. On miss, decode the source. JPEGs (and embedded RAW previews) take a
-//!    fast DCT-scaled path; everything else falls back to `image`.
-//! 3. Resize to the target width with `fast_image_resize` (SIMD).
-//! 4. Re-encode JPEG, persist to the disk cache, return base64.
+//! 4. Re-encode JPEG, persist to the disk cache, return the JPEG bytes.
 
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine;
 use image::{ImageFormat, ImageReader};
 
 use super::exif::{self, IDENTITY};
@@ -35,7 +25,7 @@ const TARGET_WIDTH: u32 = 320;
 const JPEG_QUALITY: u8 = 80;
 /// Bumped when the pipeline changes in a way that invalidates existing
 /// on-disk cache entries (e.g. EXIF-orientation rotation added).
-const PIPELINE_VERSION: u32 = 5;
+const PIPELINE_VERSION: u32 = 6;
 
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
@@ -75,12 +65,12 @@ pub fn cache_disk_usage() -> Option<(u64, usize)> {
     DISK_CACHE.get().map(|c| c.disk_usage())
 }
 
-/// Generate a base64-encoded JPEG thumbnail for the given photo path.
+/// Generate JPEG thumbnail bytes for the given photo path.
 ///
 /// `cancel` is checked between the major steps (cache lookup, source
 /// read, decode, resize) so a cancelled request frees the worker
 /// promptly.
-pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<String, String> {
+pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
@@ -95,7 +85,7 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Str
 
     if let (Some(c), Some(k)) = (cache, cache_key) {
         if let Some(bytes) = c.get(&k) {
-            return Ok(B64.encode(&bytes));
+            return Ok(bytes);
         }
     }
 
@@ -112,7 +102,7 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Str
     if let (Some(c), Some(k)) = (cache, cache_key) {
         c.put(&k, &jpeg_bytes);
     }
-    Ok(B64.encode(&jpeg_bytes))
+    Ok(jpeg_bytes)
 }
 
 fn render_from_jpeg_file(
@@ -132,18 +122,14 @@ fn render_from_jpeg_file(
 fn render_from_raw(
     path: &Path,
     library_key: &str,
-    _cancel: &CancelToken,
+    cancel: &CancelToken,
 ) -> Result<Vec<u8>, String> {
     // Use a 2x source so portrait thumbnails can still reach the requested
-    // width after the aspect-preserving resize, without demosaicing the full
-    // sensor just to produce a 320px JPEG.
+    // width after the aspect-preserving resize.
     let preview = raw_preview::extract_preview_sized(path, Some((TARGET_WIDTH * 2) as usize))?;
-    // The RAW preview's EXIF tags belong to the original RAW file,
-    // not the demosaiced output we just produced. Parse them once
-    // from the RAW bytes via `read_full_metadata` so the cache row
-    // is populated with the *real* orientation tag (which the info
-    // panel surfaces) \u2014 not `preview.orientation`, which is now
-    // always `IDENTITY` since `imagepipe` pre-rotates the pixels.
+    cancel.check()?;
+    // Keep the original EXIF available for the info panel. The preview
+    // has already been oriented and carries no metadata.
     if exif_cache::get(library_key, path).is_none() {
         if let Some((orient, metadata)) = exif::read_full_metadata(path) {
             exif_cache::warm_with(library_key, path, orient, &metadata);

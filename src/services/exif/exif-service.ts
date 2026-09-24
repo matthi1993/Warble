@@ -7,9 +7,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ExifMetadata } from "@domain/exif";
 
-export async function fetchExif(photoPath: string): Promise<ExifMetadata> {
+export async function fetchExif(
+  photoPath: string,
+  requestId?: number
+): Promise<ExifMetadata> {
   const meta = await invoke<ExifMetadata | null>("get_exif_metadata", {
     photoPath,
+    requestId,
   });
   return meta ?? {};
 }

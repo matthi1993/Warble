@@ -1,4 +1,4 @@
-//! Device-only state. Nothing in this file is copied into a `.warble` file.
+//! Device-only state. It stays in the app-data directory on this device.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,12 +7,6 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::settings::CacheSettings;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FileFingerprint {
-    pub size: u64,
-    pub content_hash: String,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct RootGrant {
@@ -25,12 +19,6 @@ struct RootGrant {
 struct DeviceData {
     #[serde(default)]
     cache_settings: Option<CacheSettings>,
-    #[serde(default)]
-    last_library_path: Option<String>,
-    #[serde(default)]
-    library_bookmark: Option<String>,
-    #[serde(default)]
-    library_fingerprint: Option<FileFingerprint>,
     // Legacy v8 fields. They are migrated to `root_grants` when loaded.
     #[serde(default)]
     root_bindings: HashMap<String, HashMap<String, String>>,
@@ -66,22 +54,6 @@ impl DeviceStorage {
         persist(&inner)
     }
 
-    pub fn last_library_path(&self) -> Option<PathBuf> {
-        self.inner
-            .lock()
-            .ok()?
-            .data
-            .last_library_path
-            .as_deref()
-            .map(PathBuf::from)
-    }
-
-    pub fn set_last_library_path(&self, path: Option<&Path>) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        inner.data.last_library_path = path.map(|p| p.to_string_lossy().into_owned());
-        persist(&inner)
-    }
-
     pub fn cache_settings(&self) -> Option<CacheSettings> {
         self.inner.lock().ok()?.data.cache_settings
     }
@@ -89,28 +61,6 @@ impl DeviceStorage {
     pub fn set_cache_settings(&self, settings: CacheSettings) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         inner.data.cache_settings = Some(settings);
-        persist(&inner)
-    }
-
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-    pub fn library_bookmark(&self) -> Option<String> {
-        self.inner.lock().ok()?.data.library_bookmark.clone()
-    }
-
-    pub fn library_fingerprint(&self) -> Option<FileFingerprint> {
-        self.inner.lock().ok()?.data.library_fingerprint.clone()
-    }
-
-    pub fn set_library_source(
-        &self,
-        path: Option<&Path>,
-        bookmark: Option<&str>,
-        fingerprint: Option<FileFingerprint>,
-    ) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        inner.data.last_library_path = path.map(|path| path.to_string_lossy().into_owned());
-        inner.data.library_bookmark = bookmark.map(str::to_string);
-        inner.data.library_fingerprint = fingerprint;
         persist(&inner)
     }
 
@@ -122,6 +72,9 @@ impl DeviceStorage {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(id, grants)| {
+                #[cfg(target_os = "ios")]
+                let selected = grants.iter().find(|grant| grant.bookmark.is_some())?;
+                #[cfg(not(target_os = "ios"))]
                 let selected = grants
                     .iter()
                     .find(|grant| Path::new(&grant.path).is_dir())
@@ -219,12 +172,24 @@ impl DeviceStorage {
             .into_iter()
             .flat_map(|(root_id, grants)| {
                 grants.into_iter().filter_map(move |grant| {
-                    grant
-                        .bookmark
-                        .map(|bookmark| (root_id.clone(), bookmark))
+                    grant.bookmark.map(|bookmark| (root_id.clone(), bookmark))
                 })
             })
             .collect()
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn bookmark_for(&self, library_id: &str, root_id: &str, path: &Path) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()?
+            .data
+            .root_grants
+            .get(library_id)?
+            .get(root_id)?
+            .iter()
+            .find(|grant| Path::new(&grant.path) == path)
+            .and_then(|grant| grant.bookmark.clone())
     }
 
     pub fn remove_root(&self, library_id: &str, root_id: &str) -> Result<(), String> {
@@ -232,6 +197,12 @@ impl DeviceStorage {
         if let Some(grants) = inner.data.root_grants.get_mut(library_id) {
             grants.remove(root_id);
         }
+        persist(&inner)
+    }
+
+    pub fn remove_library_grants(&self, library_id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        inner.data.root_grants.remove(library_id);
         persist(&inner)
     }
 
@@ -305,10 +276,8 @@ mod tests {
 
     #[test]
     fn migrates_legacy_grant_and_selects_an_available_alternative() {
-        let dir = std::env::temp_dir().join(format!(
-            "warble-device-storage-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("warble-device-storage-{}", uuid::Uuid::new_v4()));
         let first = dir.join("usb");
         let second = dir.join("smb");
         std::fs::create_dir_all(&first).unwrap();

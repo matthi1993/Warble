@@ -1,4 +1,4 @@
-export type { Photo, PhotoFile } from "./types";
+export type { Photo, PhotoFile, PhotoFilterInfo } from "./types";
 export type { PhotoFormat, VariantOption } from "./variants";
 export {
   availableFormats,
@@ -6,4 +6,5 @@ export {
   classifyFormat,
   fileForSelection,
   primarySelection,
+  RAW_EXTS,
 } from "./variants";

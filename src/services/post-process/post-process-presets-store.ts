@@ -4,7 +4,7 @@ import {
   defaultPostProcess,
   type PostProcessSettings,
 } from "./post-process-store";
-import { normalizeColor } from "@domain/edits";
+import { defaultTone, normalizeColor } from "@domain/edits";
 
 export type PostProcessPresetValues = Omit<PostProcessSettings, "enabled">;
 
@@ -14,16 +14,27 @@ export interface PostProcessPreset {
   values: PostProcessPresetValues;
 }
 
+export interface PresetExportFile {
+  version: 1;
+  postProcess: Array<Omit<PostProcessPreset, "id">>;
+}
+
 const LEGACY_STORAGE_KEY = "warble.postProcessPresets.v1";
 const listeners = new Set<(presets: readonly PostProcessPreset[]) => void>();
 
 function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
   return structuredClone({
+    tone: settings.tone,
     color: settings.color,
     curve: settings.curve,
     sharpen: settings.sharpen,
     grain: settings.grain,
+    bloom: settings.bloom,
   });
+}
+
+function createPresetId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function parse(raw: string): PostProcessPreset[] {
@@ -37,10 +48,14 @@ function parse(raw: string): PostProcessPreset[] {
         id: item.id,
         name: item.name,
         values: structuredClone({
+          tone: values.tone
+            ? { ...defaultTone(), ...values.tone }
+            : defaults.tone,
           color: values.color ? normalizeColor(values.color) : defaults.color,
           curve: values.curve ?? defaults.curve,
           sharpen: values.sharpen ?? defaults.sharpen,
           grain: values.grain ?? defaults.grain,
+          bloom: values.bloom ?? defaults.bloom,
         }),
       }];
     });
@@ -59,22 +74,16 @@ function loadLegacy(): PostProcessPreset[] {
 let presets = loadLegacy();
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
-let loadGeneration = 0;
 let persistChain: Promise<void> = Promise.resolve();
-let persistError: unknown = null;
 
 function persist(): Promise<void> {
   const presetsJson = JSON.stringify(presets);
   const operation = persistChain.then(() =>
     invoke<void>("set_post_process_presets", { presetsJson })
   );
-  persistChain = operation.then(
-    () => { persistError = null; },
-    (error) => {
-      persistError = error;
-      console.warn("post-process presets: failed to persist", error);
-    }
-  );
+  persistChain = operation.catch((error) => {
+    console.warn("post-process presets: failed to persist", error);
+  });
   return operation;
 }
 
@@ -88,10 +97,8 @@ export function getPostProcessPresets(): readonly PostProcessPreset[] {
 }
 
 async function hydrate(migrateLegacy: boolean): Promise<void> {
-  const generation = loadGeneration;
   try {
     const raw = await invoke<string | null>("get_post_process_presets");
-    if (generation !== loadGeneration) return;
     if (raw !== null) {
       presets = parse(raw);
     } else if (migrateLegacy && presets.length > 0) {
@@ -105,10 +112,8 @@ async function hydrate(migrateLegacy: boolean): Promise<void> {
   } catch (error) {
     console.warn("post-process presets: failed to load", error);
   } finally {
-    if (generation === loadGeneration) {
-      loaded = true;
-      notify();
-    }
+    loaded = true;
+    notify();
   }
 }
 
@@ -118,25 +123,6 @@ export function loadPostProcessPresets(): Promise<void> {
   if (loaded) return Promise.resolve();
   if (!loadPromise) loadPromise = hydrate(true);
   return loadPromise;
-}
-
-/** Drop the previous library's presets and load the newly opened library. */
-export function reloadPostProcessPresets(): Promise<void> {
-  loadGeneration += 1;
-  loaded = false;
-  loadPromise = null;
-  presets = [];
-  notify();
-  loadPromise = hydrate(false);
-  return loadPromise;
-}
-
-/** Wait until every preset change has reached SQLite before snapshotting or
- * replacing the active library. */
-export async function flushPostProcessPresets(): Promise<void> {
-  if (loadPromise) await loadPromise;
-  await persistChain;
-  if (persistError) await persist();
 }
 
 /** Save the current tool values. Reusing a name updates that preset. */
@@ -150,9 +136,7 @@ export function savePostProcessPreset(
     (preset) => preset.name.toLocaleLowerCase() === cleanName.toLocaleLowerCase()
   );
   const preset: PostProcessPreset = {
-    id: existingIndex >= 0
-      ? presets[existingIndex].id
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+    id: existingIndex >= 0 ? presets[existingIndex].id : createPresetId(),
     name: cleanName,
     values: snapshot(settings),
   };
@@ -162,6 +146,66 @@ export function savePostProcessPreset(
   void persist().catch(() => {});
   notify();
   return preset;
+}
+
+/** Serialize all currently supported preset groups for the settings export. */
+export function exportPostProcessPresets(): string {
+  const file: PresetExportFile = {
+    version: 1,
+    postProcess: presets.map(({ name, values }) => ({
+      name,
+      values: structuredClone(values),
+    })),
+  };
+  return JSON.stringify(file, null, 2);
+}
+
+/** Import post-process presets, keeping existing names and adding suffixes to
+ * collisions so importing can never overwrite a user's saved preset. */
+export function importPostProcessPresets(raw: string): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("The selected file is not valid JSON.");
+  }
+
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object" &&
+        Array.isArray((parsed as { postProcess?: unknown }).postProcess)
+      ? (parsed as { postProcess: unknown[] }).postProcess
+      : null;
+  if (!entries) throw new Error("The selected file contains no post-process presets.");
+
+  const parsedPresets = parse(JSON.stringify(entries.map((entry) => ({
+    ...(entry as object),
+    id: typeof (entry as { id?: unknown }).id === "string"
+      ? (entry as { id: string }).id
+      : createPresetId(),
+  }))));
+  const usedNames = new Set(presets.map((preset) => preset.name.toLocaleLowerCase()));
+  const imported = parsedPresets.map((preset) => {
+    const baseName = preset.name.trim();
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name.toLocaleLowerCase())) {
+      name = `${baseName} (${suffix})`;
+      suffix += 1;
+    }
+    usedNames.add(name.toLocaleLowerCase());
+    return {
+      id: createPresetId(),
+      name,
+      values: structuredClone(preset.values),
+    };
+  });
+
+  if (imported.length === 0) return 0;
+  presets = [...presets, ...imported];
+  void persist().catch(() => {});
+  notify();
+  return imported.length;
 }
 
 export function deletePostProcessPreset(id: string): void {

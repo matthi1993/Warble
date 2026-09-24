@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-prepareFolder"
+description = "Enables the prepareFolder command without any pre-configured scope."
+commands.allow = ["prepareFolder"]
+
+[[permission]]
+identifier = "deny-prepareFolder"
+description = "Denies the prepareFolder command without any pre-configured scope."
+commands.deny = ["prepareFolder"]

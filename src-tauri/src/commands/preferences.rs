@@ -28,7 +28,7 @@ pub fn set_post_process_presets(
     presets_json: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // Reject malformed data before putting it into a library file. The
+    // Reject malformed data before putting it into the local catalog. The
     // frontend owns the schema and handles forward-compatible defaults.
     serde_json::from_str::<serde_json::Value>(&presets_json).map_err(|e| e.to_string())?;
     state
@@ -43,10 +43,38 @@ pub fn get_photo_effects(state: State<'_, AppState>) -> Result<Option<String>, S
 
 #[tauri::command]
 pub fn set_photo_effects(effects_json: String, state: State<'_, AppState>) -> Result<(), String> {
-    serde_json::from_str::<serde_json::Value>(&effects_json).map_err(|e| e.to_string())?;
-    state
-        .repository()?
-        .set_setting(PHOTO_EFFECTS_KEY, &effects_json)
+    let next = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&effects_json)
+        .map_err(|e| e.to_string())?;
+    let repo = state.repository()?;
+    let previous = repo
+        .get_setting(PHOTO_EFFECTS_KEY)?
+        .and_then(|raw| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()
+        })
+        .unwrap_or_default();
+    let paths = previous
+        .keys()
+        .chain(next.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    for path in paths {
+        // `effects_json` is the whole map. Only touch the source file whose
+        // value changed; otherwise adjusting one slider would rewrite every
+        // sidecar in a large library.
+        if previous.get(path) == next.get(path) {
+            continue;
+        }
+        let source = match state.resolve_library_path(path) {
+            Ok(source) => source,
+            Err(error) => {
+                // Keep the device-local index for a disconnected root. Its
+                // sidecar will be reconciled when that root is connected.
+                eprintln!("skipping effects sidecar for {path}: {error}");
+                continue;
+            }
+        };
+        crate::sidecar::write_effects(&source, next.get(path))?;
+    }
+    repo.set_setting(PHOTO_EFFECTS_KEY, &effects_json)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,9 +85,7 @@ pub struct PhotoVariantPref {
 }
 
 #[tauri::command]
-pub fn get_photo_variants(
-    state: State<'_, AppState>,
-) -> Result<Vec<PhotoVariantPref>, String> {
+pub fn get_photo_variants(state: State<'_, AppState>) -> Result<Vec<PhotoVariantPref>, String> {
     let repo = state.repository()?;
     let rows = repo.all_photo_variants()?;
     Ok(rows
@@ -90,10 +116,7 @@ pub fn get_last_folder(state: State<'_, AppState>) -> Result<Option<String>, Str
 }
 
 #[tauri::command]
-pub fn set_last_folder(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn set_last_folder(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let repo = state.repository()?;
     repo.set_setting(LAST_FOLDER_KEY, &path)
 }
@@ -104,7 +127,15 @@ pub fn set_last_folder(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewState {
     pub bg: Option<String>,
+    #[serde(default, rename = "proofingSize")]
+    pub proofing_size: Option<u32>,
     pub fit: Option<String>,
+    #[serde(default, rename = "frameSize")]
+    pub frame_size: Option<u32>,
+    #[serde(default, rename = "frameColor")]
+    pub frame_color: Option<String>,
+    #[serde(default, rename = "frameRadius")]
+    pub frame_radius: Option<u32>,
     #[serde(default)]
     pub sizing: Option<String>,
     #[serde(default)]
@@ -124,10 +155,7 @@ pub fn get_view_state(state: State<'_, AppState>) -> Result<Option<ViewState>, S
 }
 
 #[tauri::command]
-pub fn set_view_state(
-    view: ViewState,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn set_view_state(view: ViewState, state: State<'_, AppState>) -> Result<(), String> {
     let repo = state.repository()?;
     let json = serde_json::to_string(&view).map_err(|e| e.to_string())?;
     repo.set_setting(VIEW_STATE_KEY, &json)
@@ -167,10 +195,7 @@ pub fn get_app_view(state: State<'_, AppState>) -> Result<Option<AppView>, Strin
 }
 
 #[tauri::command]
-pub fn set_app_view(
-    view: AppView,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn set_app_view(view: AppView, state: State<'_, AppState>) -> Result<(), String> {
     let repo = state.repository()?;
     let json = serde_json::to_string(&view).map_err(|e| e.to_string())?;
     repo.set_setting(APP_VIEW_KEY, &json)

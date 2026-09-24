@@ -2,7 +2,6 @@
  * `pf-tone-slider-row` — single labelled slider for a tone adjustment
  * (Exposure, Contrast, etc.). Emits `change` with the control value and
  * `reset` when the value chip is double-clicked. Most controls use -100..100;
- * RAW cards can provide photographic units such as EV or Kelvin.
  */
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";

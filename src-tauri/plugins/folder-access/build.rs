@@ -1,10 +1,8 @@
 fn main() {
     tauri_plugin::Builder::new(&[
         "pickFolders",
-        "pickLibrary",
-        "exportLibrary",
         "resolveBookmark",
-        "replaceLibrary",
+        "prepareFolder",
         "trashFiles",
         "openIn",
     ])

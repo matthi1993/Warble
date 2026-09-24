@@ -1,15 +1,7 @@
-/**
- * `pf-card` — a generic disclosure-style edit card with a header
- * (chevron + title), an optional revert button slot, and a body that
- * shows/hides based on `open`.
- *
- * Used by the full-view edit side panel for Info / Crop / Basic
- * cards. The visual styling matches the legacy `.edit-card` rules in
- * `full-view.ts` so the in-place migration produces no UI change.
- */
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import "../icons/pf-icon";
+import "../controls/pf-effect-toggle";
 
 @customElement("pf-card")
 export class PfCard extends LitElement {
@@ -21,6 +13,7 @@ export class PfCard extends LitElement {
       background: var(--pf-surface-2);
       overflow: hidden;
     }
+    :host([effect-disabled]) { opacity: 0.5; }
     .header-row {
       display: flex;
       align-items: stretch;
@@ -89,6 +82,9 @@ export class PfCard extends LitElement {
   @property({ type: Boolean, reflect: true })
   open = false;
 
+  @property({ type: Boolean, attribute: "effect-disabled", reflect: true })
+  effectDisabled = false;
+
   private toggle = () => {
     this.dispatchEvent(
       new CustomEvent("toggle", {
@@ -111,6 +107,7 @@ export class PfCard extends LitElement {
           <pf-icon class="chevron" name="chevron-down"></pf-icon>
           <span>${this.title}</span>
         </button>
+        <pf-effect-toggle .disabled=${this.effectDisabled} .label=${this.title}></pf-effect-toggle>
         <slot name="revert"></slot>
       </div>
       <div class="body">

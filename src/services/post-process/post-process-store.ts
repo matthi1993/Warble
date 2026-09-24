@@ -19,16 +19,22 @@ import {
   normalizeColor,
   type ColorEdit,
   type CurveEdit,
+  type ToneEdit,
+  defaultTone,
 } from "@domain/edits";
 import {
   defaultGrain,
   defaultSharpen,
+  defaultBloom,
+  type BloomSettings,
   type GrainSettings,
   type SharpenSettings,
 } from "@services/effects/effects-store";
 
 export { defaultGrain, isGrainZero } from "@services/effects/effects-store";
 export type { GrainSettings } from "@services/effects/effects-store";
+export { defaultBloom, isBloomZero } from "@services/effects/effects-store";
+export type { BloomSettings } from "@services/effects/effects-store";
 
 export interface PostProcessSettings {
   /** Master switch. When false, the canvas skips the post pipeline
@@ -36,6 +42,7 @@ export interface PostProcessSettings {
    *  remain editable so users can audition a look without seeing
    *  it applied. */
   enabled: boolean;
+  tone: ToneEdit;
   color: ColorEdit;
   curve: CurveEdit;
   /** Global sharpening pass applied AFTER per-photo edits and the
@@ -44,28 +51,36 @@ export interface PostProcessSettings {
   sharpen: SharpenSettings;
   /** Resolution-independent film grain plus optional per-pixel noise. */
   grain: GrainSettings;
+  bloom: BloomSettings;
 }
 
-const STORAGE_KEY = "warble.postProcess.v3";
+const STORAGE_KEY = "warble.postProcess.v4";
+const LEGACY_STORAGE_KEY = "warble.postProcess.v3";
 
 function defaultSettings(): PostProcessSettings {
   return {
     enabled: true,
+    tone: defaultTone(),
     color: defaultColor(),
     curve: defaultCurve(),
     sharpen: defaultSharpen(),
     grain: defaultGrain(),
+    bloom: defaultBloom(),
   };
 }
 
 function load(): PostProcessSettings {
   if (typeof localStorage === "undefined") return defaultSettings();
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = localStorage.getItem(STORAGE_KEY)
+    ?? localStorage.getItem(LEGACY_STORAGE_KEY);
   if (!raw) return defaultSettings();
   try {
     const parsed = JSON.parse(raw) as Partial<PostProcessSettings>;
     return {
       enabled: parsed.enabled ?? true,
+      tone: parsed.tone
+        ? { ...defaultTone(), ...parsed.tone }
+        : defaultTone(),
       color: parsed.color ? normalizeColor(parsed.color) : defaultColor(),
       curve: parsed.curve ?? defaultCurve(),
       sharpen: parsed.sharpen
@@ -74,6 +89,9 @@ function load(): PostProcessSettings {
       grain: parsed.grain
         ? { ...defaultGrain(), ...parsed.grain }
         : defaultGrain(),
+      bloom: parsed.bloom
+        ? { ...defaultBloom(), ...parsed.bloom }
+        : defaultBloom(),
     };
   } catch (err) {
     console.warn("post-process: invalid persisted settings, resetting", err);
@@ -145,6 +163,14 @@ export function setPostColor(color: ColorEdit): void {
   commit({ ...getCommittedPostProcess(), color });
 }
 
+export function setPostTone(tone: ToneEdit): void {
+  commit({ ...getCommittedPostProcess(), tone });
+}
+
+export function resetPostTone(): void {
+  commit({ ...getCommittedPostProcess(), tone: defaultTone() });
+}
+
 export function setPostCurve(curve: CurveEdit): void {
   commit({ ...getCommittedPostProcess(), curve });
 }
@@ -163,6 +189,14 @@ export function setPostGrain(grain: GrainSettings): void {
 
 export function resetPostGrain(): void {
   commit({ ...getCommittedPostProcess(), grain: defaultGrain() });
+}
+
+export function setPostBloom(bloom: BloomSettings): void {
+  commit({ ...getCommittedPostProcess(), bloom });
+}
+
+export function resetPostBloom(): void {
+  commit({ ...getCommittedPostProcess(), bloom: defaultBloom() });
 }
 
 export function resetPostProcess(): void {

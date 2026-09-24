@@ -1,18 +1,3 @@
-/**
- * Styles for `<pf-full-view>`. Extracted from `full-view.ts` to keep
- * the orchestrator focused on logic. Includes toolbar / bottombar /
- * stage / edit rail / footer-button styling.
- *
- * Card-specific styling (info / crop / basic / tone slider) lives
- * inside each sub-component.
- *
- * Fullscreen philosophy: the host app-shell collapses its grid so
- * that `pf-full-view` fills the entire window. The layout inside is
- * identical to windowed mode — same flex column (toolbar →
- * stage-row → bottombar), same edit panel on the right. The only
- * difference is that all chrome overlays the image and one image click
- * toggles every control together.
- */
 import { css } from "lit";
 
 export const fullViewStyles = css`
@@ -27,66 +12,26 @@ export const fullViewStyles = css`
     outline: none;
     overflow: hidden;
   }
-  /* In fullscreen the host element is positioned to fill the
-     entire window by the app-shell grid — no position:fixed here
-     so the normal flex layout works inside. */
-  :host([fullscreen]) {
-    position: absolute;
-    inset: 0;
-    z-index: 1000;
-    overflow: hidden;
+  :host([presenting]),
+  :host([presenting]) * {
+    cursor: none !important;
   }
-  .toolbar,
-  .bottombar,
-  .nav,
-  .hint {
+  .toolbar-wrap,
+  .bottombar-wrap {
+    position: relative;
+    z-index: 30;
     transition: opacity 200ms ease;
   }
-  /* In fullscreen, chrome overlays the image instead of taking
-     up flex space, so the image fills the entire viewport. */
-  :host([fullscreen]) .toolbar-wrap {
+  :host([immersive]) .toolbar-wrap,
+  :host([immersive]) .bottombar-wrap {
     position: absolute;
-    top: 0;
-    left: 0;
+    left: var(--pf-fullview-left-inset, 0px);
     right: 0;
-    z-index: 10;
   }
-  :host([fullscreen]) .bottombar-wrap {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 10;
-  }
-  :host([fullscreen]) .nav {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 10;
-  }
-  :host([fullscreen]) .nav.prev {
-    left: 12px;
-  }
-  :host([fullscreen]) .nav.next {
-    right: 12px;
-  }
-  :host([fullscreen]) .stage-row {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-  }
-  :host([fullscreen]) .stage {
-    position: absolute;
-    inset: 0;
-  }
-  /* Fullscreen chrome uses explicit image clicks/taps, on every platform. */
-  :host([fullscreen][controls-hidden]) .toolbar-wrap,
-  :host([fullscreen][controls-hidden]) .bottombar-wrap,
-  :host([fullscreen][controls-hidden]) .nav,
-  :host([fullscreen][controls-hidden]) .hint,
-  :host([fullscreen][controls-hidden]) .edit-side-rail,
-  :host([fullscreen][controls-hidden]) pf-edit-side-panel,
-  :host([fullscreen][controls-hidden]) .fv-rating-overlay {
+  :host([immersive]) .toolbar-wrap { top: 0; }
+  :host([immersive]) .bottombar-wrap { bottom: 0; }
+  :host([immersive][controls-hidden]) .toolbar-wrap,
+  :host([immersive][controls-hidden]) .bottombar-wrap {
     opacity: 0;
     pointer-events: none;
   }
@@ -98,10 +43,6 @@ export const fullViewStyles = css`
     background: var(--pf-surface);
     color: var(--pf-text);
     border-bottom: 1px solid var(--pf-border);
-  }
-  :host([fullscreen]) .toolbar {
-    background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
-    backdrop-filter: blur(8px);
   }
   .toolbar-left,
   .toolbar-right {
@@ -120,12 +61,11 @@ export const fullViewStyles = css`
     gap: var(--pf-space-2);
     flex: 0 0 auto;
   }
-  /* Symmetric placeholder bar at the bottom — same vertical footprint
-     as the toolbar so the stage's centre lines up with the viewport's
-     centre. */
+  /* View controls can wrap on narrow screens without clipping their menus. */
   .bottombar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--pf-space-2);
     padding: var(--pf-space-2) var(--pf-space-3);
     background: var(--pf-surface);
@@ -133,10 +73,6 @@ export const fullViewStyles = css`
     border-top: 1px solid var(--pf-border);
     min-height: 32px;
     box-sizing: border-box;
-  }
-  :host([fullscreen]) .bottombar {
-    background: color-mix(in srgb, var(--pf-surface) 88%, transparent);
-    backdrop-filter: blur(8px);
   }
   .bottombar .menu-popup {
     top: auto;
@@ -156,32 +92,6 @@ export const fullViewStyles = css`
     font-size: var(--pf-text-xs);
     color: var(--pf-text-muted);
     font-variant-numeric: tabular-nums;
-  }
-  .format-switch {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    background: var(--pf-surface-2);
-    border: 1px solid var(--pf-border);
-    border-radius: var(--pf-radius-md);
-  }
-  .format-switch button {
-    background: transparent;
-    color: var(--pf-text);
-    border: none;
-    padding: 2px 10px;
-    font-size: var(--pf-text-xs);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    border-radius: var(--pf-radius-sm);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .format-switch button[aria-pressed="true"] {
-    background: var(--pf-accent-soft);
-    color: var(--pf-accent);
   }
   .menu-wrap {
     position: relative;
@@ -224,6 +134,45 @@ export const fullViewStyles = css`
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+  .settings-menu {
+    width: min(300px, calc(100vw - 32px));
+    min-width: 0;
+    box-sizing: border-box;
+    max-height: min(360px, calc(100vh - 96px));
+    overflow-y: auto;
+    gap: var(--pf-space-2);
+    padding: var(--pf-space-2);
+  }
+  .view-menu {
+    left: auto;
+    right: 0;
+  }
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .settings-section-label {
+    color: var(--pf-text-muted);
+    font-size: var(--pf-text-xs);
+    font-weight: 600;
+  }
+  .settings-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .settings-options .menu-item {
+    background: var(--pf-surface-2);
+    border: 1px solid var(--pf-border);
+  }
+  .settings-options .menu-item:hover {
+    background: var(--pf-surface-hover);
+  }
+  .settings-options .menu-item[aria-pressed="true"] {
+    background: var(--pf-accent-soft);
+    border-color: var(--pf-accent);
   }
   .menu-item {
     background: transparent;
@@ -273,51 +222,84 @@ export const fullViewStyles = css`
     min-width: 0;
     position: relative;
   }
+  :host([immersive]) .stage-row {
+    position: absolute;
+    inset: 0;
+  }
   pf-image-canvas {
     position: absolute;
     inset: 0;
   }
-  .fv-rating-overlay {
+  .slideshow-overlay {
     position: absolute;
-    bottom: var(--pf-space-3);
-    right: var(--pf-space-3);
-    z-index: 6;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
     pointer-events: none;
+    z-index: 2;
   }
-  .nav {
+  .slideshow-settings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pf-space-2);
+    padding: var(--pf-space-3);
+    font-size: var(--pf-text-sm);
+  }
+  .slideshow-settings h2 { margin: 0 0 var(--pf-space-2); font-size: var(--pf-text-base); }
+  .slideshow-settings select, .slideshow-settings input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 34px;
+    padding: 5px 9px;
+    color: var(--pf-text);
+    background: var(--pf-surface-2);
+    border: 1px solid var(--pf-border);
+    border-radius: var(--pf-radius-md);
+    font: inherit;
+    font-size: var(--pf-text-xs);
+  }
+  .slideshow-settings label {
+    color: var(--pf-text-muted);
+    font-size: var(--pf-text-xs);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .slideshow-select-wrap { position: relative; display: block; }
+  .slideshow-settings select { appearance: none; padding-right: 28px; cursor: pointer; }
+  .slideshow-settings select:hover { border-color: var(--pf-accent); }
+  .slideshow-settings select:focus-visible {
+    outline: 2px solid var(--pf-accent);
+    outline-offset: 1px;
+  }
+  .slideshow-select-wrap pf-icon {
     position: absolute;
     top: 50%;
+    right: 8px;
+    width: 13px;
+    height: 13px;
+    color: var(--pf-text-muted);
+    pointer-events: none;
     transform: translateY(-50%);
-    z-index: 6;
-    background: color-mix(in srgb, var(--pf-surface) 70%, transparent);
-    border: 1px solid var(--pf-border);
-    color: var(--pf-text);
-    border-radius: var(--pf-radius-full, 999px);
-    width: 36px;
-    height: 36px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+  }
+  .slideshow-settings button {
     cursor: pointer;
-    padding: 0;
-    backdrop-filter: blur(4px);
+    margin-top: var(--pf-space-3);
+    padding: var(--pf-space-2);
+    color: var(--pf-text);
+    background: var(--pf-surface-2);
+    border: 1px solid var(--pf-border);
+    border-radius: var(--pf-radius-sm);
   }
-  .nav.prev {
-    left: var(--pf-space-2);
+  .slideshow-settings button pf-icon { vertical-align: middle; }
+  .fv-rating-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 11;
+    pointer-events: none;
   }
-  .nav.next {
-    right: var(--pf-space-2);
-  }
-  .nav:hover {
-    background: var(--pf-surface-hover);
-    border-color: var(--pf-accent);
-  }
-  .nav:disabled {
-    opacity: 0.3;
-    cursor: default;
-  }
-  .nav pf-icon {
-    font-size: 1.1rem;
+  :host([immersive][controls-hidden]) .fv-rating-overlay {
+    visibility: hidden;
   }
   .close-btn {
     background: var(--pf-surface-2);
@@ -343,25 +325,6 @@ export const fullViewStyles = css`
     stroke-width: 2;
     fill: none;
   }
-  .hint {
-    position: absolute;
-    bottom: var(--pf-space-3);
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.6);
-    color: rgba(255, 255, 255, 0.85);
-    font-size: var(--pf-text-xs);
-    padding: 4px 10px;
-    border-radius: var(--pf-radius-sm);
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 200ms ease;
-  }
-  .stage:hover .hint {
-    opacity: 1;
-  }
-  /* Right-side editor panel: in the flex flow alongside the stage
-     in both windowed and fullscreen modes. */
   pf-edit-side-panel {
     flex: 0 0 280px;
     max-width: 90vw;
@@ -369,7 +332,6 @@ export const fullViewStyles = css`
     border-left: 1px solid var(--pf-border);
     color: var(--pf-text);
   }
-  /* Permanent thin rail that hosts the panel's tab toggles. */
   .edit-side-rail {
     flex: 0 0 32px;
     border-left: 1px solid var(--pf-border);
@@ -381,50 +343,49 @@ export const fullViewStyles = css`
     gap: var(--pf-space-1);
     padding-top: var(--pf-space-2);
     box-sizing: border-box;
+    transition: opacity 200ms ease;
   }
   .edit-side-rail pf-icon-button[aria-pressed="true"] {
     color: var(--pf-accent);
   }
-  /* Panel is shown only when the user has explicitly expanded it
-     (a tab is active). */
   :host(:not([edit-panel-open])) pf-edit-side-panel {
     display: none;
   }
-  /* In fullscreen, float over the stage and follow the same visibility
-     state as the header, footer, navigation, and overlays. */
-  :host([fullscreen]) .edit-side-rail,
-  :host([fullscreen]) pf-edit-side-panel {
+  :host([immersive]) .edit-side-rail,
+  :host([immersive]) pf-edit-side-panel {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    flex: none;
-    z-index: 9;
-    background: color-mix(in srgb, var(--pf-surface) 92%, transparent);
-    backdrop-filter: blur(8px);
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateX(0);
-    transition: opacity 200ms ease, transform 200ms ease;
-  }
-  /* Offset below toolbar / above bottombar when visible. */
-  :host([fullscreen]) .edit-side-rail,
-  :host([fullscreen]) pf-edit-side-panel {
-    top: 49px;
-    bottom: 49px;
-  }
-  :host([fullscreen]) .edit-side-rail {
+    top: var(--pf-fv-toolbar-height, 48px);
+    bottom: var(--pf-fv-footer-height, 48px);
     right: 0;
-    left: auto;
+    z-index: 12;
+    box-sizing: border-box;
+  }
+  :host([immersive]) .edit-side-rail {
     width: 32px;
   }
-  :host([fullscreen][edit-panel-open]) .edit-side-rail {
-    right: 280px;
+  :host([immersive][edit-panel-open]) .edit-side-rail {
+    right: min(280px, 90vw);
   }
-  :host([fullscreen]) pf-edit-side-panel {
-    right: 0;
-    left: auto;
-    width: 280px;
+  :host([immersive]) pf-edit-side-panel {
+    width: min(280px, 90vw);
   }
+  :host([immersive][controls-hidden]) .edit-side-rail,
+  :host([immersive][controls-hidden]) pf-edit-side-panel {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .edit-enable-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    background: var(--pf-surface);
+    border: 1px solid var(--pf-border);
+    border-radius: var(--pf-radius-sm, 4px);
+    font-size: var(--pf-text-sm);
+  }
+  .edit-tool-stack { display: flex; flex-direction: column; gap: var(--pf-space-2); }
+  .edit-tool-stack.dim { opacity: 0.5; }
   .edit-footer {
     display: flex;
     flex-direction: column;
@@ -452,6 +413,7 @@ export const fullViewStyles = css`
     min-width: 0;
     align-items: center;
     gap: 6px;
+    touch-action: manipulation;
     transition: background var(--pf-transition);
   }
   .footer-btn:hover {
@@ -466,6 +428,10 @@ export const fullViewStyles = css`
     background: var(--pf-surface);
     border-color: var(--pf-border);
   }
+  .footer-btn[aria-busy="true"] {
+    opacity: 1;
+    cursor: progress;
+  }
   .footer-btn[aria-pressed="true"] {
     background: var(--pf-accent);
     color: var(--pf-on-accent);
@@ -474,6 +440,19 @@ export const fullViewStyles = css`
   .footer-btn pf-icon {
     font-size: 0.95rem;
     flex: 0 0 auto;
+  }
+  .footer-btn-spinner {
+    width: 0.8rem;
+    height: 0.8rem;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: footer-btn-spin 0.7s linear infinite;
+  }
+  @keyframes footer-btn-spin {
+    to { transform: rotate(360deg); }
   }
   .footer-btn span {
     overflow: hidden;
@@ -494,12 +473,12 @@ export const fullViewStyles = css`
   /* iPad/touch refinements: retain the visual design while meeting Apple's
      44pt target size and respecting the home indicator/notch safe areas. */
   @media (pointer: coarse) {
-    :host([fullscreen]) .toolbar {
+    :host([immersive]) .toolbar {
       padding-top: max(var(--pf-space-2), env(safe-area-inset-top));
       padding-left: max(var(--pf-space-3), env(safe-area-inset-left));
       padding-right: max(var(--pf-space-3), env(safe-area-inset-right));
     }
-    :host([fullscreen]) .bottombar {
+    :host([immersive]) .bottombar {
       padding-bottom: max(var(--pf-space-2), env(safe-area-inset-bottom));
       padding-left: max(var(--pf-space-3), env(safe-area-inset-left));
       padding-right: max(var(--pf-space-3), env(safe-area-inset-right));
@@ -509,7 +488,6 @@ export const fullViewStyles = css`
       height: 48px;
     }
     .close-btn,
-    .format-switch button,
     .menu-trigger,
     .menu-item,
     .footer-btn {
@@ -522,8 +500,13 @@ export const fullViewStyles = css`
       flex-basis: 44px;
       width: 44px;
     }
-    :host([fullscreen]) .edit-side-rail {
+    :host([immersive]) .edit-side-rail {
       width: 44px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .footer-btn-spinner {
+      animation-duration: 1.4s;
     }
   }
 `;

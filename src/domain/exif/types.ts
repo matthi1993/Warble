@@ -15,6 +15,8 @@ export interface ExifMetadata {
   shutterSpeed?: string | null;
   aperture?: string | null;
   focalLength?: string | null;
+  /** Numeric focal length in millimetres, for range filtering. */
+  focalLengthMm?: number | null;
   focalLength35mm?: string | null;
   exposureCompensation?: string | null;
   exposureProgram?: string | null;

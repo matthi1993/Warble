@@ -11,6 +11,7 @@ pub struct AppState {
     pub repository: Mutex<Option<Arc<LibraryRepository>>>,
     pub settings: SettingsStore,
     pub device_storage: DeviceStorage,
+    pub scan_coordinator: Arc<crate::library::ScanCoordinator>,
     active_library_id: Mutex<Option<String>>,
 }
 
@@ -24,16 +25,6 @@ impl AppState {
             .map_err(|e| e.to_string())?
             .clone()
             .ok_or_else(|| "library repository not initialised".to_string())
-    }
-
-    /// Hot-swap the repository. Drops the old Arc (closing its
-    /// SQLite connection when the last reference is gone) and
-    /// installs a new one. Used by `load_library` to swap in a
-    /// different library DB without restarting the app.
-    pub fn swap_repository(&self, new: Arc<LibraryRepository>) {
-        if let Ok(mut guard) = self.repository.lock() {
-            *guard = Some(new);
-        }
     }
 
     pub fn set_active_library_id(&self, id: String) {

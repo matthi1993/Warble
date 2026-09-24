@@ -3,7 +3,7 @@
  *
  * Owns:
  *   - navigation (`go`, `close`, fullscreen toggle, variant menu),
- *   - view state (fit / sizing / bg, persisted via SQLite),
+ *   - view state (frame / sizing / bg, persisted via SQLite),
  *   - the three-tab right panel (Info / Edit / Post Process),
  *   - click-to-toggle fullscreen chrome,
  *   - press-and-hold before/after preview,
@@ -26,12 +26,11 @@ import {
   type PhotoFormat,
 } from "@domain/photo";
 import {
-  getLastJpegVariantOverride,
+  reloadVariantOverrides,
   setVariantOverride,
   subscribeVariantOverrides,
-} from "@app/variant-store";
-import { prefetchHdImages } from "@app/hd-image-cache";
-import { getCacheSettings, subscribeCacheSettings } from "@app/cache-settings";
+} from "@services/library/variant-store";
+import { getCacheSettings, subscribeCacheSettings } from "@services/settings/cache-settings";
 import { applyRatingShortcut } from "@services/rating/rating-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import {
@@ -41,59 +40,65 @@ import {
 } from "@services/edits/edits-store";
 import {
   DEFAULT_VIEW_STATE,
+  FRAME_SIZES,
   loadViewState,
   saveViewState,
   type BgColor,
+  type FrameRadius,
+  type FrameSize,
+  type ProofingSize,
   type SmoothingQuality,
 } from "@services/view-state/view-state-service";
 import "@ui/controls/pf-icon-button";
 import "@ui/controls/pf-slider";
 import "@ui/icons/pf-icon";
-import "@ui/photos/pf-image-canvas";
-import "@ui/photos/pf-rating-overlay";
+import "@features/image-viewer/pf-image-canvas";
+import "@features/rating/pf-rating-overlay";
 import type {
-  ImageFit,
   ImageSizing,
-  ImageSmoothingQuality,
   PfImageCanvas,
-} from "@ui/photos/pf-image-canvas";
+} from "@features/image-viewer/pf-image-canvas";
 import "./views/full-view/pf-info-card";
 import "./views/full-view/pf-edit-side-panel";
-import "./views/full-view/pf-post-process-card";
+import "@features/editor/post-panel";
 import {
   getPostProcess,
   setPostProcessEnabled,
   subscribePostProcess,
 } from "@services/post-process/post-process-store";
-import { hasEffects } from "@services/effects/effects-store";
+import { flushPhotoEffects, hasEffects, reloadPhotoEffects } from "@services/effects/effects-store";
 import { fullViewStyles } from "./views/full-view/styles";
 import {
   renderBottombar,
   renderToolbar,
   type FullViewMenu,
 } from "./views/full-view/chrome";
-import type { EditTool, ToolHost } from "./views/full-view/tools/edit-tool";
-import { CropTool } from "./views/full-view/tools/crop-tool";
-import { ToneTool } from "./views/full-view/tools/tone-tool";
-import { CurveTool } from "./views/full-view/tools/curve-tool";
-import { ColorTool } from "./views/full-view/tools/color-tool";
-import { SharpenTool } from "./views/full-view/tools/sharpen-tool";
-import { GrainTool } from "./views/full-view/tools/grain-tool";
+import type { EditTool, ToolHost } from "@features/editor/tool";
+import { createEditorTools, hasActiveEditorToolValues, readEditorToolValues } from "@features/editor/registry";
+import { isEffectEnabled, setEffectEnabled, subscribeEffectEnabled } from "@services/effects/effect-enabled-store";
+import { editorStateAdapter } from "@features/editor/adapters/store-state";
+import "@ui/controls/pf-effect-toggle";
 import {
   currentSelection,
   isEditableSelection,
-  latestJpegVariant,
   resolvedPath,
 } from "./views/full-view/variant-selector";
 import { ExifLoader } from "./views/full-view/exif-loader";
+import { loadHdImage } from "@services/images/hd-image-cache";
 import {
-  buildHintLine,
+  loadSlideshowSettings,
+  saveSlideshowSettings,
+  SLIDESHOW_DURATIONS,
+  type SlideshowSettings,
+  type SlideshowTransition,
+} from "@services/view-state/slideshow-settings";
+import {
   buildShortcuts,
   dispatchShortcut,
   type ShortcutDef,
 } from "./views/full-view/shortcuts";
 
-type SidePanelTab = "info" | "edit" | "post";
+type SidePanelTab = "info" | "edit" | "post" | "slideshow";
 
 /** Module-level clipboard for cmd+c / cmd+v across photos. Each
  *  entry is keyed by tool id; the blob is whatever the tool's
@@ -113,13 +118,25 @@ export class PfFullView extends LitElement {
   index = 0;
 
   @property({ type: Boolean, reflect: true })
-  fullscreen = false;
+  immersive = false;
+
+  @property({ type: Boolean })
+  windowFullscreen = false;
 
   @state()
   private bg: BgColor = DEFAULT_VIEW_STATE.bg;
 
   @state()
-  private fit: ImageFit = DEFAULT_VIEW_STATE.fit;
+  private proofingSize: ProofingSize = DEFAULT_VIEW_STATE.proofingSize;
+
+  @state()
+  private frameSize: FrameSize = DEFAULT_VIEW_STATE.frameSize;
+
+  @state()
+  private frameColor: BgColor = DEFAULT_VIEW_STATE.frameColor;
+
+  @state()
+  private frameRadius: FrameRadius = DEFAULT_VIEW_STATE.frameRadius;
 
   @state()
  private sizing: ImageSizing = DEFAULT_VIEW_STATE.sizing;
@@ -129,6 +146,19 @@ export class PfFullView extends LitElement {
 
   /** Suppresses the persistence side-effect during the initial hydrate. */
   private hydrated = false;
+  private chromeObserver: ResizeObserver | null = null;
+
+  firstUpdated(): void {
+    const toolbar = this.renderRoot.querySelector<HTMLElement>(".toolbar-wrap");
+    const footer = this.renderRoot.querySelector<HTMLElement>(".bottombar-wrap");
+    if (!toolbar || !footer) return;
+    this.chromeObserver = new ResizeObserver(() => {
+      this.style.setProperty("--pf-fv-toolbar-height", `${toolbar.getBoundingClientRect().height}px`);
+      this.style.setProperty("--pf-fv-footer-height", `${footer.getBoundingClientRect().height}px`);
+    });
+    this.chromeObserver.observe(toolbar);
+    this.chromeObserver.observe(footer);
+  }
 
   @state()
   private openMenu: FullViewMenu | null = null;
@@ -145,6 +175,7 @@ export class PfFullView extends LitElement {
   private unsubscribeStore: (() => void) | null = null;
   private unsubscribeEdits: (() => void) | null = null;
   private unsubscribePostProcess: (() => void) | null = null;
+  private unsubscribeEffectEnabled: (() => void) | null = null;
   private unsubscribeCacheSettings: (() => void) | null = null;
 
   @state()
@@ -157,12 +188,27 @@ export class PfFullView extends LitElement {
 
  /** Reflects whether the panel content (any tab) is expanded.
   *  Equivalent to `activeTab !== null`. */
- @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
- editPanelOpen = false;
+  @property({ type: Boolean, reflect: true, attribute: "edit-panel-open" })
+  editPanelOpen = false;
 
   /** Active side-panel tab, or null if the panel is collapsed. */
   @state()
   private activeTab: SidePanelTab | null = null;
+
+  @state()
+  private slideshowSettings: SlideshowSettings = loadSlideshowSettings();
+
+  @state()
+  private customDuration = !SLIDESHOW_DURATIONS.some((duration) => duration === this.slideshowSettings.durationSeconds);
+
+  @property({ type: Boolean, reflect: true })
+  private presenting = false;
+  get presentationActive(): boolean {
+    return this.presenting;
+  }
+  private slideTimer: number | null = null;
+  private preloadAbort: AbortController | null = null;
+  private transitionPath: string | null = null;
 
   /** Press-and-hold preview of the original (un-edited) image. */
   @state()
@@ -180,30 +226,11 @@ export class PfFullView extends LitElement {
   @state()
   private openingIn = false;
 
+  @state()
+  private openingRaw = false;
+
   // --- Edit tools ----------------------------------------------------
-  private cropTool = new CropTool();
-  private toneTool = new ToneTool();
-  private colorTool = new ColorTool();
-  private curveTool = new CurveTool();
-  private sharpenTool = new SharpenTool();
-  private grainTool = new GrainTool();
-  private tools: EditTool[] = [
-   this.cropTool,
-   this.toneTool,
-   this.colorTool,
-   this.curveTool,
-   this.sharpenTool,
-   this.grainTool,
- ];
- /** Tools rendered under the "Edit" tab in the side panel. */
- private editTabTools: EditTool[] = [
-   this.cropTool,
-   this.toneTool,
-   this.colorTool,
-   this.curveTool,
-   this.sharpenTool,
-   this.grainTool,
- ];
+  private readonly tools: EditTool[] = createEditorTools("photo", editorStateAdapter);
  /** The tool currently in foreground/interactive mode. Crop is the
   *  only one that takes over the canvas; tone runs passively. */
  @state()
@@ -211,9 +238,7 @@ export class PfFullView extends LitElement {
 
   private exifLoader = new ExifLoader(() => this.requestUpdate());
 
-  /** Edit affordances are available for any selection the backend can
-   *  hand us as a display-ready bitmap — JPEG today and RAW via the
-   *  Rust-side demosaic pipeline. */
+  /** Only JPEG selections can be edited. */
   private get editMode(): boolean {
     return isEditableSelection(this.currentPhoto);
   }
@@ -262,22 +287,16 @@ export class PfFullView extends LitElement {
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
-    this.unsubscribeEdits = subscribePhotoEdits((path) => {
+    this.unsubscribeEdits = subscribePhotoEdits(() => {
       this.editsTick++;
-      // Empty path = store-wide "everything cleared" wildcard.
-      if (path === "") {
-        this.toneTool.invalidateMirror();
-        this.curveTool.invalidateMirror();
-        this.colorTool.invalidateMirror();
-      }
     });
     // Reflect global post-process toggle in the footer label.
     this.unsubscribePostProcess = subscribePostProcess(() => {
       this.requestUpdate();
     });
+    this.unsubscribeEffectEnabled = subscribeEffectEnabled(() => this.requestUpdate());
     this.unsubscribeCacheSettings = subscribeCacheSettings((settings) => {
       this.fullResolutionEnabled = settings.full_resolution_enabled;
-      if (settings.background_hd_previews_enabled) this.schedulePrefetch();
     });
     this.tabIndex = -1;
     queueMicrotask(() => this.focus());
@@ -286,6 +305,12 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.stopPresentation();
+    this.chromeObserver?.disconnect();
+    this.chromeObserver = null;
+    this.unsubscribeEffectEnabled?.();
+    this.unsubscribeEffectEnabled = null;
+    this.exifLoader.syncToPath(null);
     const t = this.editTargetPath();
     if (t) void flushPhotoEdit(t);
     window.removeEventListener("keydown", this.onKeyDown, {
@@ -313,21 +338,33 @@ export class PfFullView extends LitElement {
       );
     }
     if (
-      (changed.has("bg") || changed.has("fit") || changed.has("sizing") || changed.has("smoothing")) &&
+      (changed.has("bg") || changed.has("proofingSize") || changed.has("frameSize") || changed.has("frameColor") ||
+        changed.has("frameRadius") || changed.has("sizing") || changed.has("smoothing")) &&
       this.hydrated
     ) {
-      void saveViewState({ bg: this.bg, fit: this.fit, sizing: this.sizing, smoothing: this.smoothing });
+      void saveViewState({
+        bg: this.bg,
+        proofingSize: this.proofingSize,
+        frameSize: this.frameSize,
+        frameColor: this.frameColor,
+        frameRadius: this.frameRadius,
+        sizing: this.sizing,
+        smoothing: this.smoothing,
+      });
     }
-    if (changed.has("fullscreen")) {
-      if (!this.fullscreen) {
+    if (changed.has("immersive")) {
+      if (!this.immersive) {
+        this.stopPresentation();
         this.controlsHidden = false;
       }
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
     if (changed.has("photos") || changed.has("index")) {
+      if (this.presenting && (changed.has("photos") || (changed.has("index") && this.transitionPath !== this.editTargetPath()))) {
+        this.stopPresentation();
+      }
       const prevTarget = this.editTargetPath();
       if (prevTarget) void flushPhotoEdit(prevTarget);
-      this.schedulePrefetch();
       // Navigating cancels any active tool (crop hijack). Tool state
       // was already flushed above; we just close the canvas takeover.
       if (this.activeToolId) {
@@ -335,12 +372,10 @@ export class PfFullView extends LitElement {
         this.activeToolId = null;
       }
       this.previewOriginal = false;
-     if (!this.editMode) {
-       if (this.activeTab !== null) {
-         this.activeTab = null;
-         this.editPanelOpen = false;
-       }
-     }
+      if (!this.editMode && (this.activeTab === "edit" || this.activeTab === "post")) {
+        this.activeTab = null;
+        this.editPanelOpen = false;
+      }
     }
     if (changed.has("activeTab")) {
       this.editPanelOpen = this.activeTab !== null;
@@ -355,37 +390,18 @@ export class PfFullView extends LitElement {
     for (const t of this.tools) t.syncFromStore(target);
   }
 
-  /**
-   * Keep the current photo and its neighbours warm in the shared
-   * full-image LRU. Priority radiates outwards from the active index
-   * so forward scrolling — the common case — wins by one slot.
-   */
-  private schedulePrefetch() {
-    if (!getCacheSettings().background_hd_previews_enabled) return;
-    const total = this.photos.length;
-    if (total === 0) return;
-    const i = this.index;
-    if (i < 0 || i >= total) return;
-    const order: string[] = [this.photos[i].path];
-    for (let d = 1; d < total && order.length < 20; d++) {
-      const fwd = i + d;
-      if (fwd < total) order.push(this.photos[fwd].path);
-      if (order.length >= 20) break;
-      const back = i - d;
-      if (back >= 0) order.push(this.photos[back].path);
-    }
-    prefetchHdImages(order);
-  }
-
   private bgCss(bg: BgColor): string {
     return bg === "black" ? "#000" : bg === "white" ? "#fff" : "#808080";
   }
 
-  /** Read the persisted background + fit selection from SQLite. */
+  /** Read the persisted view preferences from SQLite. */
   private async hydrateViewState() {
     const persisted = await loadViewState();
     if (persisted.bg) this.bg = persisted.bg;
-    if (persisted.fit) this.fit = persisted.fit;
+    if (persisted.proofingSize !== undefined) this.proofingSize = persisted.proofingSize;
+    if (persisted.frameSize !== undefined) this.frameSize = persisted.frameSize;
+    if (persisted.frameColor) this.frameColor = persisted.frameColor;
+    if (persisted.frameRadius !== undefined) this.frameRadius = persisted.frameRadius;
     if (persisted.sizing) this.sizing = persisted.sizing;
    if (persisted.smoothing) this.smoothing = persisted.smoothing;
    this.hydrated = true;
@@ -402,8 +418,16 @@ export class PfFullView extends LitElement {
     ) as PfImageCanvas | null;
   }
 
+  refreshPhotoSource(path: string): void {
+    if (this.currentPhoto?.path === path) this.canvasEl()?.reloadSource();
+  }
+
   private activeTool(): EditTool | null {
     return this.tools.find((t) => t.id === this.activeToolId) ?? null;
+  }
+
+  private tool(id: string): EditTool | null {
+    return this.tools.find((tool) => tool.id === id) ?? null;
   }
 
   /** The path the canvas is actually displaying — i.e. the resolved
@@ -422,8 +446,18 @@ export class PfFullView extends LitElement {
     if (
       origin instanceof HTMLInputElement ||
       origin instanceof HTMLTextAreaElement ||
+      origin instanceof HTMLSelectElement ||
       (origin instanceof HTMLElement && origin.isContentEditable)
     ) {
+      return;
+    }
+    if (e.code === "Space") return;
+    if (this.presenting) {
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey &&
+          (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        this.go(e.key === "ArrowRight" ? 1 : -1);
+      }
       return;
     }
     // `f`, `Escape`, and `g` are owned by the app shell so it can
@@ -487,17 +521,23 @@ export class PfFullView extends LitElement {
   private readonly shortcuts: readonly ShortcutDef[] = buildShortcuts();
 
   /** Called via the shortcuts registry (P). */
-  cycleFit() {
-    const order: ImageFit[] = ["contain", "tight", "proof"];
-    const idx = order.indexOf(this.fit);
-    this.fit = order[(idx + 1) % order.length];
+  cycleFrameSize() {
+    const idx = FRAME_SIZES.indexOf(this.frameSize);
+    this.frameSize = FRAME_SIZES[(idx + 1) % FRAME_SIZES.length];
     this.openMenu = null;
   }
 
-  private go(delta: number) {
+  private go(delta: number, automatic = false) {
     const next = this.index + delta;
     if (next < 0 || next >= this.photos.length) return;
-    this.prepareToLeave();
+    if (this.presenting && !automatic) {
+      if (this.slideTimer !== null) window.clearTimeout(this.slideTimer);
+      this.slideTimer = null;
+      this.preloadAbort?.abort();
+      this.preloadAbort = null;
+      this.captureSlide();
+      this.transitionPath = resolvedPath(this.photos[next]);
+    }
     this.dispatchEvent(
       new CustomEvent("full-view-navigate", {
         detail: { index: next },
@@ -507,8 +547,124 @@ export class PfFullView extends LitElement {
     );
   }
 
+  private updateSlideshowSettings(change: Partial<SlideshowSettings>) {
+    this.slideshowSettings = { ...this.slideshowSettings, ...change };
+    saveSlideshowSettings(this.slideshowSettings);
+  }
+
+  private onSlideshowDurationChange = (event: Event) => {
+    const value = (event.target as HTMLSelectElement).value;
+    this.customDuration = value === "custom";
+    if (!this.customDuration) this.updateSlideshowSettings({ durationSeconds: Number(value) });
+  };
+
+  private onCustomDurationChange = (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const seconds = Number(input.value);
+    if (Number.isInteger(seconds) && seconds >= 1 && seconds <= 86400) {
+      this.updateSlideshowSettings({ durationSeconds: seconds });
+    } else {
+      input.value = String(this.slideshowSettings.durationSeconds);
+    }
+  };
+
+  private requestPresentation = () => {
+    this.dispatchEvent(new CustomEvent("slideshow-start", { bubbles: true, composed: true }));
+  };
+
+  startPresentation(): void {
+    if (this.presenting || !this.currentPhoto) return;
+    this.presenting = true;
+    this.controlsHidden = true;
+    this.openMenu = null;
+    this.notifyControlsVisibility();
+    if (this.canvasEl()?.imageReady) this.scheduleNextSlide();
+  }
+
+  stopPresentation(): void {
+    if (!this.presenting) return;
+    this.presenting = false;
+    if (this.slideTimer !== null) window.clearTimeout(this.slideTimer);
+    this.slideTimer = null;
+    this.preloadAbort?.abort();
+    this.preloadAbort = null;
+    this.transitionPath = null;
+    const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+    if (overlay) overlay.style.display = "none";
+    this.controlsHidden = false;
+    this.notifyControlsVisibility();
+  }
+
+  private scheduleNextSlide(): void {
+    if (!this.presenting) return;
+    if (this.index >= this.photos.length - 1) {
+      this.slideTimer = window.setTimeout(() => {
+        this.slideTimer = null;
+        this.stopPresentation();
+      }, this.slideshowSettings.durationSeconds * 1000);
+      return;
+    }
+    const next = this.photos[this.index + 1];
+    const path = resolvedPath(next);
+    if (!path) {
+      this.stopPresentation();
+      return;
+    }
+    const abort = new AbortController();
+    this.preloadAbort = abort;
+    const preload = loadHdImage(path, { signal: abort.signal }).catch((error: unknown) => {
+      if (!abort.signal.aborted) console.warn("Slideshow preload failed", error);
+    });
+    this.slideTimer = window.setTimeout(async () => {
+      this.slideTimer = null;
+      await preload;
+      if (!this.presenting || abort.signal.aborted || this.preloadAbort !== abort) return;
+      this.preloadAbort = null;
+      this.captureSlide();
+      this.transitionPath = path;
+      this.go(1, true);
+    }, this.slideshowSettings.durationSeconds * 1000);
+  }
+
+  private captureSlide(): void {
+    const source = this.canvasEl()?.renderRoot.querySelector("canvas");
+    const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+    if (!source || !overlay) return;
+    if (overlay.style.display !== "block" || overlay.style.opacity !== "1") {
+      overlay.width = source.width;
+      overlay.height = source.height;
+      overlay.getContext("2d")?.drawImage(source, 0, 0);
+    }
+    overlay.style.transition = "none";
+    overlay.style.opacity = "1";
+    overlay.style.display = "block";
+  }
+
+  private onSlideImageReady = (event: CustomEvent<{ path: string }>) => {
+    if (!this.presenting || event.detail.path !== this.editTargetPath()) return;
+    if (this.transitionPath === event.detail.path) {
+      this.transitionPath = null;
+      const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+      if (overlay) {
+        if (this.slideshowSettings.transition === "instant") {
+          overlay.style.display = "none";
+        } else {
+          requestAnimationFrame(() => {
+            if (!this.presenting) return;
+            overlay.style.transition = "opacity 500ms ease";
+            overlay.style.opacity = "0";
+          });
+        }
+      }
+    }
+    if (this.slideTimer === null && this.preloadAbort === null) this.scheduleNextSlide();
+  };
+
+  private onSlideImageError = (event: CustomEvent<{ path: string }>) => {
+    if (this.presenting && event.detail.path === this.editTargetPath()) this.stopPresentation();
+  };
+
   private close = () => {
-    this.prepareToLeave();
     this.dispatchEvent(
       new CustomEvent("full-view-close", { bubbles: true, composed: true })
     );
@@ -523,24 +679,47 @@ export class PfFullView extends LitElement {
     );
   };
 
+  private toggleImmersive = () => {
+    this.dispatchEvent(new CustomEvent("toggle-immersive-view", {
+      bubbles: true,
+      composed: true,
+    }));
+  };
+
   private isIPad(): boolean {
     const ua = navigator.userAgent ?? "";
     return /iPad/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
   }
 
   private onImageActivate = () => {
-    if (!this.fullscreen) return;
+    if (this.presenting) {
+      this.stopPresentation();
+      return;
+    }
+    if (!this.immersive) return;
     this.controlsHidden = !this.controlsHidden;
     this.openMenu = null;
+    this.notifyControlsVisibility();
   };
 
+  private notifyControlsVisibility(): void {
+    this.dispatchEvent(new CustomEvent("full-view-controls-visibility", {
+      detail: { hidden: this.controlsHidden },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
   private onImageDoubleActivate = (event: Event) => {
-    // Desktop keeps the established double-click 100%↔fit action. On iPad a
-    // double-tap toggles the app-level immersive viewer; native iOS window
-    // fullscreen cannot be exited programmatically.
+    if (this.presenting) {
+      this.stopPresentation();
+      return;
+    }
+    // Desktop keeps the double-click 100%↔fit action. On iPad a double-tap
+    // toggles the immersive viewer instead of native iOS fullscreen.
     if (!this.isIPad()) return;
     event.preventDefault();
-    this.toggleFullscreen();
+    this.toggleImmersive();
   };
 
   private onImageSwipe = (event: CustomEvent<{ delta: number }>) => {
@@ -552,23 +731,34 @@ export class PfFullView extends LitElement {
     this.openMenu = null;
   };
 
-  private setFit = (m: ImageFit) => {
-    const same = this.fit === m;
-    this.fit = m;
-    this.openMenu = null;
+  private setProofingSize = (size: ProofingSize) => {
+    const same = this.proofingSize === size;
+    this.proofingSize = size;
     if (same) this.canvasEl()?.resetView();
+  };
+
+  private setFrameSize = (size: FrameSize) => {
+    const same = this.frameSize === size;
+    this.frameSize = size;
+    if (same) this.canvasEl()?.resetView();
+  };
+
+  private setFrameColor = (color: BgColor) => {
+    this.frameColor = color;
+  };
+
+  private setFrameRadius = (radius: FrameRadius) => {
+    this.frameRadius = radius;
   };
 
   private setSizing = (s: ImageSizing) => {
     const same = this.sizing === s;
     this.sizing = s;
-    this.openMenu = null;
     if (same) this.canvasEl()?.resetView();
  };
 
  private setSmoothing = (q: SmoothingQuality) => {
   this.smoothing = q;
-  this.openMenu = null;
 };
 
  private toggleMenu = (which: FullViewMenu) => {
@@ -584,37 +774,6 @@ export class PfFullView extends LitElement {
     const path = fileForSelection(photo, format, variant);
     return path != null && (hasEdits(path) || hasEffects(path));
   };
-
-  private setFormat = (format: PhotoFormat) => {
-    const photo = this.currentPhoto;
-    if (!photo) return;
-    const variants = availableVariants(photo, format);
-    if (variants.length === 0) return;
-    const sel = currentSelection(photo);
-    const lastJpeg = format === "jpg"
-      ? getLastJpegVariantOverride(photo.path)
-      : null;
-    const variant =
-      variants.find((v) => v.key === lastJpeg?.variant)?.key ??
-      variants.find((v) => v.key === sel?.variant)?.key ?? variants[0].key;
-    setVariantOverride(photo.path, { format, variant }); 
-    this.openMenu = null;
-  };
-
-  private restoreJpegSelection(photo: Photo | null) {
-    if (!photo || currentSelection(photo)?.format !== "raw") return;
-    const variants = availableVariants(photo, "jpg");
-    if (variants.length === 0) return;
-    const last = getLastJpegVariantOverride(photo.path)?.variant;
-    const variant = variants.find((item) => item.key === last)?.key ??
-      latestJpegVariant(photo) ?? variants[0].key;
-    setVariantOverride(photo.path, { format: "jpg", variant });
-  }
-
-  /** Restore the remembered JPEG before navigation, grid view, or close. */
-  prepareToLeave() {
-    this.restoreJpegSelection(this.currentPhoto);
-  }
 
   private setVariant = (variantKey: string) => {
     const photo = this.currentPhoto;
@@ -657,10 +816,16 @@ export class PfFullView extends LitElement {
     }
   }
 
+  toggleToolById(id: string) {
+    const tool = this.tool(id);
+    if (tool) this.toggleTool(tool);
+  }
+
   /** Tone card: passive, no canvas takeover. Shortcut B. */
   toggleToneCard() {
     this.openTab("edit");
-    this.toneTool.cardOpen = !this.toneTool.cardOpen;
+    const tool = this.tool("tone");
+    if (tool) tool.cardOpen = !tool.cardOpen;
     this.requestUpdate();
   }
 
@@ -670,7 +835,8 @@ export class PfFullView extends LitElement {
    */
   toggleCurveCard() {
     this.openTab("edit");
-    this.curveTool.cardOpen = !this.curveTool.cardOpen;
+    const tool = this.tool("curve");
+    if (tool) tool.cardOpen = !tool.cardOpen;
     this.requestUpdate();
   }
 
@@ -679,7 +845,8 @@ export class PfFullView extends LitElement {
    */
   toggleColorCard() {
     this.openTab("edit");
-    this.colorTool.cardOpen = !this.colorTool.cardOpen;
+    const tool = this.tool("color");
+    if (tool) tool.cardOpen = !tool.cardOpen;
     this.requestUpdate();
   }
 
@@ -721,68 +888,74 @@ export class PfFullView extends LitElement {
     this.previewOriginal = false;
   };
 
+  private onImagePreviewStart = () => { this.previewOriginal = true; };
+  private onImagePreviewEnd = () => { this.previewOriginal = false; };
+
   private canPreviewOriginal(): boolean {
     void this.editsTick;
     const target = this.editTargetPath();
-    return !!target && (hasEdits(target) || hasEffects(target));
+    return !!target && (
+      hasEdits(target) || hasEffects(target) ||
+      (getPostProcess().enabled && hasActiveEditorToolValues(readEditorToolValues("post", target, editorStateAdapter)))
+    );
+  }
+
+  /** Ensure a newly-set busy state reaches the screen before an expensive
+   * image or filesystem operation starts on the next frame. */
+  private async paintBusyState(): Promise<void> {
+    await this.updateComplete;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
   }
 
   private saveVariant = async () => {
-    if (this.savingVariant) return;
+    if (this.savingVariant || this.deletingVariant || this.deletingPhoto) return;
     const photo = this.currentPhoto;
     const selection = photo ? currentSelection(photo) : null;
     const sourcePath = this.editTargetPath();
     const canvas = this.canvasEl();
     if (!photo || !selection || !sourcePath || !canvas) return;
-    if (selection.format !== "jpg" && selection.format !== "raw") return;
 
     this.savingVariant = true;
-    this.requestUpdate();
     try {
-      await flushPhotoEdit(sourcePath);
-      const jpeg = await canvas.exportJpeg();
-      const jpegBytes = Array.from(jpeg);
+      // Let WebKit paint the busy state before full-resolution rendering and
+      // JPEG encoding occupy the main thread.
+      await this.paintBusyState();
       let number = 1;
-      let savedVariant: string | null = null;
+      let variant = "Edit";
+      let overwrite = false;
 
-      while (!savedVariant) {
-        const variant = number === 1 ? "Edit" : `Edit ${number}`;
-        try {
-          await invoke("save_photo_variant", {
-            photoPath: sourcePath,
-            variant,
-            jpegBytes,
-            overwrite: false,
-          });
-          savedVariant = variant;
-        } catch (error) {
-          if (!String(error).toLowerCase().includes("already exists")) {
-            throw error;
-          }
-          const next = number === 1 ? "Edit 2" : `Edit ${number + 1}`;
-          const overwrite = await ask(
-            `${variant}.jpg already exists. Overwrite it? Choose No to save as ${next}.`,
-            { title: "Save Variant", kind: "warning" },
-          );
-          if (overwrite) {
-            await invoke("save_photo_variant", {
-              photoPath: sourcePath,
-              variant,
-              jpegBytes,
-              overwrite: true,
-            });
-            savedVariant = variant;
-          } else {
-            number += 1;
-          }
+      while (await invoke<boolean>("photo_variant_exists", {
+        photoPath: sourcePath,
+        variant,
+      })) {
+        const next = number === 1 ? "Edit 2" : `Edit ${number + 1}`;
+        overwrite = await ask(
+          `${variant}.jpg already exists. Overwrite it? Choose No to save as ${next}.`,
+          { title: "Save Variant", kind: "warning" },
+        );
+        if (overwrite) {
+          break;
         }
+        number += 1;
+        variant = `Edit ${number}`;
       }
 
+      await flushPhotoEdit(sourcePath);
+      const jpegBytes = await canvas.exportJpeg();
+      await invoke("save_photo_variant", jpegBytes, {
+        headers: {
+          "photo-path": encodeURIComponent(sourcePath),
+          variant: encodeURIComponent(variant),
+          overwrite: String(overwrite),
+        },
+      });
       setVariantOverride(photo.path, {
         format: "jpg",
-        variant: savedVariant,
+        variant,
       });
-      this.dispatchCatalogChange("save", photo);
+      await this.dispatchCatalogChange("save", photo);
     } catch (error) {
       console.error("Failed to save photo variant", error);
       void message(`Failed to save variant: ${error}`, {
@@ -813,14 +986,11 @@ export class PfFullView extends LitElement {
         });
       return { format: "jpg", variant: edits[0]?.key ?? jpg[0].key };
     }
-    const raw = availableVariants(photo, "raw").filter(
-      (variant) => removedFormat !== "raw" || variant.key !== removedVariant,
-    );
-    return raw.length > 0 ? { format: "raw", variant: raw[0].key } : null;
+    return null;
   }
 
   private deleteVariant = async () => {
-    if (this.deletingVariant) return;
+    if (this.deletingVariant || this.savingVariant || this.deletingPhoto) return;
     const photo = this.currentPhoto;
     const selection = photo ? currentSelection(photo) : null;
     const sourcePath = this.editTargetPath();
@@ -834,15 +1004,19 @@ export class PfFullView extends LitElement {
 
     this.deletingVariant = true;
     try {
+      await this.paintBusyState();
+      await flushPhotoEffects();
       await invoke("trash_photo_variant", { photoPath: sourcePath });
+      await Promise.all([reloadPhotoEffects(), reloadVariantOverrides()]);
       const fallback = this.preferredRemainingSelection(
         photo,
         selection.format,
         selection.variant,
       );
-      if (fallback) setVariantOverride(photo.path, fallback);
-      this.dispatchCatalogChange(
-        fallback ? "variant-delete" : "photo-delete",
+      if (fallback && photo.path !== sourcePath) setVariantOverride(photo.path, fallback);
+      const hasRemainingFiles = photo.files?.some((file) => file.path !== sourcePath) ?? false;
+      await this.dispatchCatalogChange(
+        hasRemainingFiles ? "variant-delete" : "photo-delete",
         photo,
       );
     } catch (error) {
@@ -858,11 +1032,11 @@ export class PfFullView extends LitElement {
 
   /** Called from both the toolbar button and Delete/Backspace shortcut. */
   deletePhoto = async () => {
-    if (this.deletingPhoto) return;
+    if (this.deletingPhoto || this.savingVariant || this.deletingVariant) return;
     const photo = this.currentPhoto;
     if (!photo) return;
     const confirmed = await ask(
-      `Move ${photo.filename}, all JPEG variants, and its RAW file to the Bin?`,
+      `Move ${photo.filename} and all its variants to the Bin?`,
       { title: "Delete Photo", kind: "warning" },
     );
     if (!confirmed) return;
@@ -870,8 +1044,11 @@ export class PfFullView extends LitElement {
     this.deletingPhoto = true;
     this.openMenu = null;
     try {
+      await this.paintBusyState();
+      await flushPhotoEffects();
       await invoke("trash_photo_group", { photoPath: photo.path });
-      this.dispatchCatalogChange("photo-delete", photo);
+      await Promise.all([reloadPhotoEffects(), reloadVariantOverrides()]);
+      await this.dispatchCatalogChange("photo-delete", photo);
     } catch (error) {
       console.error("Failed to delete photo", error);
       void message(`Failed to delete photo: ${error}`, {
@@ -902,11 +1079,29 @@ export class PfFullView extends LitElement {
     }
   };
 
+  private openRaw = async (path: string) => {
+    if (this.openingRaw) return;
+    this.openingRaw = true;
+    this.openMenu = null;
+    try {
+      await invoke("open_raw_in_default_app", { path });
+    } catch (error) {
+      console.error("Failed to open RAW photo", error);
+      void message(`Failed to open RAW photo: ${error}`, {
+        title: "Open RAW",
+        kind: "error",
+      });
+    } finally {
+      this.openingRaw = false;
+    }
+  };
+
   private dispatchCatalogChange(
     kind: "save" | "variant-delete" | "photo-delete",
     photo: Photo,
-  ) {
+  ): Promise<void> {
     const memberPaths = photo.files?.map((file) => file.path) ?? [photo.path];
+    let completion = Promise.resolve();
     this.dispatchEvent(
       new CustomEvent("photo-catalog-changed", {
         detail: {
@@ -914,11 +1109,15 @@ export class PfFullView extends LitElement {
           photoPath: photo.path,
           memberPaths,
           previousIndex: this.index,
+          waitUntil: (operation: Promise<void>) => {
+            completion = operation;
+          },
         },
         bubbles: true,
         composed: true,
       }),
     );
+    return completion;
   }
 
   /** Drop every tool's persisted edits on the active target. */
@@ -949,18 +1148,6 @@ export class PfFullView extends LitElement {
     this.activeTool()?.onCanvasHorizonLine(this.toolHost, delta);
   };
 
-  private fitLabel(m: ImageFit): string {
-    return m === "contain" ? "None" : m === "tight" ? "Tight" : "Proof";
-  }
-
-  private sizingLabel(s: ImageSizing): string {
-   return s === "fit" ? "Contain" : s === "fill" ? "Cover" : "Hybrid";
- }
-
- private smoothingLabel(q: ImageSmoothingQuality): string {
-   return q.charAt(0).toUpperCase() + q.slice(1);
- }
-
  // --- Render ---------------------------------------------------------
 
   private renderSideRail() {
@@ -972,6 +1159,7 @@ export class PfFullView extends LitElement {
       { id: "info", icon: "info", label: "Info" },
      { id: "edit", icon: "pencil", label: "Edit" },
      { id: "post", icon: "wand", label: "Post Process" },
+    { id: "slideshow", icon: "play", label: "Slideshow" },
     ];
     return html`
       <div class="edit-side-rail" @click=${(e: Event) => e.stopPropagation()}>
@@ -997,10 +1185,52 @@ export class PfFullView extends LitElement {
           .exif=${this.exifLoader.exif}
           ?open=${true}
         ></pf-info-card>`;
-      case "edit":
-       return this.editTabTools.map((t) => t.renderCard(this.toolHost));
+      case "edit": {
+        const path = this.editTargetPath();
+        const enabled = isEffectEnabled("photo", path, "all");
+        return html`
+          <div class="edit-enable-row">
+            <span>Edit ${enabled ? "enabled" : "disabled"}</span>
+            <pf-effect-toggle
+              .disabled=${!enabled}
+              label="editing"
+              @effect-toggle=${() => setEffectEnabled("photo", path, "all", !enabled)}
+            ></pf-effect-toggle>
+          </div>
+          <div class=${enabled ? "edit-tool-stack" : "edit-tool-stack dim"}>
+            ${this.tools.map((tool) => tool.renderCard(this.toolHost))}
+          </div>`;
+      }
      case "post":
         return html`<pf-post-process-card></pf-post-process-card>`;
+      case "slideshow":
+        return html`<section class="slideshow-settings">
+          <h2>Slideshow</h2>
+          <label for="slide-duration">Time per photo</label>
+          <span class="slideshow-select-wrap">
+            <select id="slide-duration" @change=${this.onSlideshowDurationChange}>
+              ${SLIDESHOW_DURATIONS.map((seconds) => html`<option value=${seconds}
+                ?selected=${!this.customDuration && this.slideshowSettings.durationSeconds === seconds}>
+                ${seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${seconds / 60}min` : "1h"}
+              </option>`)}
+              <option value="custom" ?selected=${this.customDuration}>Custom</option>
+            </select>
+            <pf-icon name="chevron-down"></pf-icon>
+          </span>
+          ${this.customDuration ? html`<label for="slide-custom-duration">Seconds per photo</label>
+            <input id="slide-custom-duration" type="number" min="1" max="86400" step="1"
+              .value=${String(this.slideshowSettings.durationSeconds)} @change=${this.onCustomDurationChange} />` : null}
+          <label for="slide-transition">Transition</label>
+          <span class="slideshow-select-wrap">
+            <select id="slide-transition"
+              @change=${(event: Event) => this.updateSlideshowSettings({ transition: (event.target as HTMLSelectElement).value as SlideshowTransition })}>
+              <option value="fade" ?selected=${this.slideshowSettings.transition === "fade"}>Fade</option>
+              <option value="instant" ?selected=${this.slideshowSettings.transition === "instant"}>Instant</option>
+            </select>
+            <pf-icon name="chevron-down"></pf-icon>
+          </span>
+          <button type="button" @click=${this.requestPresentation}><pf-icon name="play"></pf-icon> Play</button>
+        </section>`;
       default:
         return null;
     }
@@ -1057,23 +1287,33 @@ export class PfFullView extends LitElement {
           <button
             type="button"
             class="footer-btn"
-            aria-label="Save edited image as a variant"
+            aria-label=${this.savingVariant
+              ? "Saving edited image as a variant"
+              : "Save edited image as a variant"}
+            aria-busy=${this.savingVariant ? "true" : "false"}
             title="Save edited image as a JPEG variant"
-            ?disabled=${this.savingVariant || this.deletingVariant}
+            ?disabled=${this.savingVariant || this.deletingVariant || this.deletingPhoto}
             @click=${this.saveVariant}
           >
-            <pf-icon name="save"></pf-icon>
+            ${this.savingVariant
+              ? html`<span class="footer-btn-spinner" aria-hidden="true"></span>`
+              : html`<pf-icon name="save"></pf-icon>`}
             <span>${this.savingVariant ? "Saving…" : "Save Variant"}</span>
           </button>
           <button
             type="button"
             class="footer-btn danger"
-            aria-label="Delete current image"
+            aria-label=${this.deletingVariant
+              ? "Deleting current image"
+              : "Delete current image"}
+            aria-busy=${this.deletingVariant ? "true" : "false"}
             title="Move current image to the Bin"
-            ?disabled=${this.deletingVariant}
+            ?disabled=${this.savingVariant || this.deletingVariant || this.deletingPhoto}
             @click=${this.deleteVariant}
           >
-            <pf-icon name="trash"></pf-icon>
+            ${this.deletingVariant
+              ? html`<span class="footer-btn-spinner" aria-hidden="true"></span>`
+              : html`<pf-icon name="trash"></pf-icon>`}
             <span>${this.deletingVariant ? "Deleting…" : "Delete Variant"}</span>
           </button>
         </div>
@@ -1085,8 +1325,6 @@ export class PfFullView extends LitElement {
     const photo = this.currentPhoto;
     if (!photo) return html``;
     const total = this.photos.length;
-    const hasPrev = this.index > 0;
-    const hasNext = this.index < total - 1;
     const path = resolvedPath(photo);
     // Merge canvas overrides from the active tool over the shell's
     // defaults. Tools that aren't active contribute nothing.
@@ -1102,17 +1340,20 @@ export class PfFullView extends LitElement {
        photo,
        index: this.index,
        total,
-       fullscreen: this.fullscreen,
+      fullscreen: this.windowFullscreen,
        selection: currentSelection(photo),
        openMenu: this.openMenu,
        variantHasEdits: this.variantHasEdits,
        onToggleMenu: this.toggleMenu,
-       onSetFormat: this.setFormat,
+      onOpenRaw: this.openRaw,
        onSetVariant: this.setVariant,
        onDeletePhoto: this.deletePhoto,
        onOpenIn: this.openIn,
        deletingPhoto: this.deletingPhoto,
+       fileActionBusy: this.savingVariant || this.deletingVariant,
        openingIn: this.openingIn,
+      openingRaw: this.openingRaw,
+       showFullscreenToggle: !this.isIPad(),
        onToggleFullscreen: this.toggleFullscreen,
        onClose: this.close,
      })}
@@ -1121,7 +1362,11 @@ export class PfFullView extends LitElement {
         <div class="stage">
           <pf-image-canvas
             .path=${path}
-            .fit=${this.fit}
+            ?presenting=${this.presenting}
+            .proofingSize=${this.proofingSize}
+            .frameSize=${this.frameSize}
+            .frameColor=${this.bgCss(this.frameColor)}
+            .frameRadius=${this.frameRadius}
             .sizing=${sizing}
            .smoothingQuality=${this.smoothing}
            .cropMode=${cropMode}
@@ -1138,68 +1383,53 @@ export class PfFullView extends LitElement {
             @image-activate=${this.onImageActivate}
             @image-double-activate=${this.onImageDoubleActivate}
             @image-swipe=${this.onImageSwipe}
+            @image-ready=${this.onSlideImageReady}
+            @image-error=${this.onSlideImageError}
+            @image-preview-start=${this.onImagePreviewStart}
+            @image-preview-end=${this.onImagePreviewEnd}
           ></pf-image-canvas>
+          <canvas class="slideshow-overlay" aria-hidden="true"
+            @transitionend=${(event: TransitionEvent) => { (event.target as HTMLCanvasElement).style.display = "none"; }}></canvas>
           ${path
             ? html`<pf-rating-overlay
                 class="fv-rating-overlay"
                 .path=${path}
-                ?fullscreen=${this.fullscreen}
-                ?forceVisible=${this.fullscreen && !this.controlsHidden}
+                ?fullscreen=${true}
+                ?forceVisible=${!this.immersive || !this.controlsHidden}
                 style="--pf-rating-inset: 16px; --pf-rating-star-size: 14px; --pf-rating-label-size: 8px;"
               ></pf-rating-overlay>`
             : null}
-          <button
-           class="nav prev"
-           aria-label="Previous"
-           ?disabled=${!hasPrev}
-           @click=${() => this.go(-1)}
-         >
-           <pf-icon name="chevron-left"></pf-icon>
-         </button>
-         <button
-           class="nav next"
-           aria-label="Next"
-           ?disabled=${!hasNext}
-           @click=${() => this.go(1)}
-         >
-           <pf-icon name="chevron-right"></pf-icon>
-         </button>
-          <div class="hint">
-            ${buildHintLine(this.shortcuts, [
-              "Scroll to zoom",
-              "pinch to zoom",
-              "drag to pan",
-              "double-click to toggle 100%",
-              "F fullscreen",
-              "G grid",
-              "Esc to close",
-            ])}
-          </div>
         </div>
-        ${this.editMode
+        ${!this.presenting
       ? this.renderSideRail() : null}
-      ${this.editMode && this.activeTab !== null
+      ${!this.presenting && this.activeTab !== null
           ? this.renderEditPanel()
           : null}
       </div>
      <div class="bottombar-wrap">
        ${renderBottombar({
+      immersive: this.immersive,
       bg: this.bg,
-       fit: this.fit,
+      proofingSize: this.proofingSize,
+      frameSize: this.frameSize,
+      frameColor: this.frameColor,
+      frameRadius: this.frameRadius,
        sizing: this.sizing,
        smoothing: this.smoothing,
        openMenu: this.openMenu,
        bgCss: (b) => this.bgCss(b),
        bgLabel: (b) => this.bgLabel(b),
-       fitLabel: (m) => this.fitLabel(m),
-       sizingLabel: (s) => this.sizingLabel(s),
-       smoothingLabel: (q) => this.smoothingLabel(q),
        onToggleMenu: this.toggleMenu,
        onSetBg: this.setBg,
-       onSetFit: this.setFit,
+      onSetProofingSize: this.setProofingSize,
+      onSetFrameSize: this.setFrameSize,
+      onSetFrameColor: this.setFrameColor,
+      onSetFrameRadius: this.setFrameRadius,
        onSetSizing: this.setSizing,
        onSetSmoothing: this.setSmoothing,
        postProcessEnabled: getPostProcess().enabled,
+      onPlaySlideshow: this.requestPresentation,
+      onToggleImmersive: this.toggleImmersive,
         onTogglePostProcess: () =>
           setPostProcessEnabled(!getPostProcess().enabled),
      })}
