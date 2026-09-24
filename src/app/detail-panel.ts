@@ -178,6 +178,10 @@ export class PfDetailPanel extends LitElement {
 
   protected updated(changed: Map<string, unknown>): void {
     if (!changed.has("photo")) return;
+    this.refreshMetadata();
+  }
+
+  refreshMetadata(): void {
     const photo = this.photo;
     const request = ++this.exifRequest;
     this.exif = null;

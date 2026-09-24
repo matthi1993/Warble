@@ -43,6 +43,8 @@ struct WarbleSidecar {
     orientation: u32,
     metadata_ready: bool,
     metadata: ExifMetadata,
+    #[serde(default)]
+    metadata_overrides: MetadataOverrides,
     edits: PhotoEdits,
     #[serde(skip_serializing_if = "Option::is_none")]
     effects: Option<serde_json::Value>,
@@ -57,11 +59,64 @@ impl Default for WarbleSidecar {
             orientation: IDENTITY,
             metadata_ready: false,
             metadata: ExifMetadata::default(),
+            metadata_overrides: MetadataOverrides::default(),
             edits: PhotoEdits::default(),
             effects: None,
             updated_at: now_secs(),
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MetadataOverrides {
+    pub date_taken: Option<String>,
+    pub artist: Option<String>,
+    pub copyright: Option<String>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub lens_model: Option<String>,
+}
+
+impl MetadataOverrides {
+    pub fn apply(&self, metadata: &mut ExifMetadata) {
+        for (override_value, field) in [
+            (&self.date_taken, &mut metadata.date_taken),
+            (&self.artist, &mut metadata.artist),
+            (&self.copyright, &mut metadata.copyright),
+            (&self.camera_make, &mut metadata.camera_make),
+            (&self.camera_model, &mut metadata.camera_model),
+            (&self.lens_model, &mut metadata.lens_model),
+        ] {
+            if let Some(value) = override_value {
+                *field = (!value.is_empty()).then(|| value.clone());
+            }
+        }
+    }
+
+    fn merge(&mut self, changes: &Self) {
+        if let Some(value) = &changes.date_taken { self.date_taken = Some(value.clone()); }
+        if let Some(value) = &changes.artist { self.artist = Some(value.clone()); }
+        if let Some(value) = &changes.copyright { self.copyright = Some(value.clone()); }
+        if let Some(value) = &changes.camera_make { self.camera_make = Some(value.clone()); }
+        if let Some(value) = &changes.camera_model { self.camera_model = Some(value.clone()); }
+        if let Some(value) = &changes.lens_model { self.lens_model = Some(value.clone()); }
+    }
+}
+
+pub fn apply_metadata_overrides(source: &Path, metadata: &mut ExifMetadata) {
+    if let Some(sidecar) = read_valid_warble(source) {
+        sidecar.metadata_overrides.apply(metadata);
+    }
+}
+
+pub fn write_metadata_overrides(source: &Path, changes: &MetadataOverrides) -> Result<(), String> {
+    let _lock = sidecar_write_lock().lock().map_err(|e| e.to_string())?;
+    let mut sidecar = sidecar_for_write(source);
+    sidecar.source = Some(fingerprint(source)?);
+    sidecar.metadata_overrides.merge(changes);
+    sidecar.updated_at = now_secs();
+    write_warble(source, &sidecar)
 }
 
 /// Keep the original extension to distinguish JPEG/RAW pairs, and prefix
@@ -110,7 +165,9 @@ pub fn read_metadata(source: &Path) -> Option<(u32, ExifMetadata)> {
     if !sidecar.metadata_ready {
         return None;
     }
-    Some((sidecar.orientation, sidecar.metadata))
+    let mut metadata = sidecar.metadata;
+    sidecar.metadata_overrides.apply(&mut metadata);
+    Some((sidecar.orientation, metadata))
 }
 
 /// Update the Warble metadata cache after EXIF was parsed from the source.
@@ -314,8 +371,9 @@ fn sync_photo_index_tx(
     if let Some(sidecar) = read_warble(source) {
         if sidecar.metadata_ready && read_valid_warble(source).is_some() {
             let fingerprint = fingerprint(source)?;
-            let metadata_json =
-                serde_json::to_string(&sidecar.metadata).map_err(|e| e.to_string())?;
+            let mut metadata = sidecar.metadata.clone();
+            sidecar.metadata_overrides.apply(&mut metadata);
+            let metadata_json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
             tx.execute(
                 "INSERT INTO photo_exif
                     (path, file_mtime, file_size, orientation, metadata)
@@ -372,6 +430,7 @@ fn sync_photo_index_tx(
         orientation: IDENTITY,
         metadata_ready: false,
         metadata: ExifMetadata::default(),
+        metadata_overrides: MetadataOverrides::default(),
         edits,
         effects: None,
         updated_at: now_secs(),
@@ -504,6 +563,7 @@ fn sidecar_for_write(source: &Path) -> WarbleSidecar {
     if !valid {
         sidecar.metadata_ready = false;
         sidecar.metadata = ExifMetadata::default();
+        sidecar.metadata_overrides = MetadataOverrides::default();
         sidecar.orientation = IDENTITY;
     }
     sidecar

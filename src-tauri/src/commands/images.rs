@@ -18,6 +18,7 @@ use tauri::State;
 
 use crate::app_state::AppState;
 use crate::imaging::{exif_cache, full_image, hd_image, thumbnails};
+use crate::sidecar::MetadataOverrides;
 use crate::tasks::{self, Priority};
 
 #[tauri::command]
@@ -112,6 +113,48 @@ pub async fn get_exif_metadata(
         Ok::<_, String>(exif_cache::get_or_compute(&photo_path, &resolved))
     })
     .await
+}
+
+#[tauri::command]
+pub async fn set_photo_metadata(
+    photo_paths: Vec<String>,
+    changes: MetadataOverrides,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(date) = &changes.date_taken {
+        if !date.is_empty() && !valid_capture_date(date) {
+            return Err("Capture date must be a valid YYYY-MM-DD or YYYY-MM-DD HH:MM:SS".into());
+        }
+    }
+    let mut photos = Vec::with_capacity(photo_paths.len());
+    for key in photo_paths {
+        photos.push((key.clone(), state.resolve_library_path(&key)?));
+    }
+    tasks::run(Priority::Urgent, None, move |cancel| {
+        for (key, source) in photos {
+            cancel.check()?;
+            exif_cache::update_metadata(&key, &source, &changes)?;
+        }
+        Ok(())
+    }).await
+}
+
+fn valid_capture_date(value: &str) -> bool {
+    let (day, time) = value.split_once(' ').unwrap_or((value, ""));
+    if day.len() != 10 || normalize_date(day).as_deref() != Some(day) {
+        return false;
+    }
+    let year = day[..4].parse::<i32>().unwrap_or(0);
+    let month = day[5..7].parse::<u32>().unwrap_or(0);
+    let date = day[8..10].parse::<u32>().unwrap_or(0);
+    if year < 1 || ![31, if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        .get(month.saturating_sub(1) as usize).is_some_and(|days| date >= 1 && date <= *days) {
+        return false;
+    }
+    time.is_empty() || (time.len() == 8 && time.as_bytes()[2] == b':' && time.as_bytes()[5] == b':'
+        && time[..2].parse::<u32>().is_ok_and(|n| n < 24)
+        && time[3..5].parse::<u32>().is_ok_and(|n| n < 60)
+        && time[6..].parse::<u32>().is_ok_and(|n| n < 60))
 }
 
 /// Small EXIF projection used by the grid filters. The full metadata record

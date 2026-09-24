@@ -40,6 +40,7 @@ import {
 } from "@services/tasks/task-manager";
 import "./pf-settings";
 import "./pf-task-details";
+import "./pf-metadata-editor";
 
 function findFolderByPath(roots: Folder[], path: string): Folder | null {
   for (const r of roots) {
@@ -807,6 +808,9 @@ export class WarbleApp extends LitElement {
   } | null = null;
 
   @state()
+  private metadataPaths: string[] = [];
+
+  @state()
   private folderContextMenu: {
     folderId: string;
     path: string;
@@ -1251,6 +1255,7 @@ export class WarbleApp extends LitElement {
    */
 
   private onGlobalKey = (e: KeyboardEvent) => {
+    if (this.metadataPaths.length) return;
     // Events crossing nested shadow roots retarget `e.target` to the host.
     // Use the original composed-path node so text fields (notably the preset
     // name input) always own their keystrokes instead of triggering shortcuts.
@@ -1359,10 +1364,19 @@ export class WarbleApp extends LitElement {
     // While the full view is open, let it handle its own remaining keys.
     if (this.fullViewIndex !== null) return;
 
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "a") {
+      const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
+      if (grid) {
+        e.preventDefault();
+        grid.selectAll();
+      }
+      return;
+    }
+
     // Star ratings (1–5) and color labels (6–9, 0). Apply to the
     // currently-selected grid photo, falling back to the first card
     // if nothing is selected yet.
-    if (RATING_LABEL_KEYS.has(e.key)) {
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && RATING_LABEL_KEYS.has(e.key)) {
       const target =
         this.selectedPhoto ?? (this.photos.length > 0 ? this.photos[0] : null);
       if (target) {
@@ -1870,6 +1884,35 @@ export class WarbleApp extends LitElement {
     this.contextMenu = { ...e.detail };
   }
 
+  private editContextMetadata = (): void => {
+    const menu = this.contextMenu;
+    if (!menu) return;
+    const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
+    this.metadataPaths = grid?.getSelectionPaths() ?? [menu.path];
+    if (!this.metadataPaths.length) this.metadataPaths = [menu.path];
+    this.contextMenu = null;
+  };
+
+  private onMetadataSaved = (e: CustomEvent<{ paths: string[]; dateTaken?: string | null }>): void => {
+    const { paths, dateTaken } = e.detail;
+    if (this.selectedPhoto && paths.includes(this.selectedPhoto.path)) {
+      (this.renderRoot.querySelector("pf-detail-panel") as import("./detail-panel").PfDetailPanel | null)?.refreshMetadata();
+    }
+    if (dateTaken === undefined) return;
+    const changed = new Set(paths);
+    const day = dateTaken?.slice(0, 10) ?? null;
+    const update = (photo: Photo): Photo => changed.has(photo.path)
+      ? { ...photo, filterInfo: { ...photo.filterInfo, dateTaken: day } }
+      : photo;
+    this.photoPipeline.invalidate(paths);
+    this.photos = sortPhotosOldestFirst(this.photos.map(update));
+    this.libraryPhotos = sortPhotosOldestFirst(this.libraryPhotos.map(update));
+    if (this.selectedPhoto && changed.has(this.selectedPhoto.path)) {
+      this.selectedPhoto = update(this.selectedPhoto);
+    }
+    if (this.daysSelected) this.showLibraryPhotos(false);
+  };
+
   private dismissContextMenu = () => {
     if (this.contextMenu) this.contextMenu = null;
   };
@@ -2279,6 +2322,11 @@ export class WarbleApp extends LitElement {
       ${this.renderFooter()}
       ${this.renderContextMenu()}
       ${this.renderFolderContextMenu()}
+      ${this.metadataPaths.length ? html`<pf-metadata-editor
+        .paths=${this.metadataPaths}
+        @close=${() => { this.metadataPaths = []; }}
+        @metadata-saved=${this.onMetadataSaved}
+      ></pf-metadata-editor>` : null}
       <pf-settings @workspace-reset-starting=${() => this.stopPhotoBackgroundWork()}></pf-settings>
       ${this.busyLabel
         ? html`
@@ -2310,6 +2358,7 @@ export class WarbleApp extends LitElement {
         role="menu"
         style="left: ${cm.x}px; top: ${cm.y}px;"
       >
+        <button role="menuitem" @click=${this.editContextMetadata}>Edit metadata…</button>
         <button
           role="menuitem"
           @click=${() => this.revealInFileManager(cm.path)}

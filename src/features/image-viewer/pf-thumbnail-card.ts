@@ -36,6 +36,22 @@ export class PfThumbnailCard extends LitElement {
       border-color: var(--pf-accent);
       box-shadow: 0 0 0 1px var(--pf-accent);
     }
+    .selection-check {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      z-index: 2;
+      width: 17px;
+      height: 17px;
+      display: grid;
+      place-items: center;
+      border-radius: 2px;
+      background: #f58a1f;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      pointer-events: none;
+    }
     .thumb {
       /* Cards stretch to fill their grid cell; the thumbnail is a
          square of the cell width so the photo-grid's slider drives
@@ -124,6 +140,9 @@ export class PfThumbnailCard extends LitElement {
 
   @property({ type: Boolean, reflect: true })
   selected = false;
+
+  @property({ type: Boolean })
+  showSelectionCheck = true;
 
   @state()
   private thumbnailUrl: string | null = null;
@@ -249,6 +268,7 @@ export class PfThumbnailCard extends LitElement {
         @contextmenu=${this.onContextMenu}
       >
         <div class="thumb">
+          ${this.selected && this.showSelectionCheck ? html`<span class="selection-check" aria-label="Selected">✓</span>` : null}
           ${this.thumbnailUrl
             ? html`<img src=${this.thumbnailUrl} alt=${this.filename} loading="lazy" />`
             : this.error
@@ -285,10 +305,10 @@ export class PfThumbnailCard extends LitElement {
     `;
   }
 
-  private onClick = () => {
+  private onClick = (e: MouseEvent) => {
     this.dispatchEvent(
       new CustomEvent("photo-selected", {
-        detail: { path: this.path, filename: this.filename },
+        detail: { path: this.path, filename: this.filename, shiftKey: e.shiftKey, toggle: e.metaKey || e.ctrlKey },
         bubbles: true,
         composed: true,
       })
@@ -308,13 +328,6 @@ export class PfThumbnailCard extends LitElement {
 
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
-    this.dispatchEvent(
-      new CustomEvent("photo-selected", {
-        detail: { path: this.path, filename: this.filename },
-        bubbles: true,
-        composed: true,
-      })
-    );
     this.dispatchEvent(
       new CustomEvent("photo-context-menu", {
         detail: {

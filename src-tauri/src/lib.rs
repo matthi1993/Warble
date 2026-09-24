@@ -53,6 +53,7 @@ pub fn run() {
             commands::cancel_image_request,
             commands::promote_image_request,
             commands::get_exif_metadata,
+            commands::set_photo_metadata,
             commands::get_cached_photo_filter_metadata,
             commands::get_photo_filter_metadata,
             commands::get_cache_settings,

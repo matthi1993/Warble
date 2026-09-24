@@ -409,6 +409,71 @@ export class PfPhotoGrid extends LitElement {
   @property({ type: String })
   selectedPath: string | null = null;
 
+  @state()
+  private selectedPaths = new Set<string>();
+
+  private selectionAnchor: string | null = null;
+
+  getSelectionPaths(): string[] {
+    return this.getDayGroups(this.filteredPhotos)
+      .flatMap((group) => group.photos)
+      .filter((photo) => this.selectedPaths.has(photo.path))
+      .map((photo) => photo.path);
+  }
+
+  selectAll(): void {
+    const paths = this.getDayGroups(this.filteredPhotos).flatMap((group) => group.photos);
+    if (!paths.length) return;
+    this.selectedPaths = new Set(paths.map((photo) => photo.path));
+    this.selectionAnchor = this.selectedPath ?? paths[0].path;
+    if (!this.selectedPath) this.selectPrimary(paths[0]);
+  }
+
+  private selectPrimary(photo: Photo): void {
+    this.dispatchEvent(new CustomEvent("photo-selected", {
+      detail: { path: photo.path, filename: photo.filename },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private onCardSelected(e: CustomEvent<{ path: string; shiftKey?: boolean; toggle?: boolean }>): void {
+    e.stopPropagation();
+    const photos = this.getDayGroups(this.filteredPhotos).flatMap((group) => group.photos);
+    const index = photos.findIndex((photo) => photo.path === e.detail.path);
+    if (index < 0) return;
+    if (e.detail.shiftKey && this.selectionAnchor) {
+      const anchor = photos.findIndex((photo) => photo.path === this.selectionAnchor);
+      if (anchor >= 0) {
+        this.selectedPaths = new Set(photos.slice(Math.min(anchor, index), Math.max(anchor, index) + 1).map((photo) => photo.path));
+      } else {
+        this.selectedPaths = new Set([e.detail.path]);
+        this.selectionAnchor = e.detail.path;
+      }
+    } else if (e.detail.toggle) {
+      const next = new Set(this.selectedPaths);
+      if (next.has(e.detail.path)) next.delete(e.detail.path);
+      else next.add(e.detail.path);
+      this.selectedPaths = next;
+      this.selectionAnchor = e.detail.path;
+    } else {
+      this.selectedPaths = new Set([e.detail.path]);
+      this.selectionAnchor = e.detail.path;
+    }
+    this.selectionFromClick = this.selectedPath !== e.detail.path;
+    this.selectPrimary(photos[index]);
+  }
+
+  private onCardContextMenu(e: CustomEvent<{ path: string }>): void {
+    if (this.selectedPaths.has(e.detail.path)) return;
+    const photo = this.photos.find((item) => item.path === e.detail.path);
+    if (!photo) return;
+    this.selectedPaths = new Set([photo.path]);
+    this.selectionAnchor = photo.path;
+    this.selectionFromClick = this.selectedPath !== photo.path;
+    this.selectPrimary(photo);
+  }
+
   @property({ type: String })
   folderName: string | null = null;
 
@@ -515,7 +580,13 @@ export class PfPhotoGrid extends LitElement {
         this.renderedPhotoSet = photoSet;
         this.collapsedDays = new Set();
         this.resetVisiblePhotoPages();
+        this.selectedPaths = new Set(this.selectedPath ? [this.selectedPath] : []);
+        this.selectionAnchor = this.selectedPath;
       }
+    }
+    if (changed.has("selectedPath") && this.selectedPath && !this.selectedPaths.has(this.selectedPath)) {
+      this.selectedPaths = new Set([this.selectedPath]);
+      this.selectionAnchor = this.selectedPath;
     }
     // When the full-view overlay closes the grid becomes visible
     // again; scroll the selected photo into view so the user
@@ -544,18 +615,7 @@ export class PfPhotoGrid extends LitElement {
     if (this.selectedPath) {
       requestAnimationFrame(() => this.scrollSelectionIntoView());
     }
-    this.addEventListener('click', this.onGridClick);
   }
-
-  private onGridClick = (e: Event) => {
-    // A click inside the grid (on a thumbnail card) selects that
-    // photo. Set the flag so updated() skips scrollIntoView — the
-    // clicked card is already visible and centering it would jump,
-    // making double-click impossible.
-    if (e.target instanceof HTMLElement && e.target.closest('pf-thumbnail-card')) {
-      this.selectionFromClick = true;
-    }
-  };
 
   private get filteredPhotos(): Photo[] {
     // Keep a reactive dependency on `ratingsTick` so Lit re-renders
@@ -728,6 +788,9 @@ export class PfPhotoGrid extends LitElement {
     const next = visible[idx];
     if (!next) return false;
 
+    this.selectedPaths = new Set([next.path]);
+    this.selectionAnchor = next.path;
+
     this.dispatchEvent(
       new CustomEvent("photo-selected", {
         detail: { path: next.path, filename: next.filename },
@@ -894,6 +957,8 @@ export class PfPhotoGrid extends LitElement {
     return html`<div
       class="grid"
       style=${`--pf-grid-cols: ${this.columns}`}
+      @photo-selected=${this.onCardSelected}
+      @photo-context-menu=${this.onCardContextMenu}
     >
       ${repeat(
         photos,
@@ -905,7 +970,8 @@ export class PfPhotoGrid extends LitElement {
             .filename=${photo.filename}
             .extensions=${photo.extensions ?? []}
             .variantCount=${variantCount(photo)}
-            ?selected=${this.selectedPath === photo.path}
+            ?selected=${this.selectedPaths.has(photo.path)}
+            .showSelectionCheck=${!this.fullViewOpen}
           ></pf-thumbnail-card>
         `
       )}

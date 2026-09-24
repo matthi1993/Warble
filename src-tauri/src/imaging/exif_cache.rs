@@ -71,7 +71,7 @@ pub fn get(key: &str, path: &Path) -> Option<(u32, ExifMetadata)> {
         repo.get_photo_exif(key).ok().flatten()
     {
         if cached_mtime == mtime && cached_size == size {
-            if let Ok(metadata) = serde_json::from_str::<ExifMetadata>(&metadata_json) {
+            if let Ok(mut metadata) = serde_json::from_str::<ExifMetadata>(&metadata_json) {
                 // Migrate an existing local EXIF cache lazily, only when the
                 // photo is actually used for a filter/detail/image request.
                 if crate::sidecar::read_metadata(path).is_none() {
@@ -83,6 +83,7 @@ pub fn get(key: &str, path: &Path) -> Option<(u32, ExifMetadata)> {
                         );
                     }
                 }
+                crate::sidecar::apply_metadata_overrides(path, &mut metadata);
                 return Some((orientation, metadata));
             }
         }
@@ -111,14 +112,18 @@ pub fn get_or_compute(key: &str, path: &Path) -> ExifMetadata {
     let result = match exif::read_full_metadata(path) {
         Some((orientation, metadata)) => {
             store(key, path, orientation, &metadata);
-            metadata
+            let mut effective = metadata;
+            crate::sidecar::apply_metadata_overrides(path, &mut effective);
+            effective
         }
         None => {
             // Cache the negative result too. Otherwise screenshots and
             // images without EXIF are reparsed by every consumer.
             let metadata = ExifMetadata::default();
             store(key, path, IDENTITY, &metadata);
-            metadata
+            let mut effective = metadata;
+            crate::sidecar::apply_metadata_overrides(path, &mut effective);
+            effective
         }
     };
     release(key);
@@ -182,6 +187,24 @@ fn store(key: &str, path: &Path, orientation: u32, metadata: &ExifMetadata) {
             path.display()
         );
     }
+}
+
+pub fn update_metadata(
+    key: &str,
+    path: &Path,
+    changes: &crate::sidecar::MetadataOverrides,
+) -> Result<ExifMetadata, String> {
+    let _ = get_or_compute(key, path);
+    crate::sidecar::write_metadata_overrides(path, changes)?;
+    let (mtime, size) = file_fingerprint(path).ok_or("Cannot read photo fingerprint")?;
+    let repo = repo_slot().lock().map_err(|e| e.to_string())?
+        .clone().ok_or("Library not available")?;
+    let (orientation, mut metadata) = crate::sidecar::read_metadata(path)
+        .ok_or("Cannot read saved metadata")?;
+    let json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
+    repo.set_photo_exif(key, mtime, size, orientation, &json)?;
+    crate::sidecar::apply_metadata_overrides(path, &mut metadata);
+    Ok(metadata)
 }
 
 fn file_fingerprint(path: &Path) -> Option<(i64, i64)> {
