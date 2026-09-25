@@ -42,6 +42,7 @@ struct WarbleSidecar {
     source: Option<SourceFingerprint>,
     orientation: u32,
     metadata_ready: bool,
+    video_metadata_checked: bool,
     metadata: ExifMetadata,
     #[serde(default)]
     metadata_overrides: MetadataOverrides,
@@ -58,6 +59,7 @@ impl Default for WarbleSidecar {
             source: None,
             orientation: IDENTITY,
             metadata_ready: false,
+            video_metadata_checked: false,
             metadata: ExifMetadata::default(),
             metadata_overrides: MetadataOverrides::default(),
             edits: PhotoEdits::default(),
@@ -162,12 +164,20 @@ pub fn xmp_path(source: &Path) -> PathBuf {
 /// version of the source image.
 pub fn read_metadata(source: &Path) -> Option<(u32, ExifMetadata)> {
     let sidecar = read_valid_warble(source)?;
-    if !sidecar.metadata_ready {
+    if !sidecar.metadata_ready || (is_video_source(source) && !sidecar.video_metadata_checked) {
         return None;
     }
     let mut metadata = sidecar.metadata;
     sidecar.metadata_overrides.apply(&mut metadata);
     Some((sidecar.orientation, metadata))
+}
+
+pub fn video_metadata_checked(source: &Path) -> bool {
+    read_valid_warble(source).is_some_and(|sidecar| sidecar.video_metadata_checked)
+}
+
+fn is_video_source(source: &Path) -> bool {
+    source.extension().and_then(|ext| ext.to_str()).is_some_and(crate::library::is_video_extension)
 }
 
 /// Update the Warble metadata cache after EXIF was parsed from the source.
@@ -184,6 +194,7 @@ pub fn write_metadata(
     sidecar.source = Some(fingerprint(source)?);
     sidecar.orientation = normalize_orientation(orientation);
     sidecar.metadata_ready = true;
+    sidecar.video_metadata_checked = is_video_source(source);
     sidecar.metadata = metadata.clone();
     sidecar.updated_at = now_secs();
     write_warble(source, &sidecar)
@@ -369,7 +380,10 @@ fn sync_photo_index_tx(
     // effects so one valid update cannot replace another one.
 
     if let Some(sidecar) = read_warble(source) {
-        if sidecar.metadata_ready && read_valid_warble(source).is_some() {
+        if sidecar.metadata_ready
+            && (!is_video_source(source) || sidecar.video_metadata_checked)
+            && read_valid_warble(source).is_some()
+        {
             let fingerprint = fingerprint(source)?;
             let mut metadata = sidecar.metadata.clone();
             sidecar.metadata_overrides.apply(&mut metadata);
@@ -429,6 +443,7 @@ fn sync_photo_index_tx(
         source: Some(fingerprint),
         orientation: IDENTITY,
         metadata_ready: false,
+        video_metadata_checked: false,
         metadata: ExifMetadata::default(),
         metadata_overrides: MetadataOverrides::default(),
         edits,

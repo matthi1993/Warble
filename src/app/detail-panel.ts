@@ -12,6 +12,8 @@ import {
 import { currentSelection } from "./views/full-view/variant-selector";
 import "../ui/controls/pf-icon-button";
 import "@features/image-viewer/pf-image-canvas";
+import "@features/image-viewer/pf-video-view";
+import { isVideoPath } from "@services/images/video-source";
 
 function isIPad(): boolean {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent ?? "";
@@ -21,6 +23,10 @@ function isIPad(): boolean {
 
 @customElement("pf-detail-panel")
 export class PfDetailPanel extends LitElement {
+  toggleVideoPlayback(): boolean {
+    return this.renderRoot.querySelector("pf-video-view")?.togglePlayback() ?? false;
+  }
+
   static styles = css`
     :host {
       display: flex;
@@ -38,7 +44,7 @@ export class PfDetailPanel extends LitElement {
       min-height: 0;
       height: min(34vh, 260px);
     }
-    pf-image-canvas {
+    pf-image-canvas, pf-video-view {
       width: 100%;
       height: 100%;
       border-radius: var(--pf-radius-md);
@@ -244,11 +250,11 @@ export class PfDetailPanel extends LitElement {
     const sections = buildExifSections(this.exif);
     return html`
       <div class="image-wrap">
-        <pf-image-canvas
+        ${isVideoPath(path) ? html`<pf-video-view .path=${path}></pf-video-view>` : html`<pf-image-canvas
           .path=${path}
           fit="contain"
           background="transparent"
-        ></pf-image-canvas>
+        ></pf-image-canvas>`}
         ${this.fullViewOpen || isIPad()
           ? null
           : html`<pf-icon-button

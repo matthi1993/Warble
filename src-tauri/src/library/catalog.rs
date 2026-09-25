@@ -710,6 +710,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn groups_live_photo_motion_with_its_still() {
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-live-photo-{root_id}"));
+        fs::create_dir_all(&root).unwrap();
+        let still = if cfg!(any(target_os = "ios", target_os = "macos")) {
+            "IMG_0001.HEIC"
+        } else {
+            "IMG_0001.jpg"
+        };
+        for name in [still, "IMG_0001.MOV", "clip.mp4"] {
+            fs::write(root.join(name), []).unwrap();
+        }
+
+        let photos = scan_folder_images(&root_id, &root, false).unwrap();
+        let mut catalog = LibraryCatalog::default();
+        catalog.merge_folder_images(&root_id, photos, false);
+        let grouped = catalog.photos_in_folder_filtered(Path::new(&root_id), false);
+        assert_eq!(grouped.len(), 2);
+        let live = grouped
+            .iter()
+            .find(|photo| photo.filename == still)
+            .unwrap();
+        assert_eq!(live.files.len(), 2);
+        assert!(live.files.iter().any(|file| file.extension == "mov"));
+        assert!(grouped.iter().any(|photo| photo.filename == "clip.mp4"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovers_movies_on_import_and_folder_sync() {
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-video-scan-{root_id}"));
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join("first.MOV"), []).unwrap();
+
+        let mut catalog = LibraryCatalog::default();
+        catalog.merge_root_tree(scan_root_tree(&root_id, "Media", &root).unwrap());
+        catalog.merge_folder_images(
+            &root_id,
+            scan_folder_images(&root_id, &root, true).unwrap(),
+            true,
+        );
+        assert!(catalog
+            .all_photos()
+            .iter()
+            .any(|photo| photo.filename == "first.MOV"));
+
+        fs::write(nested.join("later.mp4"), []).unwrap();
+        catalog.merge_folder_images(
+            &root_id,
+            scan_folder_images(&root_id, &root, true).unwrap(),
+            true,
+        );
+        let photos = catalog.all_photos();
+        assert_eq!(photos.len(), 2);
+        assert!(photos.iter().any(|photo| photo.filename == "later.mp4"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn refreshes_only_the_requested_folder_subtree() {
         let root_id = uuid::Uuid::new_v4().to_string();
         let root = std::env::temp_dir().join(format!("warble-refresh-{root_id}"));

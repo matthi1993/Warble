@@ -174,6 +174,7 @@ export interface BottombarOptions {
   onSetSizing: (s: ImageSizing) => void;
   onSetSmoothing: (q: ImageSmoothingQuality) => void;
   postProcessEnabled: boolean;
+  videoActive: boolean;
   onTogglePostProcess: () => void;
   onToggleImmersive: () => void;
   onPlaySlideshow: () => void;
@@ -313,7 +314,7 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
               >${q.charAt(0).toUpperCase() + q.slice(1)}</button>`)}
             </div>
           </div>
-          <div class="settings-section" role="group" aria-label="Post-Processing">
+          ${!opts.videoActive ? html`<div class="settings-section" role="group" aria-label="Post-Processing">
             <span class="settings-section-label">Post-Processing</span>
             <div class="settings-options">
               <button class="menu-item" type="button" aria-pressed=${opts.postProcessEnabled}
@@ -321,7 +322,7 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
                 @click=${opts.onTogglePostProcess}
               >${opts.postProcessEnabled ? "On" : "Off"}</button>
             </div>
-          </div>
+          </div>` : null}
         </div>` : null}
       </span>
       <button class="menu-trigger" type="button" aria-pressed=${opts.immersive}

@@ -7,6 +7,7 @@ import {
 } from "@services/images/thumbnail-service";
 import "@ui/icons/pf-icon";
 import "@features/rating/pf-rating-overlay";
+import { isVideoPath, videoSource } from "@services/images/video-source";
 
 @customElement("pf-thumbnail-card")
 export class PfThumbnailCard extends LitElement {
@@ -76,6 +77,12 @@ export class PfThumbnailCard extends LitElement {
       height: 100%;
       object-fit: cover;
       display: block;
+    }
+    .thumb video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      pointer-events: none;
     }
     .placeholder {
       font-size: 1.25rem;
@@ -148,6 +155,9 @@ export class PfThumbnailCard extends LitElement {
   private thumbnailUrl: string | null = null;
 
   @state()
+  private videoUrl: string | null = null;
+
+  @state()
   private error: string | null = null;
 
   @state()
@@ -171,6 +181,7 @@ export class PfThumbnailCard extends LitElement {
     this.pending?.cancel();
     this.pending = null;
     this.clearThumbnailUrl();
+    this.videoUrl = null;
     this.error = null;
     this.loading = false;
     this.loadedPath = null;
@@ -186,6 +197,7 @@ export class PfThumbnailCard extends LitElement {
     this.pending?.cancel();
     this.pending = null;
     this.clearThumbnailUrl();
+    this.videoUrl = null;
     this.loadedPath = null;
     this.loading = false;
   }
@@ -195,6 +207,7 @@ export class PfThumbnailCard extends LitElement {
       this.pending?.cancel();
       this.pending = null;
       this.clearThumbnailUrl();
+      this.videoUrl = null;
       this.error = null;
       this.loading = false;
       this.loadedPath = null;
@@ -225,6 +238,23 @@ export class PfThumbnailCard extends LitElement {
     if (this.loading || this.loadedPath === this.path) return;
     const requestedPath = this.path;
     this.loading = true;
+    if (isVideoPath(requestedPath)) {
+      try {
+        const url = await videoSource(requestedPath);
+        if (this.path !== requestedPath || !this.isConnected) return;
+        this.videoUrl = url;
+        this.loadedPath = requestedPath;
+        this.dispatchEvent(new CustomEvent("thumbnail-load", { bubbles: true, composed: true }));
+      } catch (error) {
+        if (this.path === requestedPath) {
+          this.error = String(error);
+          this.loadedPath = requestedPath;
+        }
+      } finally {
+        if (this.path === requestedPath) this.loading = false;
+      }
+      return;
+    }
     const handle = requestThumbnail(requestedPath);
     this.pending = handle;
     try {
@@ -260,6 +290,8 @@ export class PfThumbnailCard extends LitElement {
 
   render() {
     const showBadge = this.extensions && this.extensions.length > 1;
+    const hasMotion = this.extensions.some((extension) => ["mov", "mp4", "m4v"].includes(extension.toLowerCase()));
+    const livePhoto = hasMotion && !isVideoPath(this.path);
     return html`
       <div
         class=\"card\"
@@ -269,7 +301,13 @@ export class PfThumbnailCard extends LitElement {
       >
         <div class="thumb">
           ${this.selected && this.showSelectionCheck ? html`<span class="selection-check" aria-label="Selected">✓</span>` : null}
-          ${this.thumbnailUrl
+          ${this.videoUrl
+            ? html`<video src=${this.videoUrl} muted playsinline preload="metadata"
+                @loadedmetadata=${(event: Event) => {
+                  const video = event.target as HTMLVideoElement;
+                  if (video.duration > 0.1) video.currentTime = 0.1;
+                }}></video>`
+            : this.thumbnailUrl
             ? html`<img src=${this.thumbnailUrl} alt=${this.filename} loading="lazy" />`
             : this.error
             ? html`<div class="error" title=${this.error}>
@@ -278,7 +316,7 @@ export class PfThumbnailCard extends LitElement {
             : html`<div class="placeholder">
                 <pf-icon name="image"></pf-icon>
               </div>`}
-          ${showBadge || this.variantCount > 1
+          ${showBadge || this.variantCount > 1 || hasMotion
             ? html`<div
                 class="badge"
                 title=${`Includes: ${this.extensions.join(", ")}${
@@ -296,6 +334,7 @@ export class PfThumbnailCard extends LitElement {
                       >+${this.variantCount - 1}</span
                     >`
                   : null}
+                ${hasMotion ? html`<span>${livePhoto ? "Live" : "Video"}</span>` : null}
               </div>`
             : null}
           <pf-rating-overlay .path=${this.path}></pf-rating-overlay>

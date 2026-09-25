@@ -206,7 +206,15 @@ pub fn enqueue_media_root_scan(
     }
     state
         .scan_coordinator
-        .enqueue_root(app, root.id, root.name, path);
+        .enqueue_root(app, root.id.clone(), root.name, path.clone());
+    state.scan_coordinator.enqueue_images(
+        app,
+        root.id.clone(),
+        root.id,
+        path,
+        true,
+        true,
+    );
 }
 
 /// Queue every connected media root for a background, root-scoped scan.

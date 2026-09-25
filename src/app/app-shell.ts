@@ -7,7 +7,7 @@ import { message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
 import type { Photo, PhotoFilterInfo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
-import { buildDateTree, dateSelectionLabel, matchesDateSelection, type DateTreeNode } from "./date-tree";
+import { DateTreeIndex, dateSelectionLabel, matchesDateSelection, type DateTreeNode } from "./date-tree";
 import { loadVariantOverrides, reloadVariantOverrides } from "@services/library/variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import { flushAllPhotoEdits, reloadPhotoEdits } from "@services/edits/edits-store";
@@ -94,6 +94,14 @@ function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
       if (bDate === null) return -1;
       const dateOrder = aDate.localeCompare(bDate);
       if (dateOrder !== 0) return dateOrder;
+    }
+    const aCaptureTime = a.filterInfo?.captureTime ?? null;
+    const bCaptureTime = b.filterInfo?.captureTime ?? null;
+    if (aCaptureTime !== bCaptureTime) {
+      if (aCaptureTime === null) return 1;
+      if (bCaptureTime === null) return -1;
+      const timeOrder = aCaptureTime.localeCompare(bCaptureTime);
+      if (timeOrder !== 0) return timeOrder;
     }
     const filenameOrder = a.filename.localeCompare(b.filename, undefined, {
       numeric: true,
@@ -725,7 +733,7 @@ export class WarbleApp extends LitElement {
   private selectedDateKey: string | null = null;
 
   @state()
-  private collapsedDateNodes = new Set<string>();
+  private expandedDateNodes = new Set<string>();
 
   private lastFolderPath: string | null = null;
 
@@ -736,16 +744,18 @@ export class WarbleApp extends LitElement {
   private restoringCachedDates = false;
 
   private dateTreeSource: Photo[] | null = null;
-  private dateTreeLoading = false;
-  private dateTree: DateTreeNode[] = [];
+  private readonly dateTreeIndex = new DateTreeIndex();
 
   private get dateNodes(): DateTreeNode[] {
-    if (this.dateTreeSource !== this.libraryPhotos || this.dateTreeLoading !== this.filterMetadataLoading) {
+    this.syncDateTreeIndex();
+    return this.dateTreeIndex.getTree();
+  }
+
+  private syncDateTreeIndex(): void {
+    if (this.dateTreeSource !== this.libraryPhotos) {
       this.dateTreeSource = this.libraryPhotos;
-      this.dateTreeLoading = this.filterMetadataLoading;
-      this.dateTree = buildDateTree(this.photoPipeline.enrich(this.libraryPhotos), this.dateTreeLoading);
+      this.dateTreeIndex.replacePhotos(this.photoPipeline.enrich(this.libraryPhotos));
     }
-    return this.dateTree;
   }
 
   @state()
@@ -926,7 +936,8 @@ export class WarbleApp extends LitElement {
 
   private selectDays = () => {
     if (this.daysSelected) return;
-    this.stopPhotoBackgroundWork();
+    const needsLibraryRefresh = !this.libraryPhotos.length && this.imports.length > 0;
+    if (needsLibraryRefresh && this.photos.length) this.libraryPhotos = this.photos;
     this.pendingRestoreFolderPath = null;
     this.daysSelected = true;
     this.allPhotosSelected = false;
@@ -938,9 +949,9 @@ export class WarbleApp extends LitElement {
     this.fullViewIndex = null;
     this.mobileSidebarOpen = false;
     this.detailOpen = false;
-    this.showLibraryPhotos();
-    if (!this.restoringCachedDates) this.startPhotoBackgroundWork();
-    if (!this.libraryPhotos.length && this.imports.length > 0) void this.refreshAllPhotos();
+    this.showLibraryPhotos(false);
+    if (needsLibraryRefresh) void this.refreshAllPhotos();
+    else if (!this.restoringCachedDates) this.startPhotoBackgroundWork();
   };
 
   private selectDate = (key: string) => {
@@ -954,14 +965,14 @@ export class WarbleApp extends LitElement {
   };
 
   private toggleDateNode = (key: string) => {
-    const collapsed = new Set(this.collapsedDateNodes);
-    if (collapsed.has(key)) collapsed.delete(key);
-    else collapsed.add(key);
-    this.collapsedDateNodes = collapsed;
+    const expanded = new Set(this.expandedDateNodes);
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    this.expandedDateNodes = expanded;
   };
 
   private renderDateNode(node: DateTreeNode, depth = 0): ReturnType<typeof html> {
-    const expanded = !this.collapsedDateNodes.has(node.key);
+    const expanded = this.expandedDateNodes.has(node.key);
     return html`
       <div class=${`date-tree-row ${this.selectedDateKey === node.key ? "selected" : ""} ${depth === 0 ? "root" : ""}`}>
         ${node.children.length ? html`<button class="date-tree-toggle" type="button" aria-label=${`${expanded ? "Collapse" : "Expand"} ${node.label}`}
@@ -984,7 +995,11 @@ export class WarbleApp extends LitElement {
         : this.libraryPhotos;
     const selectedPath = this.selectedPhoto?.path;
     const previousIndex = this.fullViewIndex;
-    this.setPhotos(photos, restartMetadata && !this.daysSelected);
+    if (this.daysSelected && this.selectedDateKey === null) {
+      this.photos = photos;
+    } else {
+      this.setPhotos(photos, restartMetadata && !this.daysSelected);
+    }
     if (!selectedPath) return;
     const selectedIndex = this.photos.findIndex((photo) => photo.path === selectedPath);
     if (selectedIndex >= 0) {
@@ -1006,28 +1021,38 @@ export class WarbleApp extends LitElement {
       const photos = await invoke<Photo[]>("get_all_photos");
       if (request !== this.allPhotosRequest) return;
       this.restoringCachedDates = true;
+      this.filterMetadataLoading = true;
       this.libraryPhotos = photos;
-      if (!this.daysSelected) this.showLibraryPhotos(false);
+      this.showLibraryPhotos(false);
       try {
-        const cached = await invoke<Array<PhotoFilterInfo & { path: string }>>(
-          "get_cached_photo_filter_metadata",
-          { photoPaths: photos.map((photo) => photo.path) },
-        );
-        if (request !== this.allPhotosRequest) return;
-        this.photoPipeline.restore(cached);
-        this.libraryPhotos = this.photoPipeline.enrich(photos);
-        this.showLibraryPhotos(false);
-        if (this.selectedFolderId) this.applyPhotoMetadata();
+        const paths = photos.map((photo) => photo.path);
+        for (let start = 0; start < paths.length; start += 256) {
+          const cached = await invoke<Array<PhotoFilterInfo & { path: string }>>(
+            "get_cached_photo_filter_metadata",
+            { photoPaths: paths.slice(start, start + 256) },
+          );
+          if (request !== this.allPhotosRequest) return;
+          this.photoPipeline.seed(cached);
+          this.syncDateTreeIndex();
+          this.dateTreeIndex.updateMetadata(cached);
+          if (this.daysSelected) this.applyDateMetadata();
+          else if (this.selectedFolderId) this.applyPhotoMetadata();
+          else this.showLibraryPhotos(false);
+        }
       } catch (error) {
         console.warn("Failed to restore cached photo dates", error);
         if (request === this.allPhotosRequest) this.showLibraryPhotos(false);
       }
       if (request === this.allPhotosRequest) {
         this.restoringCachedDates = false;
+        this.filterMetadataLoading = false;
         this.startPhotoBackgroundWork();
       }
     } catch (error) {
-      if (request === this.allPhotosRequest) this.restoringCachedDates = false;
+      if (request === this.allPhotosRequest) {
+        this.restoringCachedDates = false;
+        this.filterMetadataLoading = false;
+      }
       console.error("Failed to load all photos", error);
     }
   }
@@ -1170,9 +1195,17 @@ export class WarbleApp extends LitElement {
     if (this.fullViewIndex !== null) return;
     this.photoPipeline.start(
       this.libraryPhotos.length > 0 ? this.libraryPhotos : this.photos,
-      () => this.daysSelected ? this.applyDateMetadata() : this.applyPhotoMetadata(),
+      (results) => {
+        this.syncDateTreeIndex();
+        this.dateTreeIndex.updateMetadata(results);
+        if (this.daysSelected) this.applyDateMetadata();
+        else this.applyPhotoMetadata();
+      },
       () => this.photos.map((photo) => photo.path),
-      (loading) => { this.filterMetadataLoading = loading; },
+      (loading) => {
+        this.filterMetadataLoading = loading;
+        this.syncDateTreeIndex();
+      },
     );
   }
 
@@ -1181,7 +1214,6 @@ export class WarbleApp extends LitElement {
   }
 
   private applyPhotoMetadata(): void {
-    if (this.libraryPhotos.length > 0) this.libraryPhotos = this.photoPipeline.enrich(this.libraryPhotos);
     const enriched = sortPhotosOldestFirst(this.photoPipeline.enrich(this.photos));
     this.photos = enriched;
     const selectedPath = this.selectedPhoto?.path;
@@ -1195,8 +1227,11 @@ export class WarbleApp extends LitElement {
   }
 
   private applyDateMetadata(): void {
-    this.libraryPhotos = this.photoPipeline.enrich(this.libraryPhotos);
-    this.showLibraryPhotos(false);
+    if (this.selectedDateKey === null) {
+      this.photos = this.photoPipeline.enrich(this.photos);
+    } else {
+      this.showLibraryPhotos(false);
+    }
   }
 
   disconnectedCallback(): void {
@@ -1247,11 +1282,11 @@ export class WarbleApp extends LitElement {
 
   /**
    * App-level keyboard shortcuts. Routes a small set of "always on" keys
-   * (`f`, `g`, `Escape`) regardless of which view is active, then falls
+    * (`f`, `g`, `p`, `Escape`) regardless of which view is active, then falls
    * through to grid-only keys when the full view is closed. The full
    * view installs its own capture-phase listener for navigation/fit/bg
    * keys; we run after it on the bubble phase, so this code never
-   * fights with the full view over arrow/p/b/0/1/2.
+    * fights with the full view over navigation and editing shortcuts.
    */
 
   private onGlobalKey = (e: KeyboardEvent) => {
@@ -1270,6 +1305,19 @@ export class WarbleApp extends LitElement {
     }
 
     if (e.code === "Space" && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const viewer = this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null;
+      if (viewer?.toggleVideoPlayback()) {
+        e.preventDefault();
+        return;
+      }
+      if (!viewer && this.detailOpen) {
+        const panel = this.renderRoot.querySelector("pf-detail-panel") as import("./detail-panel").PfDetailPanel | null;
+        if (panel?.toggleVideoPlayback()) e.preventDefault();
+      }
+      return;
+    }
+
+    if (e.key.toLowerCase() === "p" && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const viewer = this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null;
       if (viewer?.presentationActive) {
         e.preventDefault();
@@ -1901,8 +1949,11 @@ export class WarbleApp extends LitElement {
     if (dateTaken === undefined) return;
     const changed = new Set(paths);
     const day = dateTaken?.slice(0, 10) ?? null;
+    const captureTime = dateTaken && dateTaken.length > 10
+      ? dateTaken.replace("T", " ").slice(0, 19)
+      : null;
     const update = (photo: Photo): Photo => changed.has(photo.path)
-      ? { ...photo, filterInfo: { ...photo.filterInfo, dateTaken: day } }
+      ? { ...photo, filterInfo: { ...photo.filterInfo, dateTaken: day, captureTime } }
       : photo;
     this.photoPipeline.invalidate(paths);
     this.photos = sortPhotosOldestFirst(this.photos.map(update));
@@ -2183,11 +2234,9 @@ export class WarbleApp extends LitElement {
           </nav>
         </div>
         ${this.daysSelected ? html`<div class="tree" aria-label="Photos by capture date">
-          ${this.restoringCachedDates ? html`<div class="empty">Loading saved photo dates…</div>` : null}
-          ${this.restoringCachedDates ? null : html`
-          ${this.filterMetadataLoading ? html`<div class="empty">Reading photo dates…</div>` : null}
+          ${this.filterMetadataLoading ? html`<div class="empty">${this.restoringCachedDates ? "Loading saved photo dates…" : "Reading photo dates…"}</div>` : null}
           ${this.dateNodes.map((node) => this.renderDateNode(node))}
-          ${!this.filterMetadataLoading && !this.libraryPhotos.length ? html`<div class="empty">No photos indexed yet.</div>` : null}`}
+          ${!this.filterMetadataLoading && !this.libraryPhotos.length ? html`<div class="empty">No photos indexed yet.</div>` : null}
         </div>` : !this.allPhotosSelected && !this.favoritesSelected ? html`<div
           class="tree"
           @click=${this.onFolderTreeClick}

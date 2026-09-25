@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isVideoPath } from "./video-source";
 import {
   beginTask,
   cancelTaskRequest,
@@ -130,6 +131,7 @@ export function prefetchThumbnails(paths: readonly string[]): () => void {
   void (async () => {
     for (const path of paths) {
       if (cancelled) return;
+      if (isVideoPath(path)) continue;
       if (cache.has(path)) continue;
       current = requestThumbnail(path, false, "background");
       try {

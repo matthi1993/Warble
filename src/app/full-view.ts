@@ -40,7 +40,6 @@ import {
 } from "@services/edits/edits-store";
 import {
   DEFAULT_VIEW_STATE,
-  FRAME_SIZES,
   loadViewState,
   saveViewState,
   type BgColor,
@@ -53,6 +52,8 @@ import "@ui/controls/pf-icon-button";
 import "@ui/controls/pf-slider";
 import "@ui/icons/pf-icon";
 import "@features/image-viewer/pf-image-canvas";
+import "@features/image-viewer/pf-video-view";
+import { isVideoPath } from "@services/images/video-source";
 import "@features/rating/pf-rating-overlay";
 import type {
   ImageSizing,
@@ -207,12 +208,16 @@ export class PfFullView extends LitElement {
     return this.presenting;
   }
   private slideTimer: number | null = null;
+  private slideGeneration = 0;
   private preloadAbort: AbortController | null = null;
   private transitionPath: string | null = null;
 
   /** Press-and-hold preview of the original (un-edited) image. */
   @state()
   private previewOriginal = false;
+
+  @state()
+  private playLivePhoto = false;
 
   @state()
   private savingVariant = false;
@@ -240,7 +245,29 @@ export class PfFullView extends LitElement {
 
   /** Only JPEG selections can be edited. */
   private get editMode(): boolean {
-    return isEditableSelection(this.currentPhoto);
+    return !this.activeVideoPath && isEditableSelection(this.currentPhoto);
+  }
+
+  private get liveVideoPath(): string | null {
+    return this.currentPhoto?.files?.find((file) => isVideoPath(file.path))?.path ?? null;
+  }
+
+  private slidePath(photo: Photo): string {
+    return photo.files?.find((file) => isVideoPath(file.path))?.path ?? resolvedPath(photo);
+  }
+
+  private get activeVideoPath(): string | null {
+    if (this.presenting && this.currentPhoto) {
+      const slidePath = this.slidePath(this.currentPhoto);
+      return isVideoPath(slidePath) ? slidePath : null;
+    }
+    const path = this.currentPhoto ? resolvedPath(this.currentPhoto) : null;
+    return path && isVideoPath(path) ? path : this.playLivePhoto ? this.liveVideoPath : null;
+  }
+
+  toggleVideoPlayback(): boolean {
+    if (!this.activeVideoPath) return false;
+    return this.renderRoot.querySelector("pf-video-view")?.togglePlayback() ?? false;
   }
 
   /** Adapter object passed to tools. */
@@ -360,7 +387,7 @@ export class PfFullView extends LitElement {
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
     if (changed.has("photos") || changed.has("index")) {
-      if (this.presenting && (changed.has("photos") || (changed.has("index") && this.transitionPath !== this.editTargetPath()))) {
+      if (this.presenting && (changed.has("photos") || (changed.has("index") && this.transitionPath !== (this.currentPhoto ? this.slidePath(this.currentPhoto) : null)))) {
         this.stopPresentation();
       }
       const prevTarget = this.editTargetPath();
@@ -372,6 +399,7 @@ export class PfFullView extends LitElement {
         this.activeToolId = null;
       }
       this.previewOriginal = false;
+      this.playLivePhoto = false;
       if (!this.editMode && (this.activeTab === "edit" || this.activeTab === "post")) {
         this.activeTab = null;
         this.editPanelOpen = false;
@@ -435,7 +463,7 @@ export class PfFullView extends LitElement {
    * edit store must all agree on this. */
   private editTargetPath(): string | null {
     const photo = this.currentPhoto;
-    if (!photo) return null;
+    if (!photo || this.activeVideoPath) return null;
     return resolvedPath(photo);
   }
 
@@ -447,6 +475,7 @@ export class PfFullView extends LitElement {
       origin instanceof HTMLInputElement ||
       origin instanceof HTMLTextAreaElement ||
       origin instanceof HTMLSelectElement ||
+      origin instanceof HTMLVideoElement ||
       (origin instanceof HTMLElement && origin.isContentEditable)
     ) {
       return;
@@ -460,7 +489,7 @@ export class PfFullView extends LitElement {
       }
       return;
     }
-    // `f`, `Escape`, and `g` are owned by the app shell so it can
+    // `f`, `Escape`, `g`, and `p` are owned by the app shell so it can
     // coordinate window fullscreen + view stack. We don't trap them.
     const active = this.activeTool();
     // Tool gets first shot at keys it cares about, but global
@@ -520,23 +549,17 @@ export class PfFullView extends LitElement {
 
   private readonly shortcuts: readonly ShortcutDef[] = buildShortcuts();
 
-  /** Called via the shortcuts registry (P). */
-  cycleFrameSize() {
-    const idx = FRAME_SIZES.indexOf(this.frameSize);
-    this.frameSize = FRAME_SIZES[(idx + 1) % FRAME_SIZES.length];
-    this.openMenu = null;
-  }
-
   private go(delta: number, automatic = false) {
     const next = this.index + delta;
     if (next < 0 || next >= this.photos.length) return;
     if (this.presenting && !automatic) {
+      this.slideGeneration++;
       if (this.slideTimer !== null) window.clearTimeout(this.slideTimer);
       this.slideTimer = null;
       this.preloadAbort?.abort();
       this.preloadAbort = null;
       this.captureSlide();
-      this.transitionPath = resolvedPath(this.photos[next]);
+      this.transitionPath = this.slidePath(this.photos[next]);
     }
     this.dispatchEvent(
       new CustomEvent("full-view-navigate", {
@@ -578,12 +601,13 @@ export class PfFullView extends LitElement {
     this.controlsHidden = true;
     this.openMenu = null;
     this.notifyControlsVisibility();
-    if (this.canvasEl()?.imageReady) this.scheduleNextSlide();
+    if (!this.activeVideoPath && this.canvasEl()?.imageReady) this.scheduleNextSlide();
   }
 
   stopPresentation(): void {
     if (!this.presenting) return;
     this.presenting = false;
+    this.slideGeneration++;
     if (this.slideTimer !== null) window.clearTimeout(this.slideTimer);
     this.slideTimer = null;
     this.preloadAbort?.abort();
@@ -597,28 +621,31 @@ export class PfFullView extends LitElement {
 
   private scheduleNextSlide(): void {
     if (!this.presenting) return;
+    const generation = ++this.slideGeneration;
     if (this.index >= this.photos.length - 1) {
       this.slideTimer = window.setTimeout(() => {
         this.slideTimer = null;
-        this.stopPresentation();
+        if (this.slideGeneration === generation) this.stopPresentation();
       }, this.slideshowSettings.durationSeconds * 1000);
       return;
     }
     const next = this.photos[this.index + 1];
-    const path = resolvedPath(next);
+    const path = this.slidePath(next);
     if (!path) {
       this.stopPresentation();
       return;
     }
-    const abort = new AbortController();
+    const abort = isVideoPath(path) ? null : new AbortController();
     this.preloadAbort = abort;
-    const preload = loadHdImage(path, { signal: abort.signal }).catch((error: unknown) => {
-      if (!abort.signal.aborted) console.warn("Slideshow preload failed", error);
-    });
+    const preload = abort
+      ? loadHdImage(path, { signal: abort.signal }).catch((error: unknown) => {
+          if (!abort.signal.aborted) console.warn("Slideshow preload failed", error);
+        })
+      : Promise.resolve();
     this.slideTimer = window.setTimeout(async () => {
       this.slideTimer = null;
       await preload;
-      if (!this.presenting || abort.signal.aborted || this.preloadAbort !== abort) return;
+      if (!this.presenting || this.slideGeneration !== generation || abort?.signal.aborted || this.preloadAbort !== abort) return;
       this.preloadAbort = null;
       this.captureSlide();
       this.transitionPath = path;
@@ -629,7 +656,11 @@ export class PfFullView extends LitElement {
   private captureSlide(): void {
     const source = this.canvasEl()?.renderRoot.querySelector("canvas");
     const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
-    if (!source || !overlay) return;
+    if (!overlay) return;
+    if (!source) {
+      overlay.style.display = "none";
+      return;
+    }
     if (overlay.style.display !== "block" || overlay.style.opacity !== "1") {
       overlay.width = source.width;
       overlay.height = source.height;
@@ -662,6 +693,40 @@ export class PfFullView extends LitElement {
 
   private onSlideImageError = (event: CustomEvent<{ path: string }>) => {
     if (this.presenting && event.detail.path === this.editTargetPath()) this.stopPresentation();
+  };
+
+  private onSlideVideoPlaying = (event: CustomEvent<{ path: string }>) => {
+    if (!this.presenting || event.detail.path !== this.activeVideoPath) return;
+    if (this.transitionPath === event.detail.path) {
+      this.transitionPath = null;
+      const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".slideshow-overlay");
+      if (overlay) {
+        if (this.slideshowSettings.transition === "instant") {
+          overlay.style.display = "none";
+        } else {
+          requestAnimationFrame(() => {
+            if (!this.presenting) return;
+            overlay.style.transition = "opacity 500ms ease";
+            overlay.style.opacity = "0";
+          });
+        }
+      }
+    }
+  };
+
+  private onSlideVideoEnded = (event: CustomEvent<{ path: string }>) => {
+    if (!this.presenting || event.detail.path !== this.activeVideoPath) return;
+    if (this.index === this.photos.length - 1) {
+      this.stopPresentation();
+    } else {
+      this.captureSlide();
+      this.transitionPath = this.slidePath(this.photos[this.index + 1]);
+      this.go(1, true);
+    }
+  };
+
+  private onSlideVideoError = (event: CustomEvent<{ path: string }>) => {
+    if (this.presenting && event.detail.path === this.activeVideoPath) this.stopPresentation();
   };
 
   private close = () => {
@@ -800,8 +865,18 @@ export class PfFullView extends LitElement {
 
   /** Toggle a tab: open if closed/other tab; collapse panel if same. */
   private toggleTab(tab: SidePanelTab) {
+    if (this.activeVideoPath && (tab === "edit" || tab === "post")) return;
     this.activeTab = this.activeTab === tab ? null : tab;
   }
+
+  private toggleLivePhoto = () => {
+    this.playLivePhoto = !this.playLivePhoto;
+    if (this.playLivePhoto) {
+      this.activeTool()?.deactivate(this.toolHost);
+      this.activeToolId = null;
+      if (this.activeTab === "edit" || this.activeTab === "post") this.activeTab = null;
+    }
+  };
 
   /** Crop tool: takes over the canvas. Also reached via shortcut C. */
   toggleTool(tool: EditTool) {
@@ -1163,7 +1238,7 @@ export class PfFullView extends LitElement {
     ];
     return html`
       <div class="edit-side-rail" @click=${(e: Event) => e.stopPropagation()}>
-       ${tabs.map(
+      ${tabs.filter((tab) => !this.activeVideoPath || (tab.id !== "edit" && tab.id !== "post")).map(
           (t) => html`
             <pf-icon-button
               icon=${t.icon}
@@ -1326,6 +1401,8 @@ export class PfFullView extends LitElement {
     if (!photo) return html``;
     const total = this.photos.length;
     const path = resolvedPath(photo);
+    const videoPath = this.activeVideoPath;
+    const liveVideo = this.liveVideoPath;
     // Merge canvas overrides from the active tool over the shell's
     // defaults. Tools that aren't active contribute nothing.
     const overrides = this.activeTool()?.applyToCanvas() ?? {};
@@ -1360,7 +1437,24 @@ export class PfFullView extends LitElement {
      </div>
      <div class="stage-row">
         <div class="stage">
-          <pf-image-canvas
+          ${liveVideo && !isVideoPath(path) && !this.presenting ? html`<button class="live-toggle"
+            type="button" @click=${this.toggleLivePhoto}>
+            ${this.playLivePhoto ? "Show photo" : "Play Live Photo"}
+          </button>` : null}
+          ${videoPath ? html`<pf-video-view
+            .path=${videoPath}
+            .presenting=${this.presenting}
+            .proofingSize=${this.proofingSize}
+            .frameSize=${this.frameSize}
+            .frameColor=${this.bgCss(this.frameColor)}
+            .frameRadius=${this.frameRadius}
+            .sizing=${this.sizing}
+            .background=${this.bgCss(this.bg)}
+            @video-playing=${this.onSlideVideoPlaying}
+            @video-ended=${this.onSlideVideoEnded}
+            @video-error=${this.onSlideVideoError}
+            @video-activate=${this.onImageActivate}
+          ></pf-video-view>` : html`<pf-image-canvas
             .path=${path}
             ?presenting=${this.presenting}
             .proofingSize=${this.proofingSize}
@@ -1387,10 +1481,10 @@ export class PfFullView extends LitElement {
             @image-error=${this.onSlideImageError}
             @image-preview-start=${this.onImagePreviewStart}
             @image-preview-end=${this.onImagePreviewEnd}
-          ></pf-image-canvas>
+          ></pf-image-canvas>`}
           <canvas class="slideshow-overlay" aria-hidden="true"
             @transitionend=${(event: TransitionEvent) => { (event.target as HTMLCanvasElement).style.display = "none"; }}></canvas>
-          ${path
+          ${!videoPath && path
             ? html`<pf-rating-overlay
                 class="fv-rating-overlay"
                 .path=${path}
@@ -1427,11 +1521,13 @@ export class PfFullView extends LitElement {
       onSetFrameRadius: this.setFrameRadius,
        onSetSizing: this.setSizing,
        onSetSmoothing: this.setSmoothing,
-       postProcessEnabled: getPostProcess().enabled,
+      postProcessEnabled: !videoPath && getPostProcess().enabled,
+      videoActive: !!videoPath,
       onPlaySlideshow: this.requestPresentation,
       onToggleImmersive: this.toggleImmersive,
-        onTogglePostProcess: () =>
-          setPostProcessEnabled(!getPostProcess().enabled),
+        onTogglePostProcess: () => {
+          if (!videoPath) setPostProcessEnabled(!getPostProcess().enabled);
+        },
      })}
      </div>
    `;

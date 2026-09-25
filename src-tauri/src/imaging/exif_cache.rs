@@ -13,12 +13,15 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use super::exif::{self, ExifMetadata, IDENTITY};
+use super::video_metadata;
+use crate::library::is_video_extension;
 use crate::library::LibraryRepository;
 
 static REPO: std::sync::OnceLock<std::sync::Mutex<Option<Arc<LibraryRepository>>>> =
     std::sync::OnceLock::new();
 static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
     std::sync::OnceLock::new();
+static PARSE_FINISHED: std::sync::Condvar = std::sync::Condvar::new();
 
 fn repo_slot() -> &'static std::sync::Mutex<Option<Arc<LibraryRepository>>> {
     REPO.get_or_init(|| std::sync::Mutex::new(None))
@@ -36,21 +39,20 @@ fn claim(key: &str, path: &Path) -> bool {
         if get(key, path).is_some() {
             return false;
         }
-        let Ok(mut guard) = in_flight_slot().lock() else {
-            return true;
-        };
+        let mut guard = in_flight_slot().lock().unwrap_or_else(|error| error.into_inner());
         if guard.insert(key.to_string()) {
             return true;
         }
-        drop(guard);
-        std::thread::yield_now();
+        while guard.contains(key) {
+            guard = PARSE_FINISHED.wait(guard).unwrap_or_else(|error| error.into_inner());
+        }
     }
 }
 
 fn release(key: &str) {
-    if let Ok(mut guard) = in_flight_slot().lock() {
-        guard.remove(key);
-    }
+    let mut guard = in_flight_slot().lock().unwrap_or_else(|error| error.into_inner());
+    guard.remove(key);
+    PARSE_FINISHED.notify_all();
 }
 
 /// Wire up the cache. Replaces any previous repository (used by
@@ -70,7 +72,7 @@ pub fn get(key: &str, path: &Path) -> Option<(u32, ExifMetadata)> {
     if let Some((cached_mtime, cached_size, orientation, metadata_json)) =
         repo.get_photo_exif(key).ok().flatten()
     {
-        if cached_mtime == mtime && cached_size == size {
+        if cached_mtime == mtime && cached_size == size && video_cache_current(path) {
             if let Ok(mut metadata) = serde_json::from_str::<ExifMetadata>(&metadata_json) {
                 // Migrate an existing local EXIF cache lazily, only when the
                 // photo is actually used for a filter/detail/image request.
@@ -109,7 +111,17 @@ pub fn get_or_compute(key: &str, path: &Path) -> ExifMetadata {
             .map(|(_, metadata)| metadata)
             .unwrap_or_default();
     }
-    let result = match exif::read_full_metadata(path) {
+    let result = match if is_video(path) {
+        Some((
+            IDENTITY,
+            ExifMetadata {
+                date_taken: video_metadata::capture_date(path),
+                ..ExifMetadata::default()
+            },
+        ))
+    } else {
+        exif::read_full_metadata(path)
+    } {
         Some((orientation, metadata)) => {
             store(key, path, orientation, &metadata);
             let mut effective = metadata;
@@ -157,12 +169,6 @@ pub fn orientation_or_warm(key: &str, path: &Path, bytes: &[u8]) -> u32 {
     };
     release(key);
     result
-}
-
-/// Variant for callers that already parsed EXIF themselves (e.g. the
-/// RAW preview pipeline) and just want to populate the cache.
-pub fn warm_with(key: &str, path: &Path, orientation: u32, metadata: &ExifMetadata) {
-    store(key, path, orientation, metadata);
 }
 
 fn store(key: &str, path: &Path, orientation: u32, metadata: &ExifMetadata) {
@@ -217,4 +223,14 @@ fn file_fingerprint(path: &Path) -> Option<(i64, i64)> {
         .unwrap_or(0);
     let size = meta.len() as i64;
     Some((mtime, size))
+}
+
+fn is_video(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(is_video_extension)
+}
+
+fn video_cache_current(path: &Path) -> bool {
+    !is_video(path) || crate::sidecar::video_metadata_checked(path)
 }

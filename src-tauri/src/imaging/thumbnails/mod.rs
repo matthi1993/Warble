@@ -91,7 +91,16 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec
 
     cancel.check()?;
     let ext = lowercase_extension(p);
-    let jpeg_bytes = if raw_preview::is_raw_extension(&ext) {
+    let jpeg_bytes = if matches!(ext.as_str(), "heic" | "heif") {
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            let bytes = super::apple_heif::to_jpeg(p, TARGET_WIDTH * 2)?;
+            cancel.check()?;
+            render_from_jpeg_bytes(&bytes, IDENTITY)?
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        return Err("HEIF decoding requires Apple ImageIO".into());
+    } else if raw_preview::is_raw_extension(&ext) {
         render_from_raw(p, library_key, cancel)?
     } else if JPEG_EXTENSIONS.iter().any(|e| *e == ext) {
         render_from_jpeg_file(p, library_key, cancel)?
@@ -130,11 +139,7 @@ fn render_from_raw(
     cancel.check()?;
     // Keep the original EXIF available for the info panel. The preview
     // has already been oriented and carries no metadata.
-    if exif_cache::get(library_key, path).is_none() {
-        if let Some((orient, metadata)) = exif::read_full_metadata(path) {
-            exif_cache::warm_with(library_key, path, orient, &metadata);
-        }
-    }
+    let _ = exif_cache::get_or_compute(library_key, path);
 
     if let Ok(out) = render_from_jpeg_bytes(&preview.jpeg_bytes, preview.orientation) {
         return Ok(out);

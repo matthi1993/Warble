@@ -226,9 +226,21 @@ export const fullViewStyles = css`
     position: absolute;
     inset: 0;
   }
-  pf-image-canvas {
+  pf-image-canvas, pf-video-view {
     position: absolute;
     inset: 0;
+  }
+  .live-toggle {
+    position: absolute;
+    z-index: 4;
+    left: 16px;
+    top: 16px;
+    border: 1px solid var(--pf-border-strong);
+    border-radius: var(--pf-radius-md);
+    padding: 8px 12px;
+    background: var(--pf-surface-2);
+    color: var(--pf-text);
+    cursor: pointer;
   }
   .slideshow-overlay {
     position: absolute;

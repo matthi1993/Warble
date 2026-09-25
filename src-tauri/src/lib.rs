@@ -48,6 +48,7 @@ pub fn run() {
             commands::get_folder_photo_counts,
             commands::get_all_photos,
             commands::get_thumbnail,
+            commands::get_video_source,
             commands::get_full_image_bytes,
             commands::get_hd_image_bytes,
             commands::cancel_image_request,

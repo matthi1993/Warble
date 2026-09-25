@@ -10,7 +10,7 @@ Start in [the app shell](../../src/app/app-shell.ts) for folder selection and Sy
 
 ## Grid and photo choices
 
-The grid groups photos by date and lets you filter by rating, colour label, camera, lens, focal length, or date. You can rate a photo with stars, give it a colour label, and choose between available files and variants. Some RAW files use an embedded preview rather than a developed image.
+The grid groups photos by date in oldest-first order and sorts photos within each day by capture time. Photos without a capture time follow those with one, using filename as a fallback. It lets you filter by rating, colour label, camera, lens, focal length, or date. You can rate a photo with stars, give it a colour label, and choose between available files and variants. JPEG, PNG, TIFF, WebP, BMP, GIF, ICO, TGA, PNM, and common camera RAW files are recognised. Some RAW files use an embedded preview rather than a developed image. HEIC/HEIF stills use Apple's ImageIO on macOS/iOS. MOV, MP4, and M4V clips appear in the library; a video with the same filename stem as a still is grouped as a Live Photo.
 
 Start in [the photo grid](../../src/app/photo-grid.ts) for browsing and [photo types and variants](../../src/domain/photo/) for grouping files.
 

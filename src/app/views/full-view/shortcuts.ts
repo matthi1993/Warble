@@ -4,7 +4,7 @@
  * easy to see at a glance which letters are taken, generate the hint
  * line in the stage, and avoid collisions when new tools land.
  *
- * App-shell-owned keys (`f`, `Escape`, `g`) are intentionally NOT
+ * App-shell-owned keys (`f`, `Escape`, `g`, `p`, Space) are intentionally NOT
  * listed here — the shell handles them before the viewer does and we
  * must not consume them.
  */
@@ -57,12 +57,6 @@ export function buildShortcuts(): readonly ShortcutDef[] {
       keys: ["ArrowRight"],
       description: "Next photo",
       run: (h) => call(h, "go", 1),
-    },
-    {
-      label: "P",
-      keys: ["p", "P"],
-      description: "Cycle frame size",
-      run: (h) => call(h, "cycleFrameSize"),
     },
     {
       label: "⌫",

@@ -50,16 +50,28 @@ pub fn parse_variant(stem: &str) -> (String, String) {
 
 /// File extensions accepted when scanning a folder for photos.
 pub const PHOTO_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "tif", "tiff", "raf", "raw", "arw", "cr2", "cr3", "nef", "dng", "orf",
-    "rw2",
+    "jpg", "jpeg", "jpe", "jfif", "png", "tif", "tiff", "webp", "bmp", "gif", "ico", "tga", "pnm",
+    "ppm", "pgm", "pbm", "raf", "raw", "arw", "cr2", "cr3", "nef", "dng", "orf", "rw2",
 ];
 
-/// Extensions the viewer can natively render, in preference order. Used to
+pub const VIDEO_EXTENSIONS: &[&str] = &["mov", "mp4", "m4v"];
+
+pub fn is_video_extension(ext: &str) -> bool {
+    VIDEO_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// Extensions the viewer can render, in preference order. Used to
 /// pick a primary file when a JPEG/RAW pair shares a stem.
-const VIEWABLE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff"];
+const VIEWABLE_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "jpe", "jfif", "png", "heic", "heif", "tif", "tiff", "webp", "bmp", "gif",
+    "ico", "tga", "pnm", "ppm", "pgm", "pbm",
+];
 
 pub fn is_photo_extension(ext: &str) -> bool {
-    PHOTO_EXTENSIONS.iter().any(|e| *e == ext)
+    PHOTO_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
+        || (cfg!(any(target_os = "macos", target_os = "ios"))
+            && (ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif")))
+        || is_video_extension(ext)
 }
 
 pub fn viewable_rank(ext: &str) -> usize {
@@ -67,4 +79,37 @@ pub fn viewable_rank(ext: &str) -> usize {
         .iter()
         .position(|e| *e == ext)
         .unwrap_or(VIEWABLE_EXTENSIONS.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_photo_extension;
+
+    #[test]
+    fn accepts_common_still_image_formats() {
+        for extension in [
+            "jpg", "jpe", "jfif", "png", "tiff", "webp", "bmp", "gif", "ico", "tga", "pnm", "ppm",
+            "pgm", "pbm", "dng",
+        ] {
+            assert!(
+                is_photo_extension(extension),
+                "{extension} should be accepted"
+            );
+        }
+        assert!(is_photo_extension("JPG"));
+    }
+
+    #[test]
+    fn includes_motion_media_in_library() {
+        for extension in ["MOV", "mp4", "m4v"] {
+            assert!(
+                is_photo_extension(extension),
+                "{extension} should be indexed"
+            );
+        }
+        assert!(!is_photo_extension("txt"));
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
+            assert!(is_photo_extension("HEIC"));
+        }
+    }
 }

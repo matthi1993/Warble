@@ -119,6 +119,17 @@ pub fn load_bytes(path: &str, library_key: &str, cancel: &CancelToken) -> Result
 fn render(path: &Path, library_key: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     let ext = lowercase_extension(path);
 
+    if matches!(ext.as_str(), "heic" | "heif") {
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            let bytes = super::apple_heif::to_jpeg(path, LONG_SIDE_PX * 2)?;
+            cancel.check()?;
+            return render_jpeg_fast(&bytes, IDENTITY, cancel);
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        return Err("HEIF decoding requires Apple ImageIO".into());
+    }
+
     if raw_preview::is_raw_extension(&ext) {
         let preview = raw_preview::extract_preview_sized(path, Some(LONG_SIDE_PX as usize))?;
         cancel.check()?;

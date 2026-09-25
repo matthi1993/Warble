@@ -14,12 +14,37 @@
 
 use serde::Serialize;
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::app_state::AppState;
 use crate::imaging::{exif_cache, full_image, hd_image, thumbnails};
+use crate::library::is_video_extension;
 use crate::sidecar::MetadataOverrides;
 use crate::tasks::{self, Priority};
+
+#[tauri::command]
+pub fn get_video_source(
+    photo_path: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    if !is_video_extension(
+        std::path::Path::new(&photo_path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default(),
+    ) {
+        return Err("Not a supported video".into());
+    }
+    let path = state.resolve_library_path(&photo_path)?;
+    if !path.is_file() {
+        return Err("Video file is unavailable".into());
+    }
+    app.asset_protocol_scope()
+        .allow_file(&path)
+        .map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
 
 #[tauri::command]
 pub async fn get_thumbnail(
@@ -168,6 +193,7 @@ pub struct PhotoFilterInfo {
     pub lens: Option<String>,
     pub focal_length_mm: Option<f64>,
     pub date_taken: Option<String>,
+    pub capture_time: Option<String>,
 }
 
 fn filter_info(path: String, metadata: &crate::imaging::exif::ExifMetadata) -> PhotoFilterInfo {
@@ -186,12 +212,14 @@ fn filter_info(path: String, metadata: &crate::imaging::exif::ExifMetadata) -> P
             .and_then(parse_focal_length_mm)
     });
     let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
+    let capture_time = metadata.date_taken.as_deref().and_then(normalize_capture_time);
     PhotoFilterInfo {
         path,
         camera,
         lens,
         focal_length_mm,
         date_taken,
+        capture_time,
     }
 }
 
@@ -284,4 +312,12 @@ fn normalize_date(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn normalize_capture_time(value: &str) -> Option<String> {
+    let mut parts = value.trim().split([' ', 'T']);
+    let day = normalize_date(parts.next()?)?;
+    let time = parts.next()?.get(..8)?;
+    let timestamp = format!("{day} {time}");
+    valid_capture_date(&timestamp).then_some(timestamp)
 }

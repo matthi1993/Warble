@@ -29,6 +29,7 @@ const MIN_COLUMNS = 1;
 const MAX_COLUMNS = 8;
 const DEFAULT_COLUMNS = 6;
 const GROUP_PAGE_SIZE = 48;
+const VISIBLE_GROUP_PAGE_SIZE = 8;
 
 interface PhotoDayGroup {
   date: string | null;
@@ -540,6 +541,9 @@ export class PfPhotoGrid extends LitElement {
   @state()
   private visibleCountByDay = new Map<string, number>();
 
+  @state()
+  private visibleGroupCount = VISIBLE_GROUP_PAGE_SIZE;
+
   connectedCallback(): void {
     super.connectedCallback();
     this.unsubscribeRatings = subscribePhotoRatings(() => {
@@ -580,6 +584,7 @@ export class PfPhotoGrid extends LitElement {
         this.renderedPhotoSet = photoSet;
         this.collapsedDays = new Set();
         this.resetVisiblePhotoPages();
+        this.visibleGroupCount = VISIBLE_GROUP_PAGE_SIZE;
         this.selectedPaths = new Set(this.selectedPath ? [this.selectedPath] : []);
         this.selectionAnchor = this.selectedPath;
       }
@@ -919,9 +924,10 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private ensurePhotoIsRendered(path: string): void {
-    for (const group of this.getDayGroups(this.filteredPhotos)) {
+    for (const [groupIndex, group] of this.getDayGroups(this.filteredPhotos).entries()) {
       const index = group.photos.findIndex((photo) => photo.path === path);
       if (index < 0) continue;
+      if (groupIndex >= this.visibleGroupCount) this.visibleGroupCount = groupIndex + VISIBLE_GROUP_PAGE_SIZE;
       const day = group.date ?? "undated";
       const current = this.visiblePhotoCount(day, group.photos.length);
       if (index >= current) {
@@ -942,6 +948,10 @@ export class PfPhotoGrid extends LitElement {
       (entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
+          if ((entry.target as HTMLElement).classList.contains("groups-load-more")) {
+            this.visibleGroupCount += VISIBLE_GROUP_PAGE_SIZE;
+            continue;
+          }
           const day = (entry.target as HTMLElement).dataset.day;
           if (day) this.showMoreForDay(day);
         }
@@ -949,7 +959,7 @@ export class PfPhotoGrid extends LitElement {
       { root, rootMargin: "400px 0px" }
     );
     this.renderRoot
-      .querySelectorAll<HTMLElement>(".group-load-more")
+      .querySelectorAll<HTMLElement>(".group-load-more, .groups-load-more")
       .forEach((control) => this.moreObserver?.observe(control));
   }
 
@@ -1012,7 +1022,6 @@ export class PfPhotoGrid extends LitElement {
             @change=${(e: CustomEvent<number>) =>
               this.setColumns(MIN_COLUMNS + MAX_COLUMNS - e.detail)}
             ></pf-slider>
-            <span class="count">${this.columns} / row</span>
           </div>
         </div>
         <div class="filter-panel">
@@ -1049,29 +1058,6 @@ export class PfPhotoGrid extends LitElement {
                 <pf-icon name="chevron-down"></pf-icon>
               </span>
             </label>
-            <div class="focal-range">
-              <span class="focal-range-label">Focal length (mm)</span>
-              <div class="focal-inputs">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  placeholder=${focalBounds ? `From ${focalBounds.min}` : "Min"}
-                  .value=${this.minFocalLength?.toString() ?? ""}
-                  aria-label="Minimum focal length"
-                  @input=${(e: Event) => this.setFocalLength("min", e)}
-                />
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  placeholder=${focalBounds ? `To ${focalBounds.max}` : "Max"}
-                  .value=${this.maxFocalLength?.toString() ?? ""}
-                  aria-label="Maximum focal length"
-                  @input=${(e: Event) => this.setFocalLength("max", e)}
-                />
-              </div>
-            </div>
             <div class="date-range">
               <span class="focal-range-label">Date taken</span>
               <div class="date-inputs">
@@ -1142,7 +1128,7 @@ export class PfPhotoGrid extends LitElement {
           ? html`<div class="empty-filter">
               No photos match the current filters.
             </div>`
-          : groups.map((group) => {
+          : groups.slice(0, this.visibleGroupCount).map((group) => {
               const key = group.date ?? "undated";
               const expanded = !this.collapsedDays.has(key);
               return html`<section class="day-group">
@@ -1178,6 +1164,9 @@ export class PfPhotoGrid extends LitElement {
                   : null}
               </section>`;
             })}
+        ${groups.length > this.visibleGroupCount ? html`<div class="groups-load-more">
+          <button type="button" @click=${() => { this.visibleGroupCount += VISIBLE_GROUP_PAGE_SIZE; }}>Show more days</button>
+        </div>` : null}
       </div>
     `;
   }

@@ -4,7 +4,7 @@ Warble discovers files in the background and keeps portable photo changes beside
 
 ## Discovery
 
-Adding a root finds its folder tree first. Opening a folder discovers its photos as needed; manual Sync checks the chosen area, including nested folders, for external changes. The photo list can appear before metadata is ready.
+Adding or reconnecting a root scans its folder tree, then indexes its photos and videos recursively in the background. Opening a folder can still request its media before the initial scan finishes; manual Sync checks the chosen area, including nested folders, for external changes. The media list can appear before metadata is ready.
 
 Start in [the scan coordinator](../../src-tauri/src/library/scanner.rs) for discovery and [the app shell](../../src/app/app-shell.ts) for selection and Sync.
 
