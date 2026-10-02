@@ -193,7 +193,87 @@ impl LibraryRepository {
             .map_err(|e| e.to_string())?;
         }
 
+        if current < 10 {
+            conn.execute_batch(
+                "CREATE TABLE albums (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE album_photos (
+                    album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                    photo_path TEXT NOT NULL,
+                    PRIMARY KEY (album_id, photo_path)
+                );
+                INSERT INTO schema_version (version) VALUES (10);",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
         Ok(())
+    }
+
+    pub fn albums(&self) -> Result<Vec<(String, String, String, i64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.name, a.description, COUNT(p.photo_path)
+             FROM albums a LEFT JOIN album_photos p ON p.album_id = a.id
+             GROUP BY a.id ORDER BY a.name COLLATE NOCASE, a.id",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn create_album(&self, name: &str, description: &str) -> Result<String, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO albums (id, name, description) VALUES (?1, ?2, ?3)", params![id, name, description])
+            .map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
+    pub fn update_album(&self, id: &str, name: &str, description: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        if conn.execute("UPDATE albums SET name = ?2, description = ?3 WHERE id = ?1", params![id, name, description])
+            .map_err(|e| e.to_string())? == 0 {
+            return Err("Album not found".into());
+        }
+        Ok(())
+    }
+
+    pub fn delete_album(&self, id: &str) -> Result<(), String> {
+        self.with_transaction(|tx| {
+            tx.execute("DELETE FROM album_photos WHERE album_id = ?1", params![id]).map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM albums WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn album_photo_paths(&self, id: &str) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT photo_path FROM album_photos WHERE album_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let paths = stmt.query_map(params![id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(paths)
+    }
+
+    pub fn add_photos_to_album(&self, id: &str, paths: &[String]) -> Result<(), String> {
+        self.with_transaction(|tx| {
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM albums WHERE id = ?1)", params![id], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            if !exists { return Err("Album not found".into()); }
+            for path in paths {
+                tx.execute("INSERT OR IGNORE INTO album_photos (album_id, photo_path) VALUES (?1, ?2)", params![id, path])
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     /// Return every persisted (path, rating, label, rated_at) row.
@@ -387,7 +467,8 @@ impl LibraryRepository {
                          UNION SELECT path FROM photo_exif
                          UNION SELECT path FROM photo_edits
                          UNION SELECT path FROM photo_ratings
-                         UNION SELECT path FROM photo_variants",
+                         UNION SELECT path FROM photo_variants
+                         UNION SELECT photo_path FROM album_photos",
                     )
                     .map_err(|error| error.to_string())?;
                 let rows = stmt
@@ -419,6 +500,8 @@ impl LibraryRepository {
                     )
                     .map_err(|error| error.to_string())?;
                 }
+                tx.execute("DELETE FROM album_photos WHERE photo_path = ?1", params![key])
+                    .map_err(|error| error.to_string())?;
                 removed = true;
             }
             Ok(removed)
@@ -445,6 +528,8 @@ impl LibraryRepository {
                     )
                     .map_err(|error| error.to_string())?;
                 }
+                tx.execute("DELETE FROM album_photos WHERE photo_path = ?1", params![path])
+                    .map_err(|error| error.to_string())?;
                 if let Some(effects) = effects.as_mut() {
                     effects.remove(path);
                 }
@@ -536,6 +621,8 @@ impl LibraryRepository {
                 }
             }
         }
+        tx.execute("DELETE FROM album_photos WHERE photo_path = ?1 OR photo_path LIKE ?2", params![root_id, prefix])
+            .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM media_roots WHERE id = ?1", params![root_id])
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
@@ -566,6 +653,26 @@ impl LibraryRepository {
         ] {
             rewrite_root_paths(&tx, table, new_root_id, rewrites)?;
         }
+        for (old_root_id, relative_prefix) in rewrites {
+            let like = format!("{old_root_id}/%");
+            let memberships: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT album_id, photo_path FROM album_photos WHERE photo_path = ?1 OR photo_path LIKE ?2"
+                ).map_err(|e| e.to_string())?;
+                let rows = stmt.query_map(params![old_root_id, like], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                rows
+            };
+            for (album_id, old_path) in memberships {
+                let new_path = remap_root_path(&old_path, old_root_id, new_root_id, relative_prefix)?;
+                tx.execute("INSERT OR IGNORE INTO album_photos (album_id, photo_path) VALUES (?1, ?2)", params![album_id, new_path])
+                    .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM album_photos WHERE album_id = ?1 AND photo_path = ?2", params![album_id, old_path])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         rewrite_root_settings(&tx, new_root_id, rewrites)?;
 
         for (old_root_id, _) in rewrites {
@@ -595,6 +702,8 @@ impl LibraryRepository {
         let new_id = uuid::Uuid::new_v4().to_string();
         self.with_transaction(|tx| {
             for table in [
+                "album_photos",
+                "albums",
                 "media_roots",
                 "photo_variants",
                 "photo_edits",
@@ -988,6 +1097,28 @@ fn write_setting(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn albums_persist_memberships_and_keep_photos_on_album_deletion() {
+        let dir = std::env::temp_dir().join(format!("warble-albums-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.warble");
+        let repo = LibraryRepository::open(&path).unwrap();
+        let id = repo.create_album("Holiday", "Summer trip").unwrap();
+        repo.add_photos_to_album(&id, &["root/photo.jpg".into(), "root/photo.jpg".into()]).unwrap();
+        assert_eq!(repo.albums().unwrap(), vec![(id.clone(), "Holiday".into(), "Summer trip".into(), 1)]);
+        repo.update_album(&id, "Vacation", "At the beach").unwrap();
+        drop(repo);
+
+        let repo = LibraryRepository::open(&path).unwrap();
+        assert_eq!(repo.album_photo_paths(&id).unwrap(), vec!["root/photo.jpg"]);
+        assert_eq!(repo.albums().unwrap()[0].1, "Vacation");
+        repo.delete_album(&id).unwrap();
+        assert!(repo.albums().unwrap().is_empty());
+        assert!(repo.album_photo_paths(&id).unwrap().is_empty());
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn deleting_photo_keys_clears_all_indexes_without_touching_siblings() {

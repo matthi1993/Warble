@@ -30,6 +30,12 @@ export const fullViewStyles = css`
   }
   :host([immersive]) .toolbar-wrap { top: 0; }
   :host([immersive]) .bottombar-wrap { bottom: 0; }
+  :host([immersive]) .toolbar,
+  :host([immersive]) .bottombar {
+    background: color-mix(in srgb, var(--pf-surface) 86%, transparent);
+    backdrop-filter: blur(16px) saturate(1.15);
+    -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  }
   :host([immersive][controls-hidden]) .toolbar-wrap,
   :host([immersive][controls-hidden]) .bottombar-wrap {
     opacity: 0;

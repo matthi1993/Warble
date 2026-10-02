@@ -414,6 +414,7 @@ export class PfPhotoGrid extends LitElement {
   private selectedPaths = new Set<string>();
 
   private selectionAnchor: string | null = null;
+  private touchSelectionMode = false;
 
   getSelectionPaths(): string[] {
     return this.getDayGroups(this.filteredPhotos)
@@ -430,15 +431,15 @@ export class PfPhotoGrid extends LitElement {
     if (!this.selectedPath) this.selectPrimary(paths[0]);
   }
 
-  private selectPrimary(photo: Photo): void {
+  private selectPrimary(photo: Photo | null): void {
     this.dispatchEvent(new CustomEvent("photo-selected", {
-      detail: { path: photo.path, filename: photo.filename },
+      detail: { path: photo?.path ?? null, filename: photo?.filename ?? "" },
       bubbles: true,
       composed: true,
     }));
   }
 
-  private onCardSelected(e: CustomEvent<{ path: string; shiftKey?: boolean; toggle?: boolean }>): void {
+  private onCardSelected(e: CustomEvent<{ path: string; shiftKey?: boolean; toggle?: boolean; touch?: boolean }>): void {
     e.stopPropagation();
     const photos = this.getDayGroups(this.filteredPhotos).flatMap((group) => group.photos);
     const index = photos.findIndex((photo) => photo.path === e.detail.path);
@@ -451,7 +452,7 @@ export class PfPhotoGrid extends LitElement {
         this.selectedPaths = new Set([e.detail.path]);
         this.selectionAnchor = e.detail.path;
       }
-    } else if (e.detail.toggle) {
+    } else if (e.detail.toggle || (e.detail.touch && this.touchSelectionMode) || this.selectedPaths.has(e.detail.path)) {
       const next = new Set(this.selectedPaths);
       if (next.has(e.detail.path)) next.delete(e.detail.path);
       else next.add(e.detail.path);
@@ -461,11 +462,16 @@ export class PfPhotoGrid extends LitElement {
       this.selectedPaths = new Set([e.detail.path]);
       this.selectionAnchor = e.detail.path;
     }
-    this.selectionFromClick = this.selectedPath !== e.detail.path;
-    this.selectPrimary(photos[index]);
+    const primary = this.selectedPaths.has(e.detail.path)
+      ? photos[index]
+      : photos.find((photo) => this.selectedPaths.has(photo.path)) ?? null;
+    if (this.selectedPaths.size === 0) this.touchSelectionMode = false;
+    this.selectionFromClick = this.selectedPath !== primary?.path;
+    this.selectPrimary(primary);
   }
 
-  private onCardContextMenu(e: CustomEvent<{ path: string }>): void {
+  private onCardContextMenu(e: CustomEvent<{ path: string; longPress?: boolean }>): void {
+    if (e.detail.longPress) this.touchSelectionMode = true;
     if (this.selectedPaths.has(e.detail.path)) return;
     const photo = this.photos.find((item) => item.path === e.detail.path);
     if (!photo) return;
@@ -473,6 +479,16 @@ export class PfPhotoGrid extends LitElement {
     this.selectionAnchor = photo.path;
     this.selectionFromClick = this.selectedPath !== photo.path;
     this.selectPrimary(photo);
+  }
+
+  private onCardPointerDragStart(e: CustomEvent<{ path: string; pointerId: number; x: number; y: number }>): void {
+    e.stopPropagation();
+    const paths = this.selectedPaths.has(e.detail.path) ? this.getSelectionPaths() : [e.detail.path];
+    this.dispatchEvent(new CustomEvent("photo-grid-pointer-drag-start", {
+      detail: { paths, pointerId: e.detail.pointerId, x: e.detail.x, y: e.detail.y },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   @property({ type: String })
@@ -582,6 +598,7 @@ export class PfPhotoGrid extends LitElement {
       const photoSet = this.photos.map((photo) => photo.path).join("\u0000");
       if (photoSet !== this.renderedPhotoSet) {
         this.renderedPhotoSet = photoSet;
+        this.touchSelectionMode = false;
         this.collapsedDays = new Set();
         this.resetVisiblePhotoPages();
         this.visibleGroupCount = VISIBLE_GROUP_PAGE_SIZE;
@@ -753,14 +770,6 @@ export class PfPhotoGrid extends LitElement {
     )].sort((a, b) => a.localeCompare(b));
   }
 
-  private get focalBounds(): { min: number; max: number } | null {
-    const values = this.photos
-      .map((photo) => photo.filterInfo?.focalLengthMm)
-      .filter((value): value is number => value != null && Number.isFinite(value));
-    if (values.length === 0) return null;
-    return { min: Math.min(...values), max: Math.max(...values) };
-  }
-
   /**
    * Move grid selection by (dx, dy) cells. Determines the column count
    * by inspecting the live thumbnail layout (cards on the same row share
@@ -862,15 +871,6 @@ export class PfPhotoGrid extends LitElement {
     else this.lensFilter = value;
   }
 
-  private setFocalLength(bound: "min" | "max", event: Event): void {
-    const raw = (event.target as HTMLInputElement).value;
-    const value = raw === "" ? null : Number(raw);
-    const next = Number.isFinite(value) && value !== null && value >= 0 ? value : null;
-    this.resetVisiblePhotoPages();
-    if (bound === "min") this.minFocalLength = next;
-    else this.maxFocalLength = next;
-  }
-
   private setDate(bound: "start" | "end", event: Event): void {
     const value = (event.target as HTMLInputElement).value;
     this.resetVisiblePhotoPages();
@@ -969,6 +969,7 @@ export class PfPhotoGrid extends LitElement {
       style=${`--pf-grid-cols: ${this.columns}`}
       @photo-selected=${this.onCardSelected}
       @photo-context-menu=${this.onCardContextMenu}
+      @photo-pointer-drag-start=${this.onCardPointerDragStart}
     >
       ${repeat(
         photos,
@@ -997,7 +998,6 @@ export class PfPhotoGrid extends LitElement {
     const visible = this.filteredPhotos;
     const filtersActive = this.filtersActive;
     const metadataLoading = this.filterMetadataLoading;
-    const focalBounds = this.focalBounds;
     const groups = this.getDayGroups(visible);
     return html`
       <div class="grid-header">

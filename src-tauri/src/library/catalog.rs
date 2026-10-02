@@ -346,7 +346,7 @@ pub fn scan_coordinated_tree(
         if !safe_relative_path(path) {
             continue;
         }
-        let Ok(descendant) = path.strip_prefix(relative) else {
+        let Ok(descendant) = path.strip_prefix(&relative) else {
             continue;
         };
         if descendant.as_os_str().is_empty() {
@@ -405,7 +405,7 @@ pub fn scan_coordinated_images(
     let mut photos = HashMap::new();
     for entry in entries.iter().filter(|entry| entry.is_file) {
         let path = Path::new(&entry.relative_path);
-        if !safe_relative_path(path) || !path.starts_with(relative) {
+        if !safe_relative_path(path) || !path.starts_with(&relative) {
             continue;
         }
         if let Some(photo) = photo_from_path(&root.join(path), root, root_id) {

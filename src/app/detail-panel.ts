@@ -183,7 +183,7 @@ export class PfDetailPanel extends LitElement {
   }
 
   protected updated(changed: Map<string, unknown>): void {
-    if (!changed.has("photo")) return;
+    if (!changed.has("photo") || (changed.get("photo") as Photo | null)?.path === this.photo?.path) return;
     this.refreshMetadata();
   }
 

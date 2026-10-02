@@ -1,5 +1,6 @@
 //! Tauri command handlers exposed to the frontend.
 
+mod albums;
 mod cache;
 mod edits;
 mod images;
@@ -9,6 +10,7 @@ mod ratings;
 mod reveal;
 mod variants;
 
+pub use albums::*;
 pub use cache::*;
 pub use edits::*;
 pub use images::*;

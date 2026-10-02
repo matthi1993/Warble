@@ -380,13 +380,20 @@ export class PfFullView extends LitElement {
       });
     }
     if (changed.has("immersive")) {
-      if (!this.immersive) {
+      if (this.immersive) {
+        this.controlsHidden = true;
+        this.openMenu = null;
+      } else {
         this.stopPresentation();
         this.controlsHidden = false;
       }
+      this.notifyControlsVisibility();
       requestAnimationFrame(() => this.canvasEl()?.resetView());
     }
     if (changed.has("photos") || changed.has("index")) {
+      const previousPhotos = (changed.get("photos") as Photo[] | undefined) ?? this.photos;
+      const previousIndex = (changed.get("index") as number | undefined) ?? this.index;
+      const photoChanged = previousPhotos[previousIndex]?.path !== this.currentPhoto?.path;
       if (this.presenting && (changed.has("photos") || (changed.has("index") && this.transitionPath !== (this.currentPhoto ? this.slidePath(this.currentPhoto) : null)))) {
         this.stopPresentation();
       }
@@ -400,7 +407,7 @@ export class PfFullView extends LitElement {
       }
       this.previewOriginal = false;
       this.playLivePhoto = false;
-      if (!this.editMode && (this.activeTab === "edit" || this.activeTab === "post")) {
+      if (photoChanged && !this.editMode && (this.activeTab === "edit" || this.activeTab === "post")) {
         this.activeTab = null;
         this.editPanelOpen = false;
       }
@@ -780,9 +787,6 @@ export class PfFullView extends LitElement {
       this.stopPresentation();
       return;
     }
-    // Desktop keeps the double-click 100%↔fit action. On iPad a double-tap
-    // toggles the immersive viewer instead of native iOS fullscreen.
-    if (!this.isIPad()) return;
     event.preventDefault();
     this.toggleImmersive();
   };
@@ -1454,6 +1458,8 @@ export class PfFullView extends LitElement {
             @video-ended=${this.onSlideVideoEnded}
             @video-error=${this.onSlideVideoError}
             @video-activate=${this.onImageActivate}
+            @video-double-activate=${this.onImageDoubleActivate}
+            @video-swipe=${this.onImageSwipe}
           ></pf-video-view>` : html`<pf-image-canvas
             .path=${path}
             ?presenting=${this.presenting}
