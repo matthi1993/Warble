@@ -276,6 +276,7 @@ export class PfImageCanvas extends LitElement {
   private resizeObserver?: ResizeObserver;
   private resizeFrame: number | null = null;
   private viewportSize: { width: number; height: number } | null = null;
+  private viewportLandscape: boolean | null = null;
   private loadAbort: AbortController | null = null;
   private dragging = false;
   private dragStartX = 0;
@@ -950,7 +951,7 @@ export class PfImageCanvas extends LitElement {
     if (!source || !this.canvas || !this.autoRotate || this.cropMode || this.editing) return source;
     const crop = this.effectiveRect(source);
     const imageLandscape = crop.dispW >= crop.dispH;
-    const screenLandscape = this.canvas.width >= this.canvas.height;
+    const screenLandscape = window.innerWidth >= window.innerHeight;
     if (imageLandscape === screenLandscape) return source;
     const cropKey = [crop.sx, crop.sy, crop.sw, crop.sh].join(",");
     if (this.presentationCache?.source === source.source && this.presentationCache.cropKey === cropKey) {
@@ -1111,10 +1112,13 @@ export class PfImageCanvas extends LitElement {
     const w = Math.max(1, Math.floor(rect.width * dpr));
     const h = Math.max(1, Math.floor(rect.height * dpr));
     const previous = this.viewportSize;
-    if (previous && (previous.width >= previous.height) !== (w >= h)) {
+    const viewportLandscape = window.innerWidth >= window.innerHeight;
+    if ((previous && (previous.width >= previous.height) !== (w >= h)) ||
+        (this.viewportLandscape !== null && this.viewportLandscape !== viewportLandscape)) {
       this.forceFitOnNextRecompute = true;
     }
     this.viewportSize = { width: w, height: h };
+    this.viewportLandscape = viewportLandscape;
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
     this.recomputeFit();

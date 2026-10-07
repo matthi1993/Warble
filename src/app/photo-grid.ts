@@ -172,6 +172,32 @@ export class PfPhotoGrid extends LitElement {
       background: var(--pf-surface, var(--pf-bg));
       box-shadow: none;
     }
+    .filter-toggle {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      width: 100%;
+      min-height: 36px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--pf-text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .filter-toggle pf-icon { margin-left: auto; }
+    .filter-toggle[aria-expanded="false"] pf-icon { transform: rotate(-90deg); }
+    .filter-status {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+    }
+    .filter-content {
+      display: flex;
+      flex-direction: column;
+      gap: var(--pf-space-2);
+    }
+    .filter-content[hidden] { display: none; }
     .filter-controls {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -413,6 +439,7 @@ export class PfPhotoGrid extends LitElement {
       transform: rotate(-90deg);
     }
     @media (pointer: coarse) {
+      .filter-toggle { min-height: 44px; }
       .filter-control select,
       .date-inputs input {
         min-height: 44px;
@@ -551,6 +578,9 @@ export class PfPhotoGrid extends LitElement {
 
   @state()
   private columns: number = readStoredColumns();
+
+  @state()
+  private filtersExpanded = false;
 
   /** Minimum star rating to include in the visible grid. `0` means
    *  "no minimum" (all photos pass). */
@@ -1106,6 +1136,18 @@ export class PfPhotoGrid extends LitElement {
           </div>
         </div>
         <div class="filter-panel">
+          <button
+            type="button"
+            class="filter-toggle"
+            aria-expanded=${this.filtersExpanded}
+            aria-controls="filter-content"
+            @click=${() => { this.filtersExpanded = !this.filtersExpanded; }}
+          >
+            Filters
+            ${filtersActive ? html`<span class="filter-status">Active</span>` : null}
+            <pf-icon name="chevron-down"></pf-icon>
+          </button>
+          <div id="filter-content" class="filter-content" ?hidden=${!this.filtersExpanded}>
           <div class="filter-controls">
             <label class="filter-control">
               <span class="filter-label">Camera</span>
@@ -1210,6 +1252,7 @@ export class PfPhotoGrid extends LitElement {
             ?disabled=${!filtersActive}
             @click=${this.clearFilters}
           >Clear filters</button>
+          </div>
           </div>
         </div>
       </div>

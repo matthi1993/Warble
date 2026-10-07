@@ -150,7 +150,7 @@ export class WarbleApp extends LitElement {
    :host(.sidebar-collapsed) aside.sidebar {
      display: none;
    }
-   :host(.fs-fullview) {
+   :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
      position: relative;
      grid-template-rows: minmax(0, 1fr) auto;
      grid-template-columns: minmax(0, 1fr);
@@ -183,7 +183,7 @@ export class WarbleApp extends LitElement {
    :host(.fs-fullview) > footer.app-footer {
      display: none;
    }
-   :host(.fs-fullview) pf-full-view {
+   :host(.fs-fullview) > pf-full-view {
     grid-area: fullview;
     grid-row: 1;
     grid-column: 1;
@@ -652,7 +652,10 @@ export class WarbleApp extends LitElement {
       :host(.sidebar-collapsed) {
         grid-template-columns: 44px 0 minmax(0, 1fr) 304px;
       }
-      :host(.fs-fullview) { --pf-fullview-left-inset: 304px; }
+      :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
+        grid-template-columns: minmax(0, 1fr);
+        --pf-fullview-left-inset: 304px;
+      }
       :host(.fs-fullview.sidebar-collapsed) { --pf-fullview-left-inset: 44px; }
       :host(.fs-fullview) > .sidebar-rail { width: 44px; }
       :host(.fs-fullview) > aside.sidebar { left: 44px; }
@@ -669,7 +672,7 @@ export class WarbleApp extends LitElement {
         grid-template-areas: "rail sidebar main" "footer footer footer";
       }
       :host(.sidebar-collapsed) { grid-template-columns: 36px 0 minmax(0, 1fr); }
-      :host(.fs-fullview) {
+      :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
         grid-template-columns: minmax(0, 1fr);
         grid-template-areas: "fullview" "footer";
       }
@@ -697,7 +700,9 @@ export class WarbleApp extends LitElement {
     @media (pointer: coarse) and (min-width: 701px) and (max-width: 1080px) {
       :host { grid-template-columns: 44px 260px minmax(0, 1fr); }
       :host(.sidebar-collapsed) { grid-template-columns: 44px 0 minmax(0, 1fr); }
-      :host(.fs-fullview) { grid-template-columns: minmax(0, 1fr); }
+      :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
+        grid-template-columns: minmax(0, 1fr);
+      }
     }
     @media (max-width: 700px) {
       :host, :host(.sidebar-collapsed) {

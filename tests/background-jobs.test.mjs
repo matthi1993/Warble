@@ -20,6 +20,122 @@ function loadSource(path, dependencies) {
   return exports;
 }
 
+function componentDependencies() {
+  return {
+    lit: {
+      LitElement: class extends EventTarget {},
+      css: () => "",
+      html: (strings, ...values) => ({ strings, values }),
+    },
+    "lit/decorators.js": {
+      customElement: () => (target) => target,
+      property: () => () => {},
+      state: () => () => {},
+    },
+  };
+}
+
+test("touch hold starts photo dragging while taps and scrolling keep their normal behavior", (t) => {
+  const previousWindow = globalThis.window;
+  const timers = new Map();
+  let timerId = 0;
+  globalThis.window = {
+    setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  t.after(() => { globalThis.window = previousWindow; });
+  const { PfThumbnailCard } = loadSource("features/image-viewer/pf-thumbnail-card.ts", {
+    ...componentDependencies(),
+    "@services/images/thumbnail-service": {},
+    "@ui/icons/pf-icon": {},
+    "@features/rating/pf-rating-overlay": {},
+    "@services/images/video-source": {},
+  });
+  const card = new PfThumbnailCard();
+  card.path = "photo.jpg";
+  const events = [];
+  for (const type of ["photo-pointer-drag-start", "photo-selected", "photo-context-menu", "photo-open"]) {
+    card.addEventListener(type, (event) => events.push(event));
+  }
+  const pointer = {
+    pointerType: "touch", button: 0, isPrimary: true, pointerId: 1, clientX: 100, clientY: 100,
+    target: { closest: () => null }, currentTarget: { setPointerCapture() {} }, preventDefault() {},
+  };
+  card.onPointerDown(pointer);
+  card.onPointerUp(pointer);
+  assert.deepEqual(events.map((event) => event.type), ["photo-selected"]);
+  assert.equal(timers.size, 0);
+  events.length = 0;
+  card.onPointerDown(pointer);
+  card.onPointerMove({ ...pointer, clientY: 130 });
+  assert.equal(timers.size, 0);
+  assert.equal(events.length, 0);
+  card.onPointerDown(pointer);
+  [...timers.values()][0]();
+  assert.deepEqual(events.map((event) => event.type), ["photo-pointer-drag-start"]);
+  assert.deepEqual(events[0].detail, { path: "photo.jpg", pointerId: 1, x: 100, y: 100 });
+  let prevented = false;
+  card.onTouchMove({ cancelable: true, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  card.suppressContextMenuUntil = 0;
+  card.onContextMenu(pointer);
+  card.suppressClickUntil = 0;
+  card.onPointerUp(pointer);
+  card.onClick({ type: "click" });
+  assert.deepEqual(events.map((event) => event.type), ["photo-pointer-drag-start"]);
+  prevented = false;
+  card.onTouchMove({ cancelable: true, preventDefault() { prevented = true; } });
+  assert.equal(prevented, false);
+  card.onPointerDown(pointer);
+  card.cancelLongPress();
+  assert.equal(timers.size, 0);
+});
+
+test("auto rotation follows the viewport with side panels open and resets zoom when the iPad turns", (t) => {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = { innerWidth: 1366, innerHeight: 1024, devicePixelRatio: 2 };
+  globalThis.document = {
+    createElement: () => ({ getContext: () => ({ translate() {}, rotate() {}, drawImage() {} }) }),
+  };
+  t.after(() => { globalThis.window = previousWindow; globalThis.document = previousDocument; });
+  const { PfImageCanvas } = loadSource("features/image-viewer/pf-image-canvas.ts", {
+    ...componentDependencies(),
+    "@services/images/thumbnail-service": {},
+    "@services/images/hd-image-cache": {},
+    "@services/images/full-image-cache": {},
+    "./canvas-state-adapter": { canvasState: { getPostProcess: () => ({}), cropEnabled: () => false } },
+    "./canvas/decoder-bootstrap": {},
+    "@features/editor/rendering/render-pipeline": { EditorRenderPipeline: class {} },
+    "@features/editor/registry": {},
+    "./canvas/crop-geometry": {},
+    "./canvas/view-sizing": loadSource("features/image-viewer/canvas/view-sizing.ts", {}),
+  });
+  const viewer = new PfImageCanvas();
+  viewer.autoRotate = true;
+  viewer.bitmap = { width: 4000, height: 6000 };
+  viewer.canvas = { width: 800, height: 1200, getBoundingClientRect: () => ({ width: 400, height: 600 }) };
+  viewer.draw = () => {};
+  viewer.onResize();
+  assert.equal(viewer.effectiveSource().width, 6000);
+  assert.equal(viewer.effectiveSource().height, 4000);
+  viewer.userInteracted = true;
+  viewer.scale = 3;
+  viewer.offsetX = 100;
+  viewer.offsetY = 200;
+  window.innerWidth = 1024;
+  window.innerHeight = 1366;
+  viewer.onResize();
+  assert.equal(viewer.effectiveSource().source, viewer.bitmap);
+  assert.equal(viewer.scale, viewer.fitScale);
+  assert.equal(viewer.offsetX, 0);
+  assert.equal(viewer.offsetY, 0);
+  viewer.editing = true;
+  window.innerWidth = 1366;
+  window.innerHeight = 1024;
+  assert.equal(viewer.effectiveSource().source, viewer.bitmap);
+});
+
 test("iPad contain and cover fit every viewport orientation, including low resolution previews", () => {
   const { imageViewScale } = loadSource("features/image-viewer/canvas/view-sizing.ts", {});
   for (const [width, height] of [[1024, 1366], [1366, 1024], [768, 1024], [1024, 768]]) {

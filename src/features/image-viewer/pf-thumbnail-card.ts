@@ -35,23 +35,6 @@ export class PfThumbnailCard extends LitElement {
       transition: border-color var(--pf-transition), box-shadow var(--pf-transition),
         transform var(--pf-transition);
     }
-    .drag-handle {
-      display: none;
-      position: absolute;
-      top: 6px;
-      left: 6px;
-      z-index: 4;
-      width: 36px;
-      height: 36px;
-      border: 1px solid var(--pf-border);
-      border-radius: var(--pf-radius-md);
-      background: var(--pf-surface-2);
-      color: var(--pf-text);
-      touch-action: none;
-    }
-    @media (pointer: coarse) {
-      .drag-handle { display: grid; place-items: center; }
-    }
     .card:hover {
       border-color: var(--pf-accent);
     }
@@ -187,9 +170,8 @@ export class PfThumbnailCard extends LitElement {
   private loading = false;
 
   private longPressTimer: number | null = null;
-  private touchDragTimer: number | null = null;
-  private touchDragArmed = false;
-  private longPressStart: { x: number; y: number; time: number } | null = null;
+  private touchDragging = false;
+  private longPressStart: { x: number; y: number } | null = null;
   private suppressClickUntil = 0;
   private suppressContextMenuUntil = 0;
   private lastPointerType = "mouse";
@@ -363,15 +345,12 @@ export class PfThumbnailCard extends LitElement {
         @pointerup=${this.onPointerUp}
         @pointercancel=${this.cancelLongPress}
         @pointerleave=${this.cancelLongPress}
+        @touchmove=${this.onTouchMove}
         @click=${this.onClick}
         @dblclick=${this.onDblClick}
         @contextmenu=${this.onContextMenu}
       >
         <div class="thumb">
-          <button class="drag-handle" type="button" aria-label="Drag photo to album" title="Drag to album"
-            @click=${(event: Event) => event.stopPropagation()}>
-            <pf-icon name="grid"></pf-icon>
-          </button>
           ${this.selected && this.showSelectionCheck ? html`<span class="selection-check" aria-label="Selected">✓</span>` : null}
           ${this.videoUrl
             ? html`<video src=${this.videoUrl} draggable="false" muted playsinline preload="metadata"
@@ -452,7 +431,7 @@ export class PfThumbnailCard extends LitElement {
 
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
-    if (this.lastPointerType === "touch" && this.longPressStart) return;
+    if (this.lastPointerType === "touch" && (this.longPressStart || this.touchDragging)) return;
     const touchContext = this.longPressStart !== null;
     this.cancelLongPress();
     if (Date.now() < this.suppressContextMenuUntil) return;
@@ -480,8 +459,7 @@ export class PfThumbnailCard extends LitElement {
     this.lastPointerType = event.pointerType;
     if (event.button !== 0 || !event.isPrimary || (event.target as Element).closest("pf-rating-overlay")) return;
     this.cancelLongPress();
-    this.touchDragArmed = (event.target as Element).closest(".drag-handle") !== null;
-    this.longPressStart = { x: event.clientX, y: event.clientY, time: performance.now() };
+    this.longPressStart = { x: event.clientX, y: event.clientY };
     try {
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     } catch {
@@ -489,14 +467,15 @@ export class PfThumbnailCard extends LitElement {
     }
     if (event.pointerType === "mouse") return;
     if (event.pointerType === "touch") {
-      if (this.touchDragArmed) return;
-      this.touchDragTimer = window.setTimeout(() => { this.touchDragArmed = true; }, 420);
+      this.longPressTimer = window.setTimeout(() => {
+        this.startPointerDrag(event);
+        this.touchDragging = true;
+      }, 420);
       return;
     }
     this.longPressTimer = window.setTimeout(() => {
       this.longPressTimer = null;
       this.longPressStart = null;
-      this.cancelTouchDrag();
       this.suppressClickUntil = Date.now() + 700;
       this.suppressContextMenuUntil = Date.now() + 700;
       this.openContextMenu(event.clientX, event.clientY, true);
@@ -506,36 +485,40 @@ export class PfThumbnailCard extends LitElement {
   private onPointerMove = (event: PointerEvent): void => {
     const start = this.longPressStart;
     if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > (event.pointerType === "mouse" ? 6 : 10)) {
-      if (event.pointerType === "mouse" || (this.touchDragArmed && event.pointerType === "touch")) {
-        this.lastTouchTap = 0;
-        this.suppressClickUntil = Date.now() + 700;
-        this.suppressContextMenuUntil = Date.now() + 700;
-        this.cancelLongPress();
-        this.dispatchEvent(new CustomEvent("photo-pointer-drag-start", {
-          detail: { path: this.path, pointerId: event.pointerId, x: event.clientX, y: event.clientY },
-          bubbles: true,
-          composed: true,
-        }));
+      if (event.pointerType === "mouse") {
+        this.startPointerDrag(event);
         return;
       }
       this.cancelLongPress();
     }
   };
 
+  private startPointerDrag(event: PointerEvent): void {
+    this.lastTouchTap = 0;
+    this.suppressClickUntil = Date.now() + 700;
+    this.suppressContextMenuUntil = Date.now() + 700;
+    this.cancelLongPress();
+    this.dispatchEvent(new CustomEvent("photo-pointer-drag-start", {
+      detail: { path: this.path, pointerId: event.pointerId, x: event.clientX, y: event.clientY },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private onTouchMove = (event: TouchEvent): void => {
+    if (this.touchDragging && event.cancelable) event.preventDefault();
+  };
+
   private onPointerUp = (event: PointerEvent): void => {
     const start = this.longPressStart;
-    if (this.lastPointerType === "touch" && start && performance.now() - start.time >= 550) {
-      this.suppressClickUntil = Date.now() + 700;
-      this.suppressContextMenuUntil = Date.now() + 700;
-      this.cancelLongPress();
-      this.openContextMenu(start.x, start.y, true);
-      return;
-    }
     if (this.lastPointerType === "touch" && start) {
       event.preventDefault();
       this.onClick(event);
     }
-    if (this.suppressClickUntil > Date.now()) this.suppressClickUntil = Date.now() + 700;
+    if (this.touchDragging || this.suppressClickUntil > Date.now()) {
+      this.suppressClickUntil = Date.now() + 700;
+      this.suppressContextMenuUntil = Date.now() + 700;
+    }
     this.cancelLongPress();
   };
 
@@ -543,14 +526,8 @@ export class PfThumbnailCard extends LitElement {
     if (this.longPressTimer !== null) window.clearTimeout(this.longPressTimer);
     this.longPressTimer = null;
     this.longPressStart = null;
-    this.cancelTouchDrag();
+    this.touchDragging = false;
   };
-
-  private cancelTouchDrag(): void {
-    if (this.touchDragTimer !== null) window.clearTimeout(this.touchDragTimer);
-    this.touchDragTimer = null;
-    this.touchDragArmed = false;
-  }
 }
 
 declare global {
