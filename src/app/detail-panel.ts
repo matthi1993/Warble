@@ -5,7 +5,7 @@ import { fileForSelection } from "@domain/photo";
 import { buildExifSections, type ExifMetadata } from "@domain/exif";
 import { COLOR_LABELS, LABEL_COLORS, LABEL_DISPLAY_NAMES } from "@domain/rating";
 import { fetchExif } from "@services/exif/exif-service";
-import { getPhotoRating, setPhotoLabel, setPhotoStars, subscribePhotoRatings } from "@services/rating/rating-store";
+import { getPhotoRating, setPhotosLabels, setPhotosStars, subscribePhotoRatings } from "@services/rating/rating-store";
 import {
   subscribeVariantOverrides,
 } from "@services/library/variant-store";
@@ -145,6 +145,9 @@ export class PfDetailPanel extends LitElement {
   @property({ attribute: false })
   photo: Photo | null = null;
 
+  @property({ attribute: false })
+  selectionPaths: readonly string[] = [];
+
   @property({ type: Boolean, attribute: "fullviewopen", reflect: true })
   fullViewOpen = false;
 
@@ -246,7 +249,11 @@ export class PfDetailPanel extends LitElement {
       `;
     }
     const path = this.currentPath(photo);
-    const rating = getPhotoRating(photo.path);
+    const targets = !this.fullViewOpen && this.selectionPaths.includes(photo.path)
+      ? this.selectionPaths : [photo.path];
+    const ratings = targets.map(getPhotoRating);
+    const commonRating = ratings.every((rating) => rating.rating === ratings[0].rating) ? ratings[0].rating : null;
+    const commonLabel = ratings.every((rating) => rating.label === ratings[0].label) ? ratings[0].label : null;
     const sections = buildExifSections(this.exif);
     return html`
       <div class="image-wrap">
@@ -282,11 +289,12 @@ export class PfDetailPanel extends LitElement {
           ${this.exif?.iso ? html`<span>ISO ${this.exif.iso}</span>` : null}
         </div>
         <div class="info-section">
+          ${targets.length > 1 ? html`<h3>${targets.length} photos selected</h3>` : null}
           <div class="info-row"><dt>Rating</dt><dd class="rating-controls" role="group" aria-label="Photo rating">
-            ${[1, 2, 3, 4, 5].map((star) => html`<button type="button" class=${star <= rating.rating ? "active" : ""} aria-label=${`${star} stars`} @click=${() => setPhotoStars(photo.path, rating.rating === star ? 0 : star)}>★</button>`)}
+            ${[1, 2, 3, 4, 5].map((star) => html`<button type="button" class=${commonRating !== null && star <= commonRating ? "active" : ""} aria-label=${`${star} stars`} @click=${() => setPhotosStars(targets, commonRating === star ? 0 : star)}>★</button>`)}
           </dd></div>
           <div class="info-row"><dt>Labels</dt><dd class="label-controls" role="group" aria-label="Photo label">
-            ${COLOR_LABELS.map((label) => html`<button type="button" style=${`background: ${LABEL_COLORS[label]}`} aria-label=${LABEL_DISPLAY_NAMES[label]} aria-pressed=${rating.label === label} @click=${() => setPhotoLabel(photo.path, rating.label === label ? "" : label)}></button>`)}
+            ${COLOR_LABELS.map((label) => html`<button type="button" style=${`background: ${LABEL_COLORS[label]}`} aria-label=${LABEL_DISPLAY_NAMES[label]} aria-pressed=${commonLabel === label} @click=${() => setPhotosLabels(targets, commonLabel === label ? "" : label)}></button>`)}
           </dd></div>
         </div>
         ${sections.map((section) => html`<section class="info-section">

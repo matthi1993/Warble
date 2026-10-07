@@ -22,7 +22,7 @@ import {
   removePhotoEffectsUnderRoot,
 } from "@services/effects/effects-store";
 import {
-  applyRatingShortcut,
+  applyRatingShortcuts,
   flushPhotoRatings,
   getPhotoRating,
   loadPhotoRatings,
@@ -90,6 +90,8 @@ interface FolderUpdate {
 
 const APP_ICON_URL = new URL("../../app-icon.png", import.meta.url).href;
 
+const filenameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
   return [...photos].sort((a, b) => {
     const aDate = a.filterInfo?.dateTaken ?? null;
@@ -108,10 +110,7 @@ function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
       const timeOrder = aCaptureTime.localeCompare(bCaptureTime);
       if (timeOrder !== 0) return timeOrder;
     }
-    const filenameOrder = a.filename.localeCompare(b.filename, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
+    const filenameOrder = filenameCollator.compare(a.filename, b.filename);
     return filenameOrder !== 0 ? filenameOrder : a.path.localeCompare(b.path);
   });
 }
@@ -153,9 +152,9 @@ export class WarbleApp extends LitElement {
    }
    :host(.fs-fullview) {
      position: relative;
-     grid-template-rows: minmax(0, 1fr);
+     grid-template-rows: minmax(0, 1fr) auto;
      grid-template-columns: minmax(0, 1fr);
-     grid-template-areas: "fullview";
+     grid-template-areas: "fullview" "footer";
      padding: 0;
      --pf-fullview-left-inset: 296px;
    }
@@ -545,6 +544,8 @@ export class WarbleApp extends LitElement {
 
     footer.app-footer {
       grid-area: footer;
+      position: relative;
+      z-index: 50;
       display: flex;
       align-items: center;
       gap: var(--pf-space-3);
@@ -670,7 +671,7 @@ export class WarbleApp extends LitElement {
       :host(.sidebar-collapsed) { grid-template-columns: 36px 0 minmax(0, 1fr); }
       :host(.fs-fullview) {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-areas: "fullview";
+        grid-template-areas: "fullview" "footer";
       }
       aside.detail { display: none; }
       .detail-toggle { display: inline-flex; }
@@ -738,8 +739,8 @@ export class WarbleApp extends LitElement {
       pf-full-view { grid-column: 1; }
       footer.app-footer { padding-inline: var(--pf-space-3); }
       :host(.fs-fullview) {
-        grid-template-rows: minmax(0, 1fr);
-        grid-template-areas: "fullview";
+        grid-template-rows: minmax(0, 1fr) auto;
+        grid-template-areas: "fullview" "footer";
       }
       :host(.fs-fullview) > .mobile-backdrop { display: none; }
       :host(.fs-fullview) > .detail-backdrop { display: none; }
@@ -821,6 +822,29 @@ export class WarbleApp extends LitElement {
 
   private dateTreeSource: Photo[] | null = null;
   private readonly dateTreeIndex = new DateTreeIndex();
+  private datePhotosSource: Photo[] | null = null;
+  private sortedDatePhotos: Photo[] = [];
+  private readonly dateSelections = new Map<string | null, Photo[]>();
+
+  private getDatePhotos(key: string | null): Photo[] {
+    if (this.datePhotosSource !== this.libraryPhotos) {
+      this.datePhotosSource = this.libraryPhotos;
+      this.sortedDatePhotos = sortPhotosOldestFirst(this.photoPipeline.enrich(this.libraryPhotos));
+      this.dateSelections.clear();
+    }
+    let photos = this.dateSelections.get(key);
+    if (!photos) {
+      photos = key === null ? this.sortedDatePhotos
+        : this.sortedDatePhotos.filter((photo) => matchesDateSelection(photo, key));
+      this.dateSelections.set(key, photos);
+    }
+    return photos;
+  }
+
+  private invalidateDatePhotos(): void {
+    this.datePhotosSource = null;
+    this.dateSelections.clear();
+  }
 
   private get dateNodes(): DateTreeNode[] {
     this.syncDateTreeIndex();
@@ -851,6 +875,9 @@ export class WarbleApp extends LitElement {
 
   @state()
   private selectedPhoto: Photo | null = null;
+
+  @state()
+  private gridSelectionPaths: string[] = [];
 
   @state()
   private fullViewIndex: number | null = null;
@@ -1024,7 +1051,6 @@ export class WarbleApp extends LitElement {
     this.favoritesSelected = false;
     this.selectedFolderId = null;
     this.selectedFolderName = null;
-    this.stopPhotoBackgroundWork();
     this.selectedAlbumId = id;
     this.setPhotos([], false);
     this.selectedPhoto = null;
@@ -1121,11 +1147,11 @@ export class WarbleApp extends LitElement {
     const photos = this.favoritesSelected
       ? this.libraryPhotos.filter((photo) => getPhotoRating(photo.path).rating >= 1)
       : this.daysSelected
-        ? this.photoPipeline.enrich(this.libraryPhotos).filter((photo) => matchesDateSelection(photo, this.selectedDateKey))
+        ? this.getDatePhotos(this.selectedDateKey)
         : this.libraryPhotos;
     const selectedPath = this.selectedPhoto?.path;
     const previousIndex = this.fullViewIndex;
-    if (this.daysSelected && this.selectedDateKey === null) {
+    if (this.daysSelected) {
       this.photos = photos;
     } else {
       this.setPhotos(photos, restartMetadata && !this.daysSelected);
@@ -1157,7 +1183,7 @@ export class WarbleApp extends LitElement {
       this.showLibraryPhotos(false);
       if (this.albumsSelected) void this.refreshAlbumPhotos();
       try {
-        const paths = photos.map((photo) => photo.path);
+        const paths = this.photoPipeline.missingMetadataPaths(photos);
         for (let start = 0; start < paths.length; start += 256) {
           const cached = await invoke<Array<PhotoFilterInfo & { path: string }>>(
             "get_cached_photo_filter_metadata",
@@ -1165,11 +1191,9 @@ export class WarbleApp extends LitElement {
           );
           if (request !== this.allPhotosRequest) return;
           this.photoPipeline.seed(cached);
+          this.invalidateDatePhotos();
           this.syncDateTreeIndex();
           this.dateTreeIndex.updateMetadata(cached);
-          if (this.daysSelected) this.applyDateMetadata();
-          else if (this.selectedFolderId) this.applyPhotoMetadata();
-          else this.showLibraryPhotos(false);
         }
       } catch (error) {
         console.warn("Failed to restore cached photo dates", error);
@@ -1178,6 +1202,10 @@ export class WarbleApp extends LitElement {
       if (request === this.allPhotosRequest) {
         this.restoringCachedDates = false;
         this.filterMetadataLoading = false;
+        this.invalidateDatePhotos();
+        if (this.daysSelected) this.applyDateMetadata();
+        else if (this.selectedFolderId) this.applyPhotoMetadata();
+        else this.showLibraryPhotos(false);
         this.startPhotoBackgroundWork();
       }
     } catch (error) {
@@ -1328,19 +1356,21 @@ export class WarbleApp extends LitElement {
   }
 
   private startPhotoBackgroundWork(): void {
-    if (this.fullViewIndex !== null) return;
     this.photoPipeline.start(
-      this.libraryPhotos.length > 0 ? this.libraryPhotos : this.photos,
+      [...this.photos, ...this.libraryPhotos],
       (results) => {
         this.syncDateTreeIndex();
         this.dateTreeIndex.updateMetadata(results);
-        if (this.daysSelected) this.applyDateMetadata();
-        else this.applyPhotoMetadata();
+        this.invalidateDatePhotos();
       },
       () => this.photos.map((photo) => photo.path),
       (loading) => {
         this.filterMetadataLoading = loading;
         this.syncDateTreeIndex();
+        if (!loading) {
+          if (this.daysSelected) this.applyDateMetadata();
+          else this.applyPhotoMetadata();
+        }
       },
     );
   }
@@ -1350,7 +1380,9 @@ export class WarbleApp extends LitElement {
   }
 
   private applyPhotoMetadata(): void {
-    const enriched = sortPhotosOldestFirst(this.photoPipeline.enrich(this.photos));
+    const photos = this.photoPipeline.enrich(this.photos);
+    if (photos.every((photo, index) => photo === this.photos[index])) return;
+    const enriched = sortPhotosOldestFirst(photos);
     this.photos = enriched;
     const selectedPath = this.selectedPhoto?.path;
     if (selectedPath) {
@@ -1363,11 +1395,7 @@ export class WarbleApp extends LitElement {
   }
 
   private applyDateMetadata(): void {
-    if (this.selectedDateKey === null) {
-      this.photos = this.photoPipeline.enrich(this.photos);
-    } else {
-      this.showLibraryPhotos(false);
-    }
+    this.showLibraryPhotos(false);
   }
 
   disconnectedCallback(): void {
@@ -1568,15 +1596,14 @@ export class WarbleApp extends LitElement {
       return;
     }
 
-    // Star ratings (1–5) and color labels (6–9, 0). Apply to the
-    // currently-selected grid photo, falling back to the first card
-    // if nothing is selected yet.
     if (!e.metaKey && !e.ctrlKey && !e.altKey && RATING_LABEL_KEYS.has(e.key)) {
       const target =
         this.selectedPhoto ?? (this.photos.length > 0 ? this.photos[0] : null);
       if (target) {
         e.preventDefault();
-        applyRatingShortcut(target.path, e.key);
+        const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
+        const paths = grid?.getSelectionPaths() ?? [];
+        applyRatingShortcuts(paths.length ? paths : [target.path], e.key);
       }
       return;
     }
@@ -1875,6 +1902,12 @@ export class WarbleApp extends LitElement {
 
   private async onPhotoIndexSynced(update: PhotoIndexUpdate): Promise<void> {
     void this.refreshFolderPhotoCounts();
+    if (update.metadataChanged) {
+      const affectsFolder = (photo: Photo): boolean => photo.path.startsWith(`${update.folderKey}/`);
+      this.photoPipeline.invalidate(this.libraryPhotos.filter(affectsFolder).map((photo) => photo.path));
+      this.photos = this.photos.map((photo) => affectsFolder(photo) ? { ...photo, filterInfo: undefined } : photo);
+      this.invalidateDatePhotos();
+    }
     if (update.changedImages.length > 0) {
       this.photoPipeline.invalidate(update.changedImages);
       const changed = new Set(update.changedImages);
@@ -1966,7 +1999,6 @@ export class WarbleApp extends LitElement {
     this.allPhotosSelected = false;
     this.favoritesSelected = false;
     this.daysSelected = false;
-    this.stopPhotoBackgroundWork();
     this.pendingRestoreFolderPath = null;
     this.selectedFolderId = id;
     const name = findFolderByPath(this.imports, path)?.name ?? path.split("/").filter(Boolean).pop() ?? path;
@@ -2247,7 +2279,6 @@ export class WarbleApp extends LitElement {
   private toggleIncludeSubfolders = async () => {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
-      this.stopPhotoBackgroundWork();
       this.requestFolderImageIndex(this.selectedFolderId, this.includeSubfolders);
       try {
         this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
@@ -2292,9 +2323,7 @@ export class WarbleApp extends LitElement {
       const previous = changed.get("fullViewIndex");
       const wasOpen = previous !== undefined && previous !== null;
       const isOpen = this.fullViewIndex !== null;
-      if (!wasOpen && isOpen) {
-        this.stopPhotoBackgroundWork();
-      } else if (wasOpen && !isOpen && (this.selectedFolderId || this.daysSelected || (this.albumsSelected && this.selectedAlbumId))) {
+      if (wasOpen && !isOpen) {
         this.startPhotoBackgroundWork();
       }
     }
@@ -2451,6 +2480,9 @@ export class WarbleApp extends LitElement {
       <main
         class="content"
         @photo-selected=${this.onPhotoSelected}
+        @photo-selection-change=${(event: CustomEvent<{ paths: string[] }>) => {
+          this.gridSelectionPaths = event.detail.paths;
+        }}
         @photo-open=${this.onPhotoOpen}
         @photo-grid-pointer-drag-start=${this.onGridPointerDragStart}
         @photo-context-menu=${this.onPhotoContextMenu}
@@ -2503,6 +2535,7 @@ export class WarbleApp extends LitElement {
       >
         <pf-detail-panel
           .photo=${this.selectedPhoto}
+          .selectionPaths=${this.fullViewIndex === null ? this.gridSelectionPaths : []}
           ?fullViewOpen=${this.fullViewIndex !== null}
           ?windowFullscreen=${this.windowFullscreen}
         ></pf-detail-panel>
@@ -2516,7 +2549,6 @@ export class WarbleApp extends LitElement {
             ?windowFullscreen=${this.windowFullscreen}
             .editPanelOpenWindowed=${this.editPanelOpen}
             @full-view-navigate=${this.onFullViewNavigate}
-            @full-view-close=${this.onFullViewClose}
             @slideshow-start=${this.onSlideshowStart}
             @photo-catalog-changed=${this.onPhotoCatalogChanged}
             @edit-panel-open-changed=${this.onEditPanelOpenChanged}
@@ -2786,8 +2818,12 @@ export class WarbleApp extends LitElement {
           ></pf-task-details>
         </span>
         <span class="footer-spacer"></span>
-        <pf-view-mode-switch mode="grid" .imageDisabled=${!this.photos.length}
-          @view-mode-change=${this.openFullImage}></pf-view-mode-switch>
+        <pf-view-mode-switch .mode=${this.fullViewIndex === null ? "grid" : "image"}
+          .imageDisabled=${!this.photos.length}
+          @view-mode-change=${(event: CustomEvent<{ mode: "grid" | "image" }>) => {
+            if (event.detail.mode === "grid") this.onFullViewClose();
+            else this.openFullImage();
+          }}></pf-view-mode-switch>
       </footer>
     `;
   }

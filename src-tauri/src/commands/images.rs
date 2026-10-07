@@ -8,7 +8,7 @@
 //! to hand the canvas encoded image bytes (or the embedded preview).
 //!
 //! Image reads use a small worker queue. The active photo is urgent;
-//! visible thumbnails use normal priority; bulk filter metadata runs behind
+//! visible thumbnails use high priority; bulk filter metadata runs behind
 //! interactive image work. The frontend
 //! can cancel stale image requests during rapid navigation.
 
@@ -50,19 +50,19 @@ pub fn get_video_source(
 pub async fn get_thumbnail(
     photo_path: String,
     request_id: Option<u64>,
-    urgent: Option<bool>,
-    background: Option<bool>,
+    priority: Option<Priority>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    let priority = if urgent.unwrap_or(false) {
-        Priority::Urgent
-    } else if background.unwrap_or(false) {
-        Priority::Background
-    } else {
-        Priority::Normal
-    };
+    let cache_path = resolved.clone();
+    if let Some(bytes) = tauri::async_runtime::spawn_blocking(move || thumbnails::cached(&cache_path))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(Response::new(bytes));
+    }
+    let priority = priority.unwrap_or(Priority::High);
     let bytes = tasks::run(priority, request_id, move |cancel| {
         thumbnails::render(&resolved, &photo_path, cancel)
     })
@@ -108,15 +108,9 @@ pub fn cancel_image_request(request_id: u64) {
     tasks::pool().cancel(request_id);
 }
 
-/// Raise a queued background request when it becomes visible or urgent.
 #[tauri::command]
-pub fn promote_image_request(request_id: u64, urgent: bool) {
-    let priority = if urgent {
-        Priority::Urgent
-    } else {
-        Priority::Normal
-    };
-    tasks::pool().promote(request_id, priority);
+pub fn set_image_request_priority(request_id: u64, priority: Priority) {
+    tasks::pool().set_priority(request_id, priority);
 }
 
 /// Read EXIF metadata for the photo at `photo_path`. Returns an
@@ -237,7 +231,7 @@ pub async fn get_cached_photo_filter_metadata(
         }
     }
 
-    tasks::run(Priority::Background, None, move |cancel| {
+    tasks::run(Priority::Normal, None, move |cancel| {
         let mut result = Vec::new();
         for (path, resolved) in requests {
             cancel.check()?;
@@ -264,16 +258,21 @@ pub async fn get_photo_filter_metadata(
         requests.push((key, resolved));
     }
 
-    tasks::run(Priority::Background, request_id, move |cancel| {
-        let mut result = Vec::with_capacity(requests.len());
-        for (path, resolved) in requests {
+    let request = tasks::request_guard(request_id);
+    let mut result = Vec::with_capacity(requests.len());
+    for (path, resolved) in requests {
+        let cancel = request.token();
+        cancel.check()?;
+        let info = tasks::run(Priority::Background, None, move |_| {
             cancel.check()?;
             let metadata = exif_cache::get_or_compute(&path, &resolved);
-            result.push(filter_info(path, &metadata));
-        }
-        Ok(result)
-    })
-    .await
+            cancel.check()?;
+            Ok(filter_info(path, &metadata))
+        })
+        .await?;
+        result.push(info);
+    }
+    Ok(result)
 }
 
 fn parse_focal_length_mm(value: &str) -> Option<f64> {

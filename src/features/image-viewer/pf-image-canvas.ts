@@ -36,6 +36,7 @@ import {
   hasActiveEditorToolValues,
 } from "@features/editor/registry";
 import { clamp, enforceAspect } from "./canvas/crop-geometry";
+import { imageViewScale } from "./canvas/view-sizing";
 import type {
   CropFrame,
   ImageSizing,
@@ -158,6 +159,9 @@ export class PfImageCanvas extends LitElement {
   @property({ type: String, reflect: true })
   sizing: ImageSizing = "fit";
 
+  @property({ type: Boolean })
+  autoRotate = false;
+
   @property({ type: String })
   smoothingQuality: ImageSmoothingQuality = "high";
 
@@ -270,6 +274,8 @@ export class PfImageCanvas extends LitElement {
   private forceFitOnNextRecompute = false;
 
   private resizeObserver?: ResizeObserver;
+  private resizeFrame: number | null = null;
+  private viewportSize: { width: number; height: number } | null = null;
   private loadAbort: AbortController | null = null;
   private dragging = false;
   private dragStartX = 0;
@@ -340,6 +346,9 @@ export class PfImageCanvas extends LitElement {
     this.ctx = this.canvas.getContext("2d") ?? undefined;
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(this.canvas);
+    window.addEventListener("resize", this.onViewportResize);
+    window.addEventListener("orientationchange", this.onViewportResize);
+    window.visualViewport?.addEventListener("resize", this.onViewportResize);
     this.attachInputs();
     this.onResize();
     if (this.path) {
@@ -461,6 +470,12 @@ export class PfImageCanvas extends LitElement {
     window.removeEventListener("blur", this.onWindowBlur);
     this.presentationCache = null;
     this.resizeObserver?.disconnect();
+    window.removeEventListener("resize", this.onViewportResize);
+    window.removeEventListener("orientationchange", this.onViewportResize);
+    window.visualViewport?.removeEventListener("resize", this.onViewportResize);
+    if (this.resizeFrame !== null) cancelAnimationFrame(this.resizeFrame);
+    this.resizeFrame = null;
+    this.viewportSize = null;
     this.loadAbort?.abort();
     this.cancelFullImageLoad();
     if (this.editSettleTimer !== null) {
@@ -495,7 +510,7 @@ export class PfImageCanvas extends LitElement {
       this.cropFrame = null;
       this.refreshSavedCrop();
       if (this.canvas) this.startLoad();
-    } else if (changed.has("frameSize") || changed.has("proofingSize") || changed.has("sizing") || changed.has("editing")) {
+    } else if (changed.has("frameSize") || changed.has("proofingSize") || changed.has("sizing") || changed.has("autoRotate") || changed.has("editing")) {
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
       this.scale = 1;
@@ -932,7 +947,7 @@ export class PfImageCanvas extends LitElement {
 
   private effectiveSource(): { source: EditorSource; width: number; height: number } | null {
     const source = this.editedSource();
-    if (!source || !this.canvas || this.sizing !== "auto" || this.cropMode || this.editing) return source;
+    if (!source || !this.canvas || !this.autoRotate || this.cropMode || this.editing) return source;
     const crop = this.effectiveRect(source);
     const imageLandscape = crop.dispW >= crop.dispH;
     const screenLandscape = this.canvas.width >= this.canvas.height;
@@ -1080,12 +1095,26 @@ export class PfImageCanvas extends LitElement {
     return { sx, sy, sw, sh, dispW: sw, dispH: sh };
   }
 
+  private onViewportResize = (): void => {
+    if (this.resizeFrame !== null) cancelAnimationFrame(this.resizeFrame);
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      this.onResize();
+    });
+  };
+
   private onResize() {
     if (!this.canvas) return;
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
     const w = Math.max(1, Math.floor(rect.width * dpr));
     const h = Math.max(1, Math.floor(rect.height * dpr));
+    const previous = this.viewportSize;
+    if (previous && (previous.width >= previous.height) !== (w >= h)) {
+      this.forceFitOnNextRecompute = true;
+    }
+    this.viewportSize = { width: w, height: h };
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
     this.recomputeFit();
@@ -1098,24 +1127,11 @@ export class PfImageCanvas extends LitElement {
       this.fitScale = 1;
       return;
     }
-    const dpr = window.devicePixelRatio || 1;
     const inset = this.totalInset();
     const cw = Math.max(1, this.canvas.width - 2 * inset);
     const ch = Math.max(1, this.canvas.height - 2 * inset);
     const { dispW, dispH } = this.effectiveRect(src);
-    const aspect = dispW / dispH;
-    let useFill = this.sizing === "fill";
-    if (this.sizing === "hybrid" && aspect >= 1) {
-      const canvasAspect = cw / ch;
-      const stretch =
-        canvasAspect >= aspect ? canvasAspect / aspect : aspect / canvasAspect;
-      // 16:10 ÷ 3:2 = 16/15 ≈ 1.0667 (the configured threshold).
-      const HYBRID_MAX_STRETCH = 4 / 3;
-      useFill = stretch <= HYBRID_MAX_STRETCH;
-    }
-    this.fitScale = useFill
-      ? Math.max(cw / dispW, ch / dispH)
-      : Math.min(cw / dispW, ch / dispH, dpr);
+    this.fitScale = imageViewScale(this.sizing, { width: dispW, height: dispH }, { width: cw, height: ch });
     if (this.forceFitOnNextRecompute) {
       this.scale = this.fitScale;
       this.offsetX = 0;

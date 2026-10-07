@@ -8,9 +8,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Priority {
     Urgent,
+    High,
     Normal,
     Background,
 }
@@ -54,6 +56,7 @@ struct Job {
 #[derive(Default)]
 struct Requests {
     active: HashMap<u64, CancelToken>,
+    priorities: HashMap<u64, Priority>,
     // A cancellation IPC message can reach Rust before its matching image
     // request. Keep that race harmless without retaining ids indefinitely.
     pre_cancelled: HashSet<u64>,
@@ -64,6 +67,45 @@ pub struct TaskPool {
     requests: Arc<Mutex<Requests>>,
 }
 
+pub struct RequestGuard {
+    request_id: Option<u64>,
+    token: CancelToken,
+    requests: Arc<Mutex<Requests>>,
+}
+
+impl RequestGuard {
+    pub fn token(&self) -> CancelToken {
+        self.token.clone()
+    }
+}
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.request_id {
+            self.requests.lock().unwrap().active.remove(&id);
+        }
+    }
+}
+
+pub fn request_guard(request_id: Option<u64>) -> RequestGuard {
+    let requests = Arc::clone(&pool().requests);
+    let mut guard = requests.lock().unwrap();
+    let token = if request_id.is_some_and(|id| guard.pre_cancelled.remove(&id)) {
+        CancelToken::pre_cancelled()
+    } else {
+        CancelToken::new()
+    };
+    if let Some(id) = request_id {
+        guard.active.insert(id, token.clone());
+    }
+    drop(guard);
+    RequestGuard {
+        request_id,
+        token,
+        requests,
+    }
+}
+
 impl TaskPool {
     fn new() -> Arc<Self> {
         let pool = Arc::new(Self {
@@ -71,16 +113,15 @@ impl TaskPool {
             requests: Arc::new(Mutex::new(Requests::default())),
         });
 
-        // Two workers let the initial thumbnail and HD preview arrive together
-        // on desktop. iPad stays serial to keep its memory and thermal use low.
         #[cfg(not(target_os = "ios"))]
         let worker_count = 2;
         #[cfg(target_os = "ios")]
         let worker_count = 1;
 
-        for _ in 0..worker_count {
+        for index in 0..worker_count {
             let worker = Arc::clone(&pool);
-            std::thread::spawn(move || worker.run());
+            let interactive_only = worker_count > 1 && index == 0;
+            std::thread::spawn(move || worker.run(interactive_only));
         }
         pool
     }
@@ -89,19 +130,22 @@ impl TaskPool {
     where
         F: FnOnce(&CancelToken) + Send + 'static,
     {
+        let mut request_guard = self.requests.lock().unwrap();
         let cancel = match request_id {
             Some(id) => {
-                let mut requests = self.requests.lock().unwrap();
-                let token = if requests.pre_cancelled.remove(&id) {
+                let token = if request_guard.pre_cancelled.remove(&id) {
                     CancelToken::pre_cancelled()
                 } else {
                     CancelToken::new()
                 };
-                requests.active.insert(id, token.clone());
+                request_guard.active.insert(id, token.clone());
                 token
             }
             None => CancelToken::new(),
         };
+        let priority = request_id
+            .and_then(|id| request_guard.priorities.remove(&id))
+            .unwrap_or(priority);
 
         let requests = Arc::clone(&self.requests);
         let job = Job {
@@ -118,24 +162,17 @@ impl TaskPool {
 
         let (lock, wake) = &*self.queue;
         let mut queue = lock.lock().unwrap();
-        match priority {
-            Priority::Urgent => queue.push_front(job),
-            Priority::Normal => {
-                let index = queue
-                    .iter()
-                    .position(|queued| queued.priority == Priority::Background)
-                    .unwrap_or(queue.len());
-                queue.insert(index, job);
-            }
-            Priority::Background => queue.push_back(job),
-        }
-        wake.notify_one();
+        insert_job(&mut queue, job);
+        drop(request_guard);
+        wake.notify_all();
     }
 
     pub fn cancel(&self, request_id: u64) {
         let mut requests = self.requests.lock().unwrap();
+        requests.priorities.remove(&request_id);
         if let Some(token) = requests.active.remove(&request_id) {
             token.cancel();
+            self.queue.1.notify_all();
             return;
         }
         requests.pre_cancelled.insert(request_id);
@@ -144,41 +181,42 @@ impl TaskPool {
         }
     }
 
-    pub fn promote(&self, request_id: u64, priority: Priority) {
+    pub fn set_priority(&self, request_id: u64, priority: Priority) {
+        let mut requests = self.requests.lock().unwrap();
         let (lock, wake) = &*self.queue;
         let mut queue = lock.lock().unwrap();
         let Some(index) = queue
             .iter()
             .position(|queued| queued.request_id == Some(request_id))
         else {
+            if !requests.active.contains_key(&request_id) {
+                requests.priorities.insert(request_id, priority);
+                if requests.priorities.len() > 4096 {
+                    requests.priorities.clear();
+                }
+            }
             return;
         };
         let Some(mut job) = queue.remove(index) else {
             return;
         };
         job.priority = priority;
-        match priority {
-            Priority::Urgent => queue.push_front(job),
-            Priority::Normal => {
-                let index = queue
-                    .iter()
-                    .position(|queued| queued.priority == Priority::Background)
-                    .unwrap_or(queue.len());
-                queue.insert(index, job);
-            }
-            Priority::Background => queue.push_back(job),
-        }
-        wake.notify_one();
+        insert_job(&mut queue, job);
+        wake.notify_all();
     }
 
-    fn run(&self) {
+    fn run(&self, interactive_only: bool) {
         let (lock, wake) = &*self.queue;
         loop {
             let job = {
                 let mut queue = lock.lock().unwrap();
                 loop {
-                    if let Some(job) = queue.pop_front() {
-                        break job;
+                    if let Some(index) = queue.iter().position(|job| {
+                        job.cancel.is_cancelled()
+                            || !interactive_only
+                            || job.priority <= Priority::High
+                    }) {
+                        break queue.remove(index).unwrap();
                     }
                     queue = wake.wait(queue).unwrap();
                 }
@@ -186,6 +224,14 @@ impl TaskPool {
             (job.work)(&job.cancel);
         }
     }
+}
+
+fn insert_job(queue: &mut VecDeque<Job>, job: Job) {
+    let index = queue
+        .iter()
+        .position(|queued| queued.priority > job.priority)
+        .unwrap_or(queue.len());
+    queue.insert(index, job);
 }
 
 pub fn pool() -> &'static Arc<TaskPool> {

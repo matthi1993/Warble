@@ -12,7 +12,7 @@ export const FRAME_RADII = [0, 8, 20] as const;
 export type FrameSize = (typeof FRAME_SIZES)[number];
 export type ProofingSize = (typeof PROOFING_SIZES)[number];
 export type FrameRadius = (typeof FRAME_RADII)[number];
-export type SizingMode = "fit" | "fill" | "hybrid" | "auto";
+export type SizingMode = "fit" | "fill" | "hybrid";
 export type SmoothingQuality = "low" | "medium" | "high";
 
 export interface ViewState {
@@ -22,6 +22,7 @@ export interface ViewState {
   frameColor: BgColor;
   frameRadius: FrameRadius;
   sizing: SizingMode;
+  autoRotate: boolean;
   smoothing: SmoothingQuality;
 }
 
@@ -32,6 +33,7 @@ export const DEFAULT_VIEW_STATE: ViewState = {
   frameColor: "white",
   frameRadius: 0,
   sizing: "fit",
+  autoRotate: false,
   smoothing: "high",
 };
 
@@ -43,6 +45,7 @@ interface PersistedViewState {
   frameColor?: string | null;
   frameRadius?: number | null;
   sizing?: string | null;
+  autoRotate?: boolean | null;
   smoothing?: string | null;
 }
 
@@ -59,7 +62,7 @@ function coerceFrameRadius(v: number | null | undefined): FrameRadius | null {
   return FRAME_RADII.find((radius) => radius === v) ?? null;
 }
 function coerceSizing(v: string | null | undefined): SizingMode | null {
-  return v === "fit" || v === "fill" || v === "hybrid" || v === "auto" ? v : null;
+  return v === "fit" || v === "fill" || v === "hybrid" ? v : null;
 }
 function coerceSmoothing(v: string | null | undefined): SmoothingQuality | null {
   return v === "low" || v === "medium" || v === "high" ? v : null;
@@ -76,9 +79,8 @@ export async function loadViewState(): Promise<Partial<ViewState>> {
         ?? (persisted.fit === "tight" ? 12 : persisted.fit === "proof" ? 48 : 0),
       frameColor: coerceBg(persisted.frameColor) ?? DEFAULT_VIEW_STATE.frameColor,
       frameRadius: coerceFrameRadius(persisted.frameRadius) ?? DEFAULT_VIEW_STATE.frameRadius,
-      ...(coerceSizing(persisted.sizing)
-        ? { sizing: coerceSizing(persisted.sizing)! }
-        : {}),
+      sizing: coerceSizing(persisted.sizing) ?? DEFAULT_VIEW_STATE.sizing,
+      autoRotate: persisted.autoRotate ?? persisted.sizing === "auto",
       ...(coerceSmoothing(persisted.smoothing)
         ? { smoothing: coerceSmoothing(persisted.smoothing)! }
         : {}),

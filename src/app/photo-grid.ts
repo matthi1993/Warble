@@ -451,6 +451,9 @@ export class PfPhotoGrid extends LitElement {
   private selectedPaths = new Set<string>();
 
   private selectionAnchor: string | null = null;
+  private publishedSelection: string[] = [];
+  private publishedSelectionPhotos: Photo[] | null = null;
+  private publishedSelectedPaths: ReadonlySet<string> | null = null;
   private touchSelectionMode = false;
 
   getSelectionPaths(): string[] {
@@ -489,7 +492,7 @@ export class PfPhotoGrid extends LitElement {
         this.selectedPaths = new Set([e.detail.path]);
         this.selectionAnchor = e.detail.path;
       }
-    } else if (e.detail.toggle || (e.detail.touch && this.touchSelectionMode) || this.selectedPaths.has(e.detail.path)) {
+    } else if (e.detail.toggle || (e.detail.touch && this.touchSelectionMode)) {
       const next = new Set(this.selectedPaths);
       if (next.has(e.detail.path)) next.delete(e.detail.path);
       else next.add(e.detail.path);
@@ -592,7 +595,11 @@ export class PfPhotoGrid extends LitElement {
 
   private unsubscribeRatings: (() => void) | null = null;
   private moreObserver: IntersectionObserver | null = null;
-  private renderedPhotoSet = "";
+  private renderedPhotoSet = new Set<string>();
+  private filterInputs: readonly unknown[] = [];
+  private filteredPhotoCache: Photo[] = [];
+  private groupedPhotos: Photo[] | null = null;
+  private dayGroupCache: PhotoDayGroup[] = [];
 
   @state()
   private visibleCountByDay = new Map<string, number>();
@@ -635,8 +642,9 @@ export class PfPhotoGrid extends LitElement {
 
   protected updated(changed: Map<string, unknown>): void {
     if (changed.has("photos")) {
-      const photoSet = this.photos.map((photo) => photo.path).join("\u0000");
-      if (photoSet !== this.renderedPhotoSet) {
+      const photoSet = new Set(this.photos.map((photo) => photo.path));
+      if (photoSet.size !== this.renderedPhotoSet.size ||
+        [...photoSet].some((path) => !this.renderedPhotoSet.has(path))) {
         this.renderedPhotoSet = photoSet;
         this.touchSelectionMode = false;
         this.collapsedDays = new Set();
@@ -671,6 +679,18 @@ export class PfPhotoGrid extends LitElement {
       this.selectionFromClick = false;
     }
     this.observeLoadMoreControls();
+    const filtered = this.filteredPhotos;
+    if (filtered === this.publishedSelectionPhotos && this.selectedPaths === this.publishedSelectedPaths) return;
+    this.publishedSelectionPhotos = filtered;
+    this.publishedSelectedPaths = this.selectedPaths;
+    const paths = this.getSelectionPaths();
+    if (paths.length !== this.publishedSelection.length ||
+      paths.some((path, index) => path !== this.publishedSelection[index])) {
+      this.publishedSelection = paths;
+      this.dispatchEvent(new CustomEvent("photo-selection-change", {
+        detail: { paths }, bubbles: true, composed: true,
+      }));
+    }
   }
 
   protected firstUpdated(): void {
@@ -680,9 +700,17 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private get filteredPhotos(): Photo[] {
-    // Keep a reactive dependency on `ratingsTick` so Lit re-renders
-    // when ratings change.
-    void this.ratingsTick;
+    const inputs = [this.photos, this.ratingsTick, this.minStars, this.activeLabels,
+      this.activeTypes, this.cameraFilter, this.lensFilter, this.minFocalLength,
+      this.maxFocalLength, this.startDate, this.endDate, this.filterMetadataLoading];
+    if (inputs.some((input, index) => input !== this.filterInputs[index])) {
+      this.filterInputs = inputs;
+      this.filteredPhotoCache = this.filterPhotos();
+    }
+    return this.filteredPhotoCache;
+  }
+
+  private filterPhotos(): Photo[] {
     if (!this.filtersActive) {
       return this.photos;
     }
@@ -759,6 +787,7 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private getDayGroups(photos: Photo[]): PhotoDayGroup[] {
+    if (photos === this.groupedPhotos) return this.dayGroupCache;
     const groups = new Map<string, Photo[]>();
     for (const photo of photos) {
       const date = photo.filterInfo?.dateTaken ?? null;
@@ -768,7 +797,8 @@ export class PfPhotoGrid extends LitElement {
       else groups.set(key, [photo]);
     }
 
-    return [...groups.entries()]
+    this.groupedPhotos = photos;
+    return this.dayGroupCache = [...groups.entries()]
       .map(([key, photos]) => ({ date: key === "undated" ? null : key, photos }))
       .sort((a, b) => {
         if (a.date === null) return 1;

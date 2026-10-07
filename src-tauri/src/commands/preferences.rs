@@ -138,6 +138,8 @@ pub struct ViewState {
     pub frame_radius: Option<u32>,
     #[serde(default)]
     pub sizing: Option<String>,
+    #[serde(default, rename = "autoRotate")]
+    pub auto_rotate: Option<bool>,
     #[serde(default)]
     pub smoothing: Option<String>,
 }

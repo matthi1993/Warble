@@ -80,7 +80,6 @@ export const fullViewStyles = css`
     min-height: 32px;
     box-sizing: border-box;
   }
-  .bottombar pf-view-mode-switch { margin-left: auto; }
   .bottombar .menu-popup {
     top: auto;
     bottom: calc(100% + 6px);

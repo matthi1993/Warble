@@ -5,18 +5,80 @@ import {
   cancelTaskRequest,
   isTaskCancellation,
   nextRequestId,
-  promoteTaskRequest,
+  setTaskRequestPriority,
   type TaskHandle,
   type TaskPriority,
 } from "@services/tasks/task-manager";
 
 const CACHE_LIMIT = 500;
 const cache = new Map<string, ArrayBuffer>();
+const priorityRank: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, background: 3 };
+
+interface ThumbnailResource {
+  cacheReferences: number;
+  imageReferences: number;
+  url: string | null;
+}
+
+const resources = new WeakMap<ArrayBuffer, ThumbnailResource>();
+
+function resourceFor(bytes: ArrayBuffer): ThumbnailResource {
+  let resource = resources.get(bytes);
+  if (!resource) {
+    resource = { cacheReferences: 0, imageReferences: 0, url: null };
+    resources.set(bytes, resource);
+  }
+  return resource;
+}
+
+function releaseUrl(resource: ThumbnailResource): void {
+  if (resource.cacheReferences === 0 && resource.imageReferences === 0 && resource.url) {
+    URL.revokeObjectURL(resource.url);
+    resource.url = null;
+  }
+}
+
+function forget(path: string): void {
+  const bytes = cache.get(path);
+  if (!bytes) return;
+  cache.delete(path);
+  const resource = resourceFor(bytes);
+  resource.cacheReferences--;
+  releaseUrl(resource);
+}
+
+export function getCachedThumbnail(path: string): ArrayBuffer | null {
+  const bytes = cache.get(path);
+  if (!bytes) return null;
+  remember(path, bytes);
+  return bytes;
+}
+
+export interface ThumbnailImage {
+  url: string;
+  release(): void;
+}
+
+export function acquireThumbnailImage(bytes: ArrayBuffer): ThumbnailImage {
+  const resource = resourceFor(bytes);
+  resource.url ??= URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+  resource.imageReferences++;
+  let released = false;
+  return {
+    url: resource.url,
+    release(): void {
+      if (released) return;
+      released = true;
+      resource.imageReferences--;
+      releaseUrl(resource);
+    },
+  };
+}
 
 interface PendingThumbnail {
   promise: Promise<ArrayBuffer>;
   requestId: number;
-  consumers: number;
+  consumers: Map<symbol, TaskPriority>;
   priority: TaskPriority;
   task: TaskHandle;
 }
@@ -24,17 +86,22 @@ interface PendingThumbnail {
 const pending = new Map<string, PendingThumbnail>();
 
 function remember(path: string, bytes: ArrayBuffer): void {
-  if (cache.has(path)) cache.delete(path);
+  if (cache.get(path) === bytes) cache.delete(path);
+  else {
+    forget(path);
+    resourceFor(bytes).cacheReferences++;
+  }
   cache.set(path, bytes);
   while (cache.size > CACHE_LIMIT) {
     const oldest = cache.keys().next().value as string | undefined;
     if (oldest === undefined) break;
-    cache.delete(oldest);
+    forget(oldest);
   }
 }
 
 export interface ThumbnailHandle {
   promise: Promise<ArrayBuffer>;
+  setPriority(priority: TaskPriority): void;
   cancel(): void;
 }
 
@@ -47,16 +114,15 @@ export function requestThumbnail(
   urgent = false,
   requestedPriority?: TaskPriority
 ): ThumbnailHandle {
-  const cached = cache.get(path);
-  if (cached !== undefined) {
-    remember(path, cached);
-    return { promise: Promise.resolve(cached), cancel() {} };
+  const cached = getCachedThumbnail(path);
+  if (cached !== null) {
+    return { promise: Promise.resolve(cached), setPriority() {}, cancel() {} };
   }
 
+  const priority = requestedPriority ?? (urgent ? "urgent" : "high");
   let entry = pending.get(path);
   if (!entry) {
     const requestId = nextRequestId();
-    const priority = requestedPriority ?? (urgent ? "urgent" : "normal");
     const task = beginTask({
       kind: "thumbnail",
       label: "Generating thumbnail",
@@ -65,14 +131,13 @@ export function requestThumbnail(
     });
     entry = {
       requestId,
-      consumers: 0,
+      consumers: new Map(),
       priority,
       task,
       promise: invoke<ArrayBuffer>("get_thumbnail", {
         photoPath: path,
         requestId,
-        urgent,
-        background: priority === "background",
+        priority,
       })
         .then((bytes) => {
           if (pending.get(path) === entry) remember(path, bytes);
@@ -88,33 +153,37 @@ export function requestThumbnail(
         }),
     };
     pending.set(path, entry);
-  } else {
-    const priority = requestedPriority ?? (urgent ? "urgent" : "normal");
-    const rank: Record<TaskPriority, number> = {
-      urgent: 0,
-      high: 1,
-      normal: 2,
-      background: 3,
-    };
-    if (rank[priority] < rank[entry.priority]) {
-      entry.priority = priority;
-      entry.task.update({ priority });
-      promoteTaskRequest(entry.requestId, priority === "urgent");
-    }
   }
 
-  entry.consumers += 1;
+  const captured = entry;
+  const consumer = Symbol();
+  const updatePriority = (): void => {
+    const priorities = [...captured.consumers.values()];
+    const next = priorities.sort((a, b) => priorityRank[a] - priorityRank[b])[0];
+    if (!next || next === captured.priority || pending.get(path) !== captured) return;
+    captured.priority = next;
+    captured.task.update({ priority: next });
+    setTaskRequestPriority(captured.requestId, next);
+  };
+  captured.consumers.set(consumer, priority);
+  updatePriority();
   let released = false;
   return {
-    promise: entry.promise,
+    promise: captured.promise,
+    setPriority(priority): void {
+      if (released) return;
+      captured.consumers.set(consumer, priority);
+      updatePriority();
+    },
     cancel(): void {
       if (released) return;
       released = true;
-      entry!.consumers -= 1;
-      if (entry!.consumers === 0) {
-        cancelTaskRequest(entry!.requestId);
-        if (pending.get(path) === entry) pending.delete(path);
-      }
+      captured.consumers.delete(consumer);
+      if (pending.get(path) !== captured) return;
+      if (captured.consumers.size === 0) {
+        cancelTaskRequest(captured.requestId);
+        pending.delete(path);
+      } else updatePriority();
     },
   };
 }
@@ -133,7 +202,7 @@ export function prefetchThumbnails(paths: readonly string[]): () => void {
       if (cancelled) return;
       if (isVideoPath(path)) continue;
       if (cache.has(path)) continue;
-      current = requestThumbnail(path, false, "background");
+      current = requestThumbnail(path, false, "normal");
       try {
         await current.promise;
       } catch (error) {
@@ -160,12 +229,12 @@ export function isCancellation(error: unknown): boolean {
 
 /** Drop renderer-resident bytes. Existing requests finish or are cancelled by their owners. */
 export function dropAllThumbnailState(): void {
-  cache.clear();
+  for (const path of cache.keys()) forget(path);
 }
 
 export function invalidateThumbnails(paths: readonly string[]): void {
   for (const path of paths) {
-    cache.delete(path);
+    forget(path);
     const entry = pending.get(path);
     if (entry) {
       cancelTaskRequest(entry.requestId);

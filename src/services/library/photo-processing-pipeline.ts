@@ -17,9 +17,9 @@ export class PhotoProcessingPipeline {
   private cancelThumbnailWarmup: (() => void) | null = null;
   private onLoadingChange: ((loading: boolean) => void) | null = null;
   private onMetadata: ((results: readonly FilterMetadataResult[]) => void) | null = null;
-  private currentPhotoPaths: (() => readonly string[]) | null = null;
   private readonly pending = new Set<string>();
-  private readonly inFlight = new Set<string>();
+  private readonly inFlight = new Map<string, number>();
+  private readonly revisions = new Map<string, number>();
   private running = false;
   private activeGeneration = 0;
 
@@ -28,13 +28,22 @@ export class PhotoProcessingPipeline {
   }
 
   invalidate(paths: readonly string[]): void {
-    for (const path of paths) this.metadata.delete(path);
+    for (const path of paths) {
+      this.metadata.delete(path);
+      this.revisions.set(path, (this.revisions.get(path) ?? 0) + 1);
+      if (this.inFlight.has(path)) this.pending.add(path);
+    }
+  }
+
+  missingMetadataPaths(photos: readonly Photo[]): string[] {
+    return photos.filter((photo) => !photo.filterInfo && !this.metadata.has(photo.path))
+      .map((photo) => photo.path);
   }
 
   enrich(photos: Photo[]): Photo[] {
     return photos.map((photo) => {
       const filterInfo = this.metadata.get(photo.path) ?? photo.filterInfo;
-      return filterInfo ? { ...photo, filterInfo } : photo;
+      return filterInfo && filterInfo !== photo.filterInfo ? { ...photo, filterInfo } : photo;
     });
   }
 
@@ -46,11 +55,13 @@ export class PhotoProcessingPipeline {
   ): void {
     this.onLoadingChange = onLoadingChange;
     this.onMetadata = onMetadata;
-    this.currentPhotoPaths = currentPhotoPaths;
+    this.cancelThumbnailWarmup?.();
+    this.cancelThumbnailWarmup = prefetchThumbnails(currentPhotoPaths().slice(0, THUMBNAIL_WARM_LIMIT));
     this.pending.clear();
     for (const photo of photos) {
       if (!photo.filterInfo && !this.metadata.has(photo.path) &&
-        (!this.inFlight.has(photo.path) || this.activeGeneration !== this.generation)) {
+        (this.inFlight.get(photo.path) !== (this.revisions.get(photo.path) ?? 0) ||
+          this.activeGeneration !== this.generation)) {
         this.pending.add(photo.path);
       }
     }
@@ -76,7 +87,6 @@ export class PhotoProcessingPipeline {
     this.onLoadingChange?.(false);
     this.onLoadingChange = null;
     this.onMetadata = null;
-    this.currentPhotoPaths = null;
   }
 
   private async run(generation: number): Promise<void> {
@@ -100,9 +110,12 @@ export class PhotoProcessingPipeline {
           batch.push(path);
           if (batch.length === (completed === 0 ? 4 : METADATA_BATCH_SIZE)) break;
         }
+        const revisions = new Map<string, number>();
         for (const path of batch) {
           this.pending.delete(path);
-          this.inFlight.add(path);
+          const revision = this.revisions.get(path) ?? 0;
+          revisions.set(path, revision);
+          this.inFlight.set(path, revision);
         }
         const missing = batch.filter((path) => !this.metadata.has(path));
         const requestId = nextRequestId();
@@ -113,8 +126,9 @@ export class PhotoProcessingPipeline {
             requestId,
           }) : [];
           if (generation !== this.generation) return;
-          this.seed(results);
-          if (results.length) this.onMetadata?.(results);
+          const current = results.filter(({ path }) => revisions.get(path) === (this.revisions.get(path) ?? 0));
+          this.seed(current);
+          if (current.length) this.onMetadata?.(current);
         } catch (error) {
           if (generation !== this.generation) return;
           failed = true;
@@ -138,11 +152,6 @@ export class PhotoProcessingPipeline {
         this.running = true;
         void this.run(this.generation);
       }
-    }
-    if (generation === this.generation) {
-      this.cancelThumbnailWarmup = prefetchThumbnails(
-        this.currentPhotoPaths?.().slice(0, THUMBNAIL_WARM_LIMIT) ?? [],
-      );
     }
   }
 }

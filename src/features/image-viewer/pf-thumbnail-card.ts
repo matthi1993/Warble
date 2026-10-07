@@ -2,7 +2,10 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
   isCancellation,
+  acquireThumbnailImage,
+  getCachedThumbnail,
   requestThumbnail,
+  type ThumbnailImage,
   type ThumbnailHandle,
 } from "@services/images/thumbnail-service";
 import "@ui/icons/pf-icon";
@@ -193,8 +196,11 @@ export class PfThumbnailCard extends LitElement {
   private lastTouchTap = 0;
 
   private observer: IntersectionObserver | null = null;
+  private visibilityObserver: IntersectionObserver | null = null;
+  private visible = false;
   private loadedPath: string | null = null;
   private pending: ThumbnailHandle | null = null;
+  private thumbnailImage: ThumbnailImage | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -224,6 +230,9 @@ export class PfThumbnailCard extends LitElement {
     this.cancelLongPress();
     this.observer?.disconnect();
     this.observer = null;
+    this.visibilityObserver?.disconnect();
+    this.visibilityObserver = null;
+    this.visible = false;
     this.pending?.cancel();
     this.pending = null;
     this.clearThumbnailUrl();
@@ -249,13 +258,30 @@ export class PfThumbnailCard extends LitElement {
 
   private startObserving() {
     this.observer?.disconnect();
+    this.visibilityObserver?.disconnect();
+    const cached = getCachedThumbnail(this.path);
+    if (cached) {
+      this.showThumbnail(cached, this.path);
+      return;
+    }
+    this.visible = false;
+    this.visibilityObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        this.visible = entry.isIntersecting;
+        this.pending?.setPriority(this.visible ? "high" : "normal");
+        if (this.visible) void this.loadThumbnail();
+      }
+    });
+    this.visibilityObserver.observe(this);
     this.observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
-            this.observer?.disconnect();
-            this.observer = null;
             void this.loadThumbnail();
+          } else if (!this.visible && this.pending) {
+            this.pending.cancel();
+            this.pending = null;
+            this.loading = false;
           }
         }
       },
@@ -285,19 +311,12 @@ export class PfThumbnailCard extends LitElement {
       }
       return;
     }
-    const handle = requestThumbnail(requestedPath);
+    const handle = requestThumbnail(requestedPath, false, this.visible ? "high" : "normal");
     this.pending = handle;
     try {
       const bytes = await handle.promise;
       if (this.path !== requestedPath || this.pending !== handle) return;
-      this.clearThumbnailUrl();
-      this.thumbnailUrl = URL.createObjectURL(
-        new Blob([bytes], { type: "image/jpeg" })
-      );
-      this.loadedPath = requestedPath;
-      this.dispatchEvent(
-        new CustomEvent("thumbnail-load", { bubbles: true, composed: true })
-      );
+      this.showThumbnail(bytes, requestedPath);
     } catch (e) {
       if (isCancellation(e) || this.path !== requestedPath || this.pending !== handle) return;
       this.error = String(e);
@@ -309,13 +328,26 @@ export class PfThumbnailCard extends LitElement {
       if (this.pending === handle) {
         this.pending = null;
         this.loading = false;
+        if (this.loadedPath === requestedPath) {
+          this.observer?.disconnect();
+          this.visibilityObserver?.disconnect();
+        }
       }
     }
   }
 
   private clearThumbnailUrl(): void {
-    if (this.thumbnailUrl) URL.revokeObjectURL(this.thumbnailUrl);
+    this.thumbnailImage?.release();
+    this.thumbnailImage = null;
     this.thumbnailUrl = null;
+  }
+
+  private showThumbnail(bytes: ArrayBuffer, path: string): void {
+    this.clearThumbnailUrl();
+    this.thumbnailImage = acquireThumbnailImage(bytes);
+    this.thumbnailUrl = this.thumbnailImage.url;
+    this.loadedPath = path;
+    this.dispatchEvent(new CustomEvent("thumbnail-load", { bubbles: true, composed: true }));
   }
 
   render() {
@@ -348,7 +380,7 @@ export class PfThumbnailCard extends LitElement {
                   if (video.duration > 0.1) video.currentTime = 0.1;
                 }}></video>`
             : this.thumbnailUrl
-            ? html`<img src=${this.thumbnailUrl} alt=${this.filename} draggable="false" loading="lazy" />`
+            ? html`<img src=${this.thumbnailUrl} alt=${this.filename} draggable="false" decoding="async" />`
             : this.error
             ? html`<div class="error" title=${this.error}>
                 <pf-icon name="alert"></pf-icon>

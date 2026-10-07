@@ -1,0 +1,359 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import ts from "typescript";
+
+function loadService(path, dependencies) {
+  return loadSource(`services/${path}`, dependencies);
+}
+
+function loadSource(path, dependencies) {
+  const source = readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, experimentalDecorators: true },
+  });
+  const exports = {};
+  new Function("require", "exports", outputText)((name) => {
+    assert.ok(name in dependencies, `Missing dependency: ${name}`);
+    return dependencies[name];
+  }, exports);
+  return exports;
+}
+
+test("iPad contain and cover fit every viewport orientation, including low resolution previews", () => {
+  const { imageViewScale } = loadSource("features/image-viewer/canvas/view-sizing.ts", {});
+  for (const [width, height] of [[1024, 1366], [1366, 1024], [768, 1024], [1024, 768]]) {
+    for (const dpr of [1, 2, 3]) {
+      const viewport = { width: width * dpr, height: height * dpr };
+      for (const image of [{ width: 320, height: 213 }, { width: 213, height: 320 },
+        { width: 6000, height: 4000 }, { width: 4000, height: 6000 }]) {
+        const contain = imageViewScale("fit", image, viewport);
+        const cover = imageViewScale("fill", image, viewport);
+        const tolerance = 1e-6;
+        assert.ok(image.width * contain <= viewport.width + tolerance);
+        assert.ok(image.height * contain <= viewport.height + tolerance);
+        assert.ok(Math.abs(image.width * contain - viewport.width) < tolerance ||
+          Math.abs(image.height * contain - viewport.height) < tolerance);
+        assert.ok(image.width * cover >= viewport.width - tolerance);
+        assert.ok(image.height * cover >= viewport.height - tolerance);
+      }
+    }
+  }
+});
+
+test("hybrid covers matching portrait and landscape shapes, and contains when cropping would be excessive", () => {
+  const { imageViewScale } = loadSource("features/image-viewer/canvas/view-sizing.ts", {});
+  for (const [image, viewport] of [
+    [{ width: 3000, height: 2000 }, { width: 1366, height: 1024 }],
+    [{ width: 2000, height: 3000 }, { width: 1024, height: 1366 }],
+  ]) {
+    assert.equal(imageViewScale("hybrid", image, viewport), imageViewScale("fill", image, viewport));
+    const flipped = { width: viewport.height, height: viewport.width };
+    assert.equal(imageViewScale("hybrid", image, flipped), imageViewScale("fit", image, flipped));
+  }
+});
+
+test("bulk ratings and labels preserve other values, publish a complete selection, and persist every target", async () => {
+  const calls = [];
+  const domain = loadSource("domain/rating/types.ts", {});
+  const store = loadService("rating/rating-store.ts", {
+    "@tauri-apps/api/core": {
+      invoke: async (_, args) => { calls.push(args); return 123; },
+    },
+    "@domain/rating": domain,
+    "@domain/rating/shortcuts": { KEY_TO_LABEL: { 6: "green" } },
+  });
+  store.setPhotosLabels(["first"], "red");
+  store.setPhotoStars("second", 2);
+  await store.flushPhotoRatings();
+  const snapshots = [];
+  const unsubscribe = store.subscribePhotoRatings((path) => {
+    snapshots.push({ path, first: store.getPhotoRating("first"), second: store.getPhotoRating("second") });
+  });
+  store.setPhotosStars(["first", "second", "first"], 4);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].path, "");
+  assert.equal(snapshots[0].first.rating, 4);
+  assert.equal(snapshots[0].second.rating, 4);
+  assert.equal(store.getPhotoRating("first").label, "red");
+  store.setPhotosLabels(["first", "second"], "blue");
+  assert.equal(store.getPhotoRating("first").rating, 4);
+  assert.equal(store.getPhotoRating("second").rating, 4);
+  unsubscribe();
+  await store.flushPhotoRatings();
+  assert.deepEqual(calls.slice(2).map(({ path, rating, label }) => ({ path, rating, label })), [
+    { path: "first", rating: 4, label: "red" },
+    { path: "second", rating: 4, label: "" },
+    { path: "first", rating: 4, label: "blue" },
+    { path: "second", rating: 4, label: "blue" },
+  ]);
+  store.setPhotosLabels(["first"], "green");
+  store.applyRatingShortcuts(["first", "second"], "6");
+  assert.equal(store.getPhotoRating("first").label, "green");
+  assert.equal(store.getPhotoRating("second").label, "green");
+  store.applyRatingShortcuts(["first", "second"], "6");
+  assert.equal(store.getPhotoRating("first").label, "");
+  assert.equal(store.getPhotoRating("second").label, "");
+  store.setPhotosStars(["first", "second"], 0);
+  await store.flushPhotoRatings();
+  assert.equal(store.getPhotoRating("first").rating, 0);
+  assert.equal(store.getPhotoRating("second").rating, 0);
+  assert.equal(calls.at(-1).label, "");
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+test("right panel applies mixed ratings and labels to the selection, clears shared values, and isolates full view", () => {
+  const domain = loadSource("domain/rating/types.ts", {});
+  const ratings = new Map([
+    ["first", { rating: 4, label: "green" }],
+    ["second", { rating: 2, label: "red" }],
+    ["unselected", { rating: 5, label: "blue" }],
+  ]);
+  const ratingStore = {
+    getPhotoRating: (path) => ratings.get(path),
+    setPhotosStars: (paths, rating) => paths.forEach((path) => ratings.set(path, { ...ratings.get(path), rating })),
+    setPhotosLabels: (paths, label) => paths.forEach((path) => ratings.set(path, { ...ratings.get(path), label })),
+  };
+  const { PfDetailPanel } = loadSource("app/detail-panel.ts", {
+    lit: { LitElement: class {}, css: () => "", html: (strings, ...values) => ({ strings, values }) },
+    "lit/decorators.js": { customElement: () => (target) => target, property: () => () => {}, state: () => () => {} },
+    "@domain/photo": { fileForSelection: () => null },
+    "@domain/exif": { buildExifSections: () => [] },
+    "@domain/rating": domain,
+    "@services/exif/exif-service": {},
+    "@services/rating/rating-store": ratingStore,
+    "@services/library/variant-store": {},
+    "./views/full-view/variant-selector": { currentSelection: () => null },
+    "../ui/controls/pf-icon-button": {},
+    "@features/image-viewer/pf-image-canvas": {},
+    "@features/image-viewer/pf-video-view": {},
+    "@services/images/video-source": { isVideoPath: () => false },
+  });
+  const panel = new PfDetailPanel();
+  panel.photo = { path: "first", filename: "First" };
+  panel.selectionPaths = ["first", "second"];
+  function buttons(template, marker) {
+    if (Array.isArray(template)) return template.flatMap((child) => buttons(child, marker));
+    if (!template?.strings) return [];
+    if (template.strings.join("").includes(marker)) return [template];
+    return template.values.flatMap((child) => buttons(child, marker));
+  }
+  function click(button) {
+    button.values.find((value) => typeof value === "function")();
+  }
+  click(buttons(panel.render(), "★</button>")[3]);
+  assert.equal(ratings.get("first").rating, 4);
+  assert.equal(ratings.get("second").rating, 4);
+  click(buttons(panel.render(), "★</button>")[3]);
+  assert.equal(ratings.get("first").rating, 0);
+  assert.equal(ratings.get("second").rating, 0);
+  click(buttons(panel.render(), "aria-pressed=")[0]);
+  assert.equal(ratings.get("first").label, "green");
+  assert.equal(ratings.get("second").label, "green");
+  click(buttons(panel.render(), "aria-pressed=")[0]);
+  assert.equal(ratings.get("first").label, "");
+  assert.equal(ratings.get("second").label, "");
+  panel.fullViewOpen = true;
+  click(buttons(panel.render(), "★</button>")[4]);
+  assert.equal(ratings.get("first").rating, 5);
+  assert.equal(ratings.get("second").rating, 0);
+  assert.deepEqual(ratings.get("unselected"), { rating: 5, label: "blue" });
+});
+
+function thumbnailServices() {
+  const calls = [];
+  const requests = [];
+  const invoke = (command, args) => {
+    calls.push({ command, ...args });
+    if (command !== "get_thumbnail") return Promise.resolve();
+    const request = deferred();
+    requests.push(request);
+    return request.promise;
+  };
+  const tasks = loadService("tasks/task-manager.ts", { "@tauri-apps/api/core": { invoke } });
+  const thumbnails = loadService("images/thumbnail-service.ts", {
+    "@tauri-apps/api/core": { invoke },
+    "./video-source": { isVideoPath: (path) => path.endsWith(".mov") },
+    "@services/tasks/task-manager": tasks,
+  });
+  return { calls, requests, tasks, thumbnails };
+}
+
+test("shared thumbnails follow the highest live consumer priority", async () => {
+  const { calls, requests, thumbnails } = thumbnailServices();
+  const prefetch = thumbnails.requestThumbnail("photo.jpg", false, "normal");
+  const visible = thumbnails.requestThumbnail("photo.jpg");
+  const opened = thumbnails.requestThumbnail("photo.jpg", true);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(calls.map((call) => call.priority), ["normal", "high", "urgent"]);
+  visible.setPriority("normal");
+  assert.equal(calls.length, 3);
+  opened.cancel();
+  assert.equal(calls.at(-1).priority, "normal");
+  visible.setPriority("high");
+  assert.equal(calls.at(-1).priority, "high");
+  visible.cancel();
+  assert.equal(calls.at(-1).priority, "normal");
+  assert.equal(calls.some((call) => call.command === "cancel_image_request"), false);
+  requests[0].resolve(new ArrayBuffer(8));
+  await prefetch.promise;
+  const count = calls.length;
+  prefetch.cancel();
+  assert.equal(calls.length, count);
+  await thumbnails.requestThumbnail("photo.jpg").promise;
+  assert.equal(requests.length, 1);
+});
+
+test("cancelled thumbnails cannot overwrite a replacement request's cache", async () => {
+  const { calls, requests, thumbnails } = thumbnailServices();
+  const stale = thumbnails.requestThumbnail("photo.jpg");
+  stale.cancel();
+  stale.cancel();
+  assert.equal(calls.filter((call) => call.command === "cancel_image_request").length, 1);
+  const replacement = thumbnails.requestThumbnail("photo.jpg");
+  const freshBytes = new ArrayBuffer(12);
+  requests[1].resolve(freshBytes);
+  await replacement.promise;
+  requests[0].resolve(new ArrayBuffer(4));
+  await stale.promise;
+  assert.equal(await thumbnails.requestThumbnail("photo.jpg").promise, freshBytes);
+});
+
+test("cached thumbnail URLs survive card reuse and stay alive until the last card releases them", async () => {
+  const { requests, thumbnails } = thumbnailServices();
+  const request = thumbnails.requestThumbnail("photo.jpg");
+  const bytes = new ArrayBuffer(8);
+  requests[0].resolve(bytes);
+  await request.promise;
+  assert.equal(thumbnails.getCachedThumbnail("photo.jpg"), bytes);
+  const first = thumbnails.acquireThumbnailImage(bytes);
+  first.release();
+  const second = thumbnails.acquireThumbnailImage(bytes);
+  assert.equal(second.url, first.url);
+  const third = thumbnails.acquireThumbnailImage(bytes);
+  const revoked = [];
+  const revoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => { revoked.push(url); revoke(url); };
+  try {
+    thumbnails.dropAllThumbnailState();
+    assert.equal(thumbnails.getCachedThumbnail("photo.jpg"), null);
+    assert.equal(revoked.length, 0);
+    second.release();
+    assert.equal(revoked.length, 0);
+    third.release();
+    third.release();
+    assert.deepEqual(revoked, [first.url]);
+  } finally {
+    URL.revokeObjectURL = revoke;
+  }
+});
+
+test("auto rotate persists independently of sizing and migrates the old auto mode", async () => {
+  let persisted = { sizing: "auto" };
+  const preferences = loadService("view-state/view-state-service.ts", {
+    "@tauri-apps/api/core": {
+      invoke: async (command, args) => {
+        if (command === "set_view_state") persisted = args.view;
+        return persisted;
+      },
+    },
+  });
+  let view = await preferences.loadViewState();
+  assert.equal(view.sizing, "fit");
+  assert.equal(view.autoRotate, true);
+  await preferences.saveViewState({ ...preferences.DEFAULT_VIEW_STATE, sizing: "hybrid", autoRotate: true });
+  view = await preferences.loadViewState();
+  assert.equal(view.sizing, "hybrid");
+  assert.equal(view.autoRotate, true);
+  await preferences.saveViewState({ ...view, sizing: "fill", autoRotate: false });
+  view = await preferences.loadViewState();
+  assert.equal(view.sizing, "fill");
+  assert.equal(view.autoRotate, false);
+});
+
+test("thumbnail warmup skips videos and stops without cancelling visible consumers", async () => {
+  const { calls, requests, thumbnails } = thumbnailServices();
+  const stop = thumbnails.prefetchThumbnails(["clip.mov", "photo.jpg", "other.jpg"]);
+  const visible = thumbnails.requestThumbnail("photo.jpg");
+  stop();
+  assert.equal(calls.some((call) => call.command === "cancel_image_request"), false);
+  requests[0].resolve(new ArrayBuffer(4));
+  await visible.promise;
+  await Promise.resolve();
+  assert.equal(requests.length, 1);
+});
+
+test("task changes publish one snapshot per microtask", async () => {
+  const { tasks } = thumbnailServices();
+  const snapshots = [];
+  tasks.subscribeTasks((active) => snapshots.push(active));
+  const first = tasks.beginTask({ kind: "thumbnail", label: "First", priority: "normal" });
+  tasks.beginTask({ kind: "thumbnail", label: "Visible", priority: "high" });
+  first.finish();
+  assert.equal(snapshots.length, 1);
+  await Promise.resolve();
+  assert.equal(snapshots.length, 2);
+  assert.deepEqual(snapshots[1].map((task) => task.label), ["Visible"]);
+});
+
+test("metadata warmup starts immediately, reuses known metadata, and rejects stopped results", async () => {
+  const requests = [];
+  const warmed = [];
+  const cancelled = [];
+  let nextId = 1;
+  const { PhotoProcessingPipeline } = loadService("library/photo-processing-pipeline.ts", {
+    "@tauri-apps/api/core": {
+      invoke: (_, args) => {
+        const request = deferred();
+        requests.push({ ...request, ...args });
+        return request.promise;
+      },
+    },
+    "@services/images/thumbnail-service": {
+      prefetchThumbnails: (paths) => { warmed.push(paths); return () => {}; },
+    },
+    "@services/tasks/task-manager": {
+      beginTask: () => ({ update() {}, finish() {} }),
+      nextRequestId: () => nextId++,
+      cancelTaskRequest: (id) => cancelled.push(id),
+    },
+  });
+  const pipeline = new PhotoProcessingPipeline();
+  const photos = [{ path: "known.jpg", filename: "known" }, { path: "new.jpg", filename: "new" }];
+  pipeline.seed([{ path: "known.jpg", dateTaken: "2026-10-07" }]);
+  const results = [];
+  const start = () => pipeline.start(photos, (batch) => results.push(...batch),
+    () => photos.map((photo) => photo.path), () => {});
+  start();
+  assert.deepEqual(warmed[0], ["known.jpg", "new.jpg"]);
+  assert.deepEqual(requests[0].photoPaths, ["new.jpg"]);
+  pipeline.stop();
+  start();
+  requests[0].resolve([{ path: "new.jpg", dateTaken: "2000-01-01" }]);
+  await Promise.resolve();
+  assert.deepEqual(cancelled, [requests[0].requestId]);
+  assert.equal(results.length, 0);
+  assert.equal(requests.length, 2);
+  requests[1].resolve([{ path: "new.jpg", dateTaken: "2026-10-07" }]);
+  await Promise.resolve();
+  assert.deepEqual(pipeline.missingMetadataPaths(photos), []);
+  assert.equal(results[0].dateTaken, "2026-10-07");
+  start();
+  assert.equal(requests.length, 2);
+  pipeline.invalidate(["new.jpg"]);
+  start();
+  pipeline.invalidate(["new.jpg"]);
+  requests[2].resolve([{ path: "new.jpg", dateTaken: "2000-01-01" }]);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(requests.length, 4);
+  assert.equal(results.length, 1);
+  requests[3].resolve([{ path: "new.jpg", dateTaken: "2026-10-08" }]);
+  await Promise.resolve();
+  assert.equal(pipeline.enrich(photos)[1].filterInfo.dateTaken, "2026-10-08");
+});

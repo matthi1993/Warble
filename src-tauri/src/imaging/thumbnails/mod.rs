@@ -74,14 +74,7 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
-    let cache_key = cache.map(|_| {
-        CacheKeyBuilder::new()
-            .with_source_file(p)
-            .with(TARGET_WIDTH)
-            .with(JPEG_QUALITY)
-            .with(PIPELINE_VERSION)
-            .build()
-    });
+    let cache_key = cache.map(|_| cache_key(p));
 
     if let (Some(c), Some(k)) = (cache, cache_key) {
         if let Some(bytes) = c.get(&k) {
@@ -112,6 +105,19 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec
         c.put(&k, &jpeg_bytes);
     }
     Ok(jpeg_bytes)
+}
+
+fn cache_key(path: &Path) -> crate::caching::CacheKey {
+    CacheKeyBuilder::new()
+        .with_source_file(path)
+        .with(TARGET_WIDTH)
+        .with(JPEG_QUALITY)
+        .with(PIPELINE_VERSION)
+        .build()
+}
+
+pub fn cached(path: &str) -> Option<Vec<u8>> {
+    DISK_CACHE.get()?.get(&cache_key(Path::new(path)))
 }
 
 fn render_from_jpeg_file(

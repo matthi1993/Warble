@@ -1,4 +1,3 @@
-import "../../../ui/controls/pf-view-mode-switch";
 /**
  * Render helpers for the full-view toolbar and bottombar.
  *
@@ -152,6 +151,7 @@ export interface BottombarOptions {
   frameColor: BgColor;
   frameRadius: FrameRadius;
   sizing: ImageSizing;
+  autoRotate: boolean;
   smoothing: ImageSmoothingQuality;
   openMenu: FullViewMenu | null;
   bgCss: (bg: BgColor) => string;
@@ -163,13 +163,13 @@ export interface BottombarOptions {
   onSetFrameColor: (color: BgColor) => void;
   onSetFrameRadius: (radius: FrameRadius) => void;
   onSetSizing: (s: ImageSizing) => void;
+  onToggleAutoRotate: () => void;
   onSetSmoothing: (q: ImageSmoothingQuality) => void;
   postProcessEnabled: boolean;
   videoActive: boolean;
   onTogglePostProcess: () => void;
   onToggleImmersive: () => void;
   onPlaySlideshow: () => void;
-  onClose: () => void;
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
@@ -291,12 +291,17 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
                 type="button"
                 aria-pressed=${sizing === "hybrid"}
                 @click=${() => opts.onSetSizing("hybrid")}
-                title="Cover for wide landscape (≥3:2), contain otherwise"
+                title="Cover when cropping is modest; contain otherwise"
               >
                 Hybrid
               </button>
-              <button class="menu-item" type="button" aria-pressed=${sizing === "auto"}
-                @click=${() => opts.onSetSizing("auto")}
+            </div>
+          </div>
+          <div class="settings-section" role="group" aria-label="Orientation">
+            <span class="settings-section-label">Orientation</span>
+            <div class="settings-options">
+              <button class="menu-item" type="button" aria-pressed=${opts.autoRotate}
+                @click=${opts.onToggleAutoRotate}
                 title="Rotate photos to match the screen orientation; turn the iPad to view upright">
                 Auto rotate
               </button>
@@ -330,7 +335,6 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
       <button class="menu-trigger" type="button" title="Start slideshow" @click=${opts.onPlaySlideshow}>
         <pf-icon name="play"></pf-icon> Play
       </button>
-      <pf-view-mode-switch mode="image" @view-mode-change=${opts.onClose}></pf-view-mode-switch>
     </div>
   `;
 }

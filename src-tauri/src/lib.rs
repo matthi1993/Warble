@@ -58,7 +58,7 @@ pub fn run() {
             commands::get_full_image_bytes,
             commands::get_hd_image_bytes,
             commands::cancel_image_request,
-            commands::promote_image_request,
+            commands::set_image_request_priority,
             commands::get_exif_metadata,
             commands::set_photo_metadata,
             commands::get_cached_photo_filter_metadata,

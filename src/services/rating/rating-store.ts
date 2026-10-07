@@ -1,7 +1,6 @@
 /**
  * Per-photo star rating (0..=5) and color label store. Persists into
- * the `photo_ratings` SQLite table via Tauri IPC. The original file on
- * disk is never modified.
+ * the `photo_ratings` SQLite table and adjacent XMP sidecars via Tauri IPC.
  */
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -103,38 +102,28 @@ export async function flushPhotoRatings(): Promise<void> {
 }
 
 export function setPhotoStars(path: string, rating: number): void {
-  const next: PhotoRating = {
-    rating: clampRating(rating),
-    label: ratings.get(path)?.label ?? "",
-    ratedAt: Math.floor(Date.now() / 1000),
-  };
-  if (next.rating === 0 && next.label === "") {
-    ratings.delete(path);
-  } else {
-    ratings.set(path, next);
-  }
-  notify(path);
-  persist(path, next);
+  setPhotosStars([path], rating);
 }
 
-export function setPhotoLabel(path: string, label: ColorLabel): void {
-  const next: PhotoRating = {
-    rating: ratings.get(path)?.rating ?? 0,
-    label: sanitizeLabel(label),
-    ratedAt: Math.floor(Date.now() / 1000),
-  };
-  if (next.rating === 0 && next.label === "") {
-    ratings.delete(path);
-  } else {
-    ratings.set(path, next);
-  }
-  notify(path);
-  persist(path, next);
+export function setPhotosStars(paths: readonly string[], rating: number): void {
+  setPhotosRating(paths, { rating: clampRating(rating) });
 }
 
-export function toggleLabel(path: string, label: ColorLabel): void {
-  const cur = ratings.get(path)?.label ?? "";
-  setPhotoLabel(path, cur === label ? "" : label);
+export function setPhotosLabels(paths: readonly string[], label: ColorLabel): void {
+  setPhotosRating(paths, { label: sanitizeLabel(label) });
+}
+
+function setPhotosRating(paths: readonly string[], change: Partial<Pick<PhotoRating, "rating" | "label">>): void {
+  const targets = [...new Set(paths)];
+  const ratedAt = Math.floor(Date.now() / 1000);
+  const values = targets.map((path) => ({ ...getPhotoRating(path), ...change, ratedAt }));
+  for (const [index, path] of targets.entries()) {
+    const next = values[index];
+    if (next.rating === 0 && next.label === "") ratings.delete(path);
+    else ratings.set(path, next);
+  }
+  for (const [index, path] of targets.entries()) persist(path, values[index]);
+  if (targets.length) notify(targets.length === 1 ? targets[0] : "");
 }
 
 /** Apply the rating-or-label keyboard shortcut for `path`. Star keys
@@ -143,14 +132,18 @@ export function toggleLabel(path: string, label: ColorLabel): void {
  * (`6`–`9`) toggle the corresponding color label off when it's
  * already set, otherwise replace whatever label was there. */
 export function applyRatingShortcut(path: string, key: string): boolean {
+  return applyRatingShortcuts([path], key);
+}
+
+export function applyRatingShortcuts(paths: readonly string[], key: string): boolean {
   if (key >= "0" && key <= "5") {
-    const stars = Number(key);
-    setPhotoStars(path, stars);
+    setPhotosStars(paths, Number(key));
     return true;
   }
   const label = KEY_TO_LABEL[key];
   if (label) {
-    toggleLabel(path, label);
+    const clear = paths.length > 0 && paths.every((path) => getPhotoRating(path).label === label);
+    setPhotosLabels(paths, clear ? "" : label);
     return true;
   }
   return false;

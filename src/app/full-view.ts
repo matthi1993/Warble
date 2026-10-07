@@ -143,6 +143,9 @@ export class PfFullView extends LitElement {
  private sizing: ImageSizing = DEFAULT_VIEW_STATE.sizing;
 
  @state()
+ private autoRotate = DEFAULT_VIEW_STATE.autoRotate;
+
+ @state()
  private smoothing: SmoothingQuality = DEFAULT_VIEW_STATE.smoothing;
 
   /** Suppresses the persistence side-effect during the initial hydrate. */
@@ -366,7 +369,7 @@ export class PfFullView extends LitElement {
     }
     if (
       (changed.has("bg") || changed.has("proofingSize") || changed.has("frameSize") || changed.has("frameColor") ||
-        changed.has("frameRadius") || changed.has("sizing") || changed.has("smoothing")) &&
+        changed.has("frameRadius") || changed.has("sizing") || changed.has("autoRotate") || changed.has("smoothing")) &&
       this.hydrated
     ) {
       void saveViewState({
@@ -376,6 +379,7 @@ export class PfFullView extends LitElement {
         frameColor: this.frameColor,
         frameRadius: this.frameRadius,
         sizing: this.sizing,
+        autoRotate: this.autoRotate,
         smoothing: this.smoothing,
       });
     }
@@ -438,6 +442,7 @@ export class PfFullView extends LitElement {
     if (persisted.frameColor) this.frameColor = persisted.frameColor;
     if (persisted.frameRadius !== undefined) this.frameRadius = persisted.frameRadius;
     if (persisted.sizing) this.sizing = persisted.sizing;
+    if (persisted.autoRotate !== undefined) this.autoRotate = persisted.autoRotate;
    if (persisted.smoothing) this.smoothing = persisted.smoothing;
    this.hydrated = true;
   }
@@ -734,12 +739,6 @@ export class PfFullView extends LitElement {
 
   private onSlideVideoError = (event: CustomEvent<{ path: string }>) => {
     if (this.presenting && event.detail.path === this.activeVideoPath) this.stopPresentation();
-  };
-
-  private close = () => {
-    this.dispatchEvent(
-      new CustomEvent("full-view-close", { bubbles: true, composed: true })
-    );
   };
 
   private toggleFullscreen = () => {
@@ -1467,6 +1466,7 @@ export class PfFullView extends LitElement {
             .frameColor=${this.bgCss(this.frameColor)}
             .frameRadius=${this.frameRadius}
             .sizing=${sizing}
+            .autoRotate=${this.autoRotate}
            .smoothingQuality=${this.smoothing}
            .cropMode=${cropMode}
             .cropAspect=${cropAspect}
@@ -1514,6 +1514,7 @@ export class PfFullView extends LitElement {
       frameColor: this.frameColor,
       frameRadius: this.frameRadius,
        sizing: this.sizing,
+       autoRotate: this.autoRotate,
        smoothing: this.smoothing,
        openMenu: this.openMenu,
        bgCss: (b) => this.bgCss(b),
@@ -1525,11 +1526,11 @@ export class PfFullView extends LitElement {
       onSetFrameColor: this.setFrameColor,
       onSetFrameRadius: this.setFrameRadius,
        onSetSizing: this.setSizing,
+       onToggleAutoRotate: () => { this.autoRotate = !this.autoRotate; },
        onSetSmoothing: this.setSmoothing,
       postProcessEnabled: !videoPath && getPostProcess().enabled,
       videoActive: !!videoPath,
       onPlaySlideshow: this.requestPresentation,
-      onClose: this.close,
       onToggleImmersive: this.toggleImmersive,
         onTogglePostProcess: () => {
           if (!videoPath) setPostProcessEnabled(!getPostProcess().enabled);
