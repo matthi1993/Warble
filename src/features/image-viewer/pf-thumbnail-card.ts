@@ -32,6 +32,23 @@ export class PfThumbnailCard extends LitElement {
       transition: border-color var(--pf-transition), box-shadow var(--pf-transition),
         transform var(--pf-transition);
     }
+    .drag-handle {
+      display: none;
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      z-index: 4;
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      touch-action: none;
+    }
+    @media (pointer: coarse) {
+      .drag-handle { display: grid; place-items: center; }
+    }
     .card:hover {
       border-color: var(--pf-accent);
     }
@@ -173,6 +190,7 @@ export class PfThumbnailCard extends LitElement {
   private suppressClickUntil = 0;
   private suppressContextMenuUntil = 0;
   private lastPointerType = "mouse";
+  private lastTouchTap = 0;
 
   private observer: IntersectionObserver | null = null;
   private loadedPath: string | null = null;
@@ -306,18 +324,22 @@ export class PfThumbnailCard extends LitElement {
     const livePhoto = hasMotion && !isVideoPath(this.path);
     return html`
       <div
-        class=\"card\"
+        class="card"
         draggable="false"
         @pointerdown=${this.onPointerDown}
         @pointermove=${this.onPointerMove}
         @pointerup=${this.onPointerUp}
-        @pointercancel=${this.onPointerUp}
+        @pointercancel=${this.cancelLongPress}
         @pointerleave=${this.cancelLongPress}
         @click=${this.onClick}
         @dblclick=${this.onDblClick}
         @contextmenu=${this.onContextMenu}
       >
         <div class="thumb">
+          <button class="drag-handle" type="button" aria-label="Drag photo to album" title="Drag to album"
+            @click=${(event: Event) => event.stopPropagation()}>
+            <pf-icon name="grid"></pf-icon>
+          </button>
           ${this.selected && this.showSelectionCheck ? html`<span class="selection-check" aria-label="Selected">✓</span>` : null}
           ${this.videoUrl
             ? html`<video src=${this.videoUrl} draggable="false" muted playsinline preload="metadata"
@@ -364,6 +386,16 @@ export class PfThumbnailCard extends LitElement {
 
   private onClick = (e: MouseEvent) => {
     if (Date.now() < this.suppressClickUntil) return;
+    if (e.type === "click" && this.lastPointerType === "touch") return;
+    if (this.lastPointerType === "touch") {
+      const now = performance.now();
+      if (this.lastTouchTap && now - this.lastTouchTap < 350) {
+        this.lastTouchTap = 0;
+        this.onDblClick(e);
+        return;
+      }
+      this.lastTouchTap = now;
+    }
     this.dispatchEvent(
       new CustomEvent("photo-selected", {
         detail: { path: this.path, filename: this.filename, shiftKey: e.shiftKey, toggle: e.metaKey || e.ctrlKey, touch: this.lastPointerType === "touch" },
@@ -375,6 +407,8 @@ export class PfThumbnailCard extends LitElement {
 
   private onDblClick = (e: MouseEvent) => {
     e.preventDefault();
+    if (e.type === "dblclick" && this.lastPointerType === "touch") return;
+    if (Date.now() < this.suppressClickUntil) return;
     this.dispatchEvent(
       new CustomEvent("photo-open", {
         detail: { path: this.path, filename: this.filename },
@@ -414,6 +448,7 @@ export class PfThumbnailCard extends LitElement {
     this.lastPointerType = event.pointerType;
     if (event.button !== 0 || !event.isPrimary || (event.target as Element).closest("pf-rating-overlay")) return;
     this.cancelLongPress();
+    this.touchDragArmed = (event.target as Element).closest(".drag-handle") !== null;
     this.longPressStart = { x: event.clientX, y: event.clientY, time: performance.now() };
     try {
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -422,6 +457,7 @@ export class PfThumbnailCard extends LitElement {
     }
     if (event.pointerType === "mouse") return;
     if (event.pointerType === "touch") {
+      if (this.touchDragArmed) return;
       this.touchDragTimer = window.setTimeout(() => { this.touchDragArmed = true; }, 420);
       return;
     }
@@ -439,6 +475,7 @@ export class PfThumbnailCard extends LitElement {
     const start = this.longPressStart;
     if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > (event.pointerType === "mouse" ? 6 : 10)) {
       if (event.pointerType === "mouse" || (this.touchDragArmed && event.pointerType === "touch")) {
+        this.lastTouchTap = 0;
         this.suppressClickUntil = Date.now() + 700;
         this.suppressContextMenuUntil = Date.now() + 700;
         this.cancelLongPress();
@@ -453,7 +490,7 @@ export class PfThumbnailCard extends LitElement {
     }
   };
 
-  private onPointerUp = (): void => {
+  private onPointerUp = (event: PointerEvent): void => {
     const start = this.longPressStart;
     if (this.lastPointerType === "touch" && start && performance.now() - start.time >= 550) {
       this.suppressClickUntil = Date.now() + 700;
@@ -461,6 +498,10 @@ export class PfThumbnailCard extends LitElement {
       this.cancelLongPress();
       this.openContextMenu(start.x, start.y, true);
       return;
+    }
+    if (this.lastPointerType === "touch" && start) {
+      event.preventDefault();
+      this.onClick(event);
     }
     if (this.suppressClickUntil > Date.now()) this.suppressClickUntil = Date.now() + 700;
     this.cancelLongPress();

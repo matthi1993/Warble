@@ -1436,7 +1436,6 @@ export class PfFullView extends LitElement {
       openingRaw: this.openingRaw,
        showFullscreenToggle: !this.isIPad(),
        onToggleFullscreen: this.toggleFullscreen,
-       onClose: this.close,
      })}
      </div>
      <div class="stage-row">
@@ -1530,6 +1529,7 @@ export class PfFullView extends LitElement {
       postProcessEnabled: !videoPath && getPostProcess().enabled,
       videoActive: !!videoPath,
       onPlaySlideshow: this.requestPresentation,
+      onClose: this.close,
       onToggleImmersive: this.toggleImmersive,
         onTogglePostProcess: () => {
           if (!videoPath) setPostProcessEnabled(!getPostProcess().enabled);

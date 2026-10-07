@@ -5,7 +5,7 @@
  * it composes.
  */
 
-export type ImageSizing = "fit" | "fill" | "hybrid";
+export type ImageSizing = "fit" | "fill" | "hybrid" | "auto";
 export type ImageSmoothingQuality = "low" | "medium" | "high";
 
 /** Pending crop frame state, exposed via `getCropFrame()`. */

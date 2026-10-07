@@ -1,3 +1,4 @@
+import "../../../ui/controls/pf-view-mode-switch";
 /**
  * Render helpers for the full-view toolbar and bottombar.
  *
@@ -58,7 +59,6 @@ export interface ToolbarOptions {
   openingRaw: boolean;
   showFullscreenToggle: boolean;
   onToggleFullscreen: () => void;
-  onClose: () => void;
 }
 
 export function renderToolbar(opts: ToolbarOptions): TemplateResult {
@@ -138,16 +138,7 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
               @click=${opts.onToggleFullscreen}
             ></pf-icon-button>`
           : null}
-        <button
-          class="close-btn"
-          type="button"
-          aria-label="Back to grid"
-          title="Back to grid (Esc)"
-          @click=${opts.onClose}
-          @pointerdown=${(e: Event) => e.stopPropagation()}
-        >
-          <pf-icon name="grid"></pf-icon>
-        </button>
+
       </div>
     </div>
   `;
@@ -178,6 +169,7 @@ export interface BottombarOptions {
   onTogglePostProcess: () => void;
   onToggleImmersive: () => void;
   onPlaySlideshow: () => void;
+  onClose: () => void;
 }
 
 export function renderBottombar(opts: BottombarOptions): TemplateResult {
@@ -303,6 +295,11 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
               >
                 Hybrid
               </button>
+              <button class="menu-item" type="button" aria-pressed=${sizing === "auto"}
+                @click=${() => opts.onSetSizing("auto")}
+                title="Rotate photos to match the screen orientation; turn the iPad to view upright">
+                Auto rotate
+              </button>
             </div>
           </div>
           <div class="settings-section" role="group" aria-label="Quality">
@@ -333,6 +330,7 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
       <button class="menu-trigger" type="button" title="Start slideshow" @click=${opts.onPlaySlideshow}>
         <pf-icon name="play"></pf-icon> Play
       </button>
+      <pf-view-mode-switch mode="image" @view-mode-change=${opts.onClose}></pf-view-mode-switch>
     </div>
   `;
 }

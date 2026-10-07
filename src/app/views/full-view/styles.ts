@@ -80,6 +80,7 @@ export const fullViewStyles = css`
     min-height: 32px;
     box-sizing: border-box;
   }
+  .bottombar pf-view-mode-switch { margin-left: auto; }
   .bottombar .menu-popup {
     top: auto;
     bottom: calc(100% + 6px);
@@ -319,30 +320,6 @@ export const fullViewStyles = css`
   :host([immersive][controls-hidden]) .fv-rating-overlay {
     visibility: hidden;
   }
-  .close-btn {
-    background: var(--pf-surface-2);
-    color: var(--pf-text);
-    border: 1px solid var(--pf-border);
-    border-radius: var(--pf-radius-md);
-    width: 32px;
-    height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    padding: 0;
-  }
-  .close-btn:hover {
-    background: var(--pf-surface-hover);
-    border-color: var(--pf-accent);
-  }
-  .close-btn svg {
-    width: 18px;
-    height: 18px;
-    stroke: currentColor;
-    stroke-width: 2;
-    fill: none;
-  }
   pf-edit-side-panel {
     flex: 0 0 280px;
     max-width: 90vw;
@@ -505,7 +482,6 @@ export const fullViewStyles = css`
       width: 48px;
       height: 48px;
     }
-    .close-btn,
     .menu-trigger,
     .menu-item,
     .footer-btn {

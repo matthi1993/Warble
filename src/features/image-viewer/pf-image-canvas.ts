@@ -459,6 +459,7 @@ export class PfImageCanvas extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("blur", this.onWindowBlur);
+    this.presentationCache = null;
     this.resizeObserver?.disconnect();
     this.loadAbort?.abort();
     this.cancelFullImageLoad();
@@ -484,6 +485,7 @@ export class PfImageCanvas extends LitElement {
   willUpdate(changed: Map<string, unknown>) {
     if (changed.has("path")) {
       this.endLongPress();
+      this.presentationCache = null;
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
       this.scale = 1;
@@ -493,7 +495,7 @@ export class PfImageCanvas extends LitElement {
       this.cropFrame = null;
       this.refreshSavedCrop();
       if (this.canvas) this.startLoad();
-    } else if (changed.has("frameSize") || changed.has("proofingSize") || changed.has("sizing")) {
+    } else if (changed.has("frameSize") || changed.has("proofingSize") || changed.has("sizing") || changed.has("editing")) {
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
       this.scale = 1;
@@ -920,10 +922,38 @@ export class PfImageCanvas extends LitElement {
     height: number;
   } | null = null;
 
-  /** The pixel source the rest of the pipeline operates on. When
-   * `rotation` is 0 this is the original bitmap; otherwise we lazily
-   * render a rotated offscreen canvas and hand that back. */
-  private effectiveSource(): {
+  private presentationCache: {
+    source: EditorSource;
+    cropKey: string;
+    canvas: HTMLCanvasElement;
+    width: number;
+    height: number;
+  } | null = null;
+
+  private effectiveSource(): { source: EditorSource; width: number; height: number } | null {
+    const source = this.editedSource();
+    if (!source || !this.canvas || this.sizing !== "auto" || this.cropMode || this.editing) return source;
+    const crop = this.effectiveRect(source);
+    const imageLandscape = crop.dispW >= crop.dispH;
+    const screenLandscape = this.canvas.width >= this.canvas.height;
+    if (imageLandscape === screenLandscape) return source;
+    const cropKey = [crop.sx, crop.sy, crop.sw, crop.sh].join(",");
+    if (this.presentationCache?.source === source.source && this.presentationCache.cropKey === cropKey) {
+      return { source: this.presentationCache.canvas, width: this.presentationCache.width, height: this.presentationCache.height };
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(crop.sh));
+    canvas.height = Math.max(1, Math.round(crop.sw));
+    const context = canvas.getContext("2d");
+    if (!context) return source;
+    context.translate(canvas.width, 0);
+    context.rotate(Math.PI / 2);
+    context.drawImage(source.source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, canvas.height, canvas.width);
+    this.presentationCache = { source: source.source, cropKey, canvas, width: canvas.width, height: canvas.height };
+    return { source: canvas, width: canvas.width, height: canvas.height };
+  }
+
+  private editedSource(): {
     source: EditorSource;
     width: number;
     height: number;
@@ -1039,7 +1069,7 @@ export class PfImageCanvas extends LitElement {
   private effectiveRect(
     bm: { width: number; height: number },
   ): { sx: number; sy: number; sw: number; sh: number; dispW: number; dispH: number } {
-    const c = this.effectiveCrop();
+    const c = "source" in bm && bm.source === this.presentationCache?.canvas ? null : this.effectiveCrop();
     if (!c) {
       return { sx: 0, sy: 0, sw: bm.width, sh: bm.height, dispW: bm.width, dispH: bm.height };
     }

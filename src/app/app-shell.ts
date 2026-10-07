@@ -1,3 +1,4 @@
+import "../ui/controls/pf-view-mode-switch";
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
@@ -549,7 +550,7 @@ export class WarbleApp extends LitElement {
       gap: var(--pf-space-3);
       padding-top: 0;
       padding-right: var(--pf-space-4);
-      padding-bottom: 0, env(safe-area-inset-bottom));
+      padding-bottom: env(safe-area-inset-bottom);
       padding-left: var(--pf-space-4);
       border-top: 1px solid var(--pf-border);
       background: var(--pf-surface);
@@ -1548,13 +1549,9 @@ export class WarbleApp extends LitElement {
         this.onFullViewClose();
         return;
       }
-      const idx = this.selectedPhoto
-        ? this.photos.findIndex((p) => p.path === this.selectedPhoto!.path)
-        : 0;
-      if (idx >= 0 && idx < this.photos.length) {
+      if (this.photos.length) {
         e.preventDefault();
-        this.selectedPhoto = this.photos[idx];
-        this.fullViewIndex = idx;
+        this.openFullImage();
       }
       return;
     }
@@ -2645,11 +2642,21 @@ export class WarbleApp extends LitElement {
     `;
   }
 
+  private openFullImage = (): void => {
+    const index = this.selectedPhoto ? this.photos.findIndex((photo) => photo.path === this.selectedPhoto!.path) : 0;
+    if (index < 0 || index >= this.photos.length) return;
+    this.detailOpen = false;
+    this.immersiveView = false;
+    this.selectedPhoto = this.photos[index];
+    this.fullViewIndex = index;
+  };
+
   private onGridPointerDragStart = (event: CustomEvent<{ paths: string[]; pointerId: number; x: number; y: number }>): void => {
     const { paths, pointerId, x, y } = event.detail;
     this.photoDrag = { paths, pointerId };
     this.photoDragLabel = paths.length === 1 ? paths[0].split("/").pop() ?? "Photo" : `${paths.length} photos`;
     this.albumDropMode = true;
+    this.sidebarCollapsed = false;
     this.photoDragOpenedSidebar = window.matchMedia("(max-width: 700px)").matches && !this.mobileSidebarOpen;
     if (this.photoDragOpenedSidebar) this.mobileSidebarOpen = true;
     void this.updateComplete.then(() => this.positionPhotoDrag(x, y));
@@ -2779,6 +2786,8 @@ export class WarbleApp extends LitElement {
           ></pf-task-details>
         </span>
         <span class="footer-spacer"></span>
+        <pf-view-mode-switch mode="grid" .imageDisabled=${!this.photos.length}
+          @view-mode-change=${this.openFullImage}></pf-view-mode-switch>
       </footer>
     `;
   }

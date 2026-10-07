@@ -1,7 +1,8 @@
 import { LitElement, css, html, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { Photo } from "@domain/photo";
+import { RAW_EXTS, type Photo } from "@domain/photo";
+import { VIDEO_EXTENSIONS } from "@services/images/video-source";
 import {
   COLOR_LABELS,
   LABEL_COLORS,
@@ -15,6 +16,22 @@ import {
 import "@features/image-viewer/pf-thumbnail-card";
 import "../ui/controls/pf-slider";
 import "../ui/icons/pf-icon";
+
+type MediaType = "image" | "raw" | "movie";
+
+function photoMediaTypes(photo: Photo): Set<MediaType> {
+  const extensions = [
+    ...(photo.extensions ?? []),
+    ...(photo.files ?? []).map((file) => file.extension),
+    photo.path.split(".").pop() ?? "",
+  ];
+  return new Set(extensions.map((extension): MediaType => {
+    const normalized = extension.toLowerCase();
+    if (RAW_EXTS.includes(normalized)) return "raw";
+    if (VIDEO_EXTENSIONS.some((movieExtension) => movieExtension === normalized)) return "movie";
+    return "image";
+  }));
+}
 
 function variantCount(photo: Photo): number {
   const files = photo.files ?? [];
@@ -168,17 +185,12 @@ export class PfPhotoGrid extends LitElement {
       flex-direction: column;
       gap: 5px;
     }
-    .focal-range-label {
-      color: var(--pf-text-muted);
-      font-size: var(--pf-text-xs);
-      font-weight: 600;
-      letter-spacing: 0.02em;
-    }
     .filter-control select,
-    .focal-inputs input,
     .date-inputs input {
       box-sizing: border-box;
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       min-height: 34px;
       padding: 5px 9px;
       border: 1px solid var(--pf-border);
@@ -220,34 +232,29 @@ export class PfPhotoGrid extends LitElement {
       pointer-events: none;
       transform: translateY(-50%);
     }
-    .date-inputs input::placeholder {
-      color: var(--pf-text-muted);
-    }
-    .focal-range {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
     .date-range {
       display: flex;
       flex-direction: column;
       gap: 5px;
+      min-width: 0;
+      grid-column: span 2;
     }
     .date-inputs {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
       gap: var(--pf-space-2);
     }
     .date-inputs input {
+      appearance: none;
+      overflow: hidden;
+    }
+    .date-inputs input::-webkit-date-and-time-value {
       min-width: 0;
+      text-align: left;
     }
-    .focal-inputs {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--pf-space-2);
-    }
-    .focal-inputs input::placeholder {
-      color: var(--pf-text-subtle);
+    .date-inputs input::-webkit-datetime-edit {
+      min-width: 0;
+      padding: 0;
     }
     .filter-options {
       display: flex;
@@ -264,6 +271,23 @@ export class PfPhotoGrid extends LitElement {
       color: var(--pf-text-muted);
       font-size: var(--pf-text-xs);
     }
+    .type-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+    .type-filters button {
+      padding: 6px 10px;
+      min-height: 34px;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface-2);
+      color: var(--pf-text-muted);
+      font: inherit;
+      cursor: pointer;
+    }
+    .type-filters button[aria-pressed="true"] {
+      background: var(--pf-accent-soft);
+      border-color: var(--pf-accent);
+      color: var(--pf-accent-hover);
+    }
+    .type-filters button:focus-visible { outline: 2px solid var(--pf-accent); outline-offset: 2px; }
     .stars-filter {
       display: inline-flex;
       gap: 2px;
@@ -388,7 +412,18 @@ export class PfPhotoGrid extends LitElement {
     .day-heading[aria-expanded="false"] .day-chevron {
       transform: rotate(-90deg);
     }
-    @container (max-width: 650px) {
+    @media (pointer: coarse) {
+      .filter-control select,
+      .date-inputs input {
+        min-height: 44px;
+        font-size: 16px;
+      }
+      .stars-filter button { min-width: 32px; min-height: 44px; }
+      .label-chips { gap: 8px; }
+      .label-chips button { width: 28px; height: 36px; }
+      .filter-clear, .type-filters button { min-height: 44px; }
+    }
+    @container (max-width: 800px) {
       .filter-controls {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -397,6 +432,8 @@ export class PfPhotoGrid extends LitElement {
       .filter-controls {
         grid-template-columns: 1fr;
       }
+      .date-range { grid-column: auto; }
+      .filter-group { max-width: 100%; flex-wrap: wrap; }
       .size-controls { width: 100%; margin-left: 0; }
       .subfolder-toggle { order: 2; }
       .grid-header { max-height: 55vh; overflow-y: auto; }
@@ -522,6 +559,9 @@ export class PfPhotoGrid extends LitElement {
    *  whose label is in this set are shown. */
   @state()
   private activeLabels: Set<Exclude<ColorLabel, "">> = new Set();
+
+  @state()
+  private activeTypes = new Set<MediaType>();
 
   @state()
   private cameraFilter = "";
@@ -654,6 +694,7 @@ export class PfPhotoGrid extends LitElement {
       this.startDate !== "" ||
       this.endDate !== "";
     return this.photos.filter((p) => {
+      if (this.activeTypes.size > 0 && ![...photoMediaTypes(p)].some((type) => this.activeTypes.has(type))) return false;
       const r = getPhotoRating(p.path);
       if (this.minStars > 0 && r.rating < this.minStars) return false;
       if (this.activeLabels.size > 0) {
@@ -705,6 +746,7 @@ export class PfPhotoGrid extends LitElement {
 
   private get filtersActive(): boolean {
     return (
+      this.activeTypes.size > 0 ||
       this.minStars > 0 ||
       this.activeLabels.size > 0 ||
       this.cameraFilter !== "" ||
@@ -895,10 +937,19 @@ export class PfPhotoGrid extends LitElement {
     );
   };
 
+  private toggleType(type: MediaType): void {
+    const next = new Set(this.activeTypes);
+    if (next.has(type)) next.delete(type);
+    else next.add(type);
+    this.activeTypes = next;
+    this.resetVisiblePhotoPages();
+  }
+
   private clearFilters = () => {
     this.resetVisiblePhotoPages();
     this.minStars = 0;
     this.activeLabels = new Set();
+    this.activeTypes = new Set();
     this.cameraFilter = "";
     this.lensFilter = "";
     this.minFocalLength = null;
@@ -1059,7 +1110,7 @@ export class PfPhotoGrid extends LitElement {
               </span>
             </label>
             <div class="date-range">
-              <span class="focal-range-label">Date taken</span>
+              <span class="filter-label">Date taken</span>
               <div class="date-inputs">
                 <input
                   type="date"
@@ -1077,6 +1128,15 @@ export class PfPhotoGrid extends LitElement {
             </div>
           </div>
           <div class="filter-options">
+          <span class="filter-group">
+            <span class="label">Type</span>
+            <span class="type-filters" role="group" aria-label="Filter by file type">
+              ${(["image", "raw", "movie"] as MediaType[]).map((type) => html`<button
+                type="button" aria-pressed=${this.activeTypes.has(type)}
+                @click=${() => this.toggleType(type)}
+              >${type === "raw" ? "RAW" : type === "image" ? "Image" : "Movie"}</button>`)}
+            </span>
+          </span>
           <span class="filter-group">
             <span class="label">Stars</span>
             <span class="stars-filter" role="radiogroup" aria-label="Filter by minimum rating">

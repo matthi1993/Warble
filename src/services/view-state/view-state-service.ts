@@ -12,7 +12,7 @@ export const FRAME_RADII = [0, 8, 20] as const;
 export type FrameSize = (typeof FRAME_SIZES)[number];
 export type ProofingSize = (typeof PROOFING_SIZES)[number];
 export type FrameRadius = (typeof FRAME_RADII)[number];
-export type SizingMode = "fit" | "fill" | "hybrid";
+export type SizingMode = "fit" | "fill" | "hybrid" | "auto";
 export type SmoothingQuality = "low" | "medium" | "high";
 
 export interface ViewState {
@@ -59,7 +59,7 @@ function coerceFrameRadius(v: number | null | undefined): FrameRadius | null {
   return FRAME_RADII.find((radius) => radius === v) ?? null;
 }
 function coerceSizing(v: string | null | undefined): SizingMode | null {
-  return v === "fit" || v === "fill" || v === "hybrid" ? v : null;
+  return v === "fit" || v === "fill" || v === "hybrid" || v === "auto" ? v : null;
 }
 function coerceSmoothing(v: string | null | undefined): SmoothingQuality | null {
   return v === "low" || v === "medium" || v === "high" ? v : null;
