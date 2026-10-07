@@ -5,7 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
 
@@ -21,41 +21,51 @@ pub struct PhotoRatingDto {
 }
 
 #[tauri::command]
-pub fn get_photo_ratings(state: State<'_, AppState>) -> Result<Vec<PhotoRatingDto>, String> {
-    let repo = state.repository()?;
-    let rows = repo.all_photo_ratings()?;
-    Ok(rows
-        .into_iter()
-        .map(|(path, rating, label, rated_at)| PhotoRatingDto {
-            path,
-            rating,
-            label,
-            rated_at,
-        })
-        .collect())
+pub async fn get_photo_ratings(app: AppHandle) -> Result<Vec<PhotoRatingDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let repo = state.repository()?;
+        let rows = repo.all_photo_ratings()?;
+        Ok(rows
+            .into_iter()
+            .map(|(path, rating, label, rated_at)| PhotoRatingDto {
+                path,
+                rating,
+                label,
+                rated_at,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn set_photo_rating(
+pub async fn set_photo_rating(
     path: String,
     rating: i64,
     label: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<i64, String> {
-    let repo = state.repository()?;
-    let source = state.resolve_library_path(&path)?;
-    let rating = rating.clamp(0, 5);
-    let label = sanitize_label(&label);
-    let rated_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    crate::sidecar::write_rating(&repo, &path, &source, rating, &label, rated_at)?;
-    Ok(if rating == 0 && label.is_empty() {
-        0
-    } else {
-        rated_at
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let repo = state.repository()?;
+        let source = state.resolve_library_path(&path)?;
+        let rating = rating.clamp(0, 5);
+        let label = sanitize_label(&label);
+        let rated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        crate::sidecar::write_rating(&repo, &path, &source, rating, &label, rated_at)?;
+        Ok(if rating == 0 && label.is_empty() {
+            0
+        } else {
+            rated_at
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn sanitize_label(label: &str) -> String {

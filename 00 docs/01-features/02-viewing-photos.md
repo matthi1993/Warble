@@ -12,6 +12,6 @@ Start in [the detail panel](../../src/app/detail-panel.ts) or [the full view](..
 
 ## Previews and status
 
-The grid loads thumbnails; larger previews arrive when a photo is opened. RAW viewing uses an embedded preview when available. The footer shows active image and library work, while Performance & Caches controls preview and cache settings.
+The grid loads thumbnails; larger previews arrive when a photo is opened. RAW viewing uses an embedded preview when available. The footer shows active image and library work, while Settings controls parallel workers, preview quality, and cache limits.
 
 Start in [the image canvas](../../src/features/image-viewer/pf-image-canvas.ts) for display. See [Background work](04-background-work.md) for what loads first and [Images and background work](../02-technical/03-images-and-background-work.md) for implementation.

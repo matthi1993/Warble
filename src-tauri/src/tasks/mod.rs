@@ -5,7 +5,7 @@
 //! navigation does not waste time decoding images the user has left behind.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
@@ -65,6 +65,8 @@ struct Requests {
 pub struct TaskPool {
     queue: Arc<(Mutex<VecDeque<Job>>, Condvar)>,
     requests: Arc<Mutex<Requests>>,
+    worker_count: AtomicUsize,
+    spawned_workers: Mutex<usize>,
 }
 
 pub struct RequestGuard {
@@ -111,19 +113,26 @@ impl TaskPool {
         let pool = Arc::new(Self {
             queue: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
             requests: Arc::new(Mutex::new(Requests::default())),
+            worker_count: AtomicUsize::new(1),
+            spawned_workers: Mutex::new(0),
         });
 
-        #[cfg(not(target_os = "ios"))]
-        let worker_count = 2;
-        #[cfg(target_os = "ios")]
-        let worker_count = 1;
-
-        for index in 0..worker_count {
-            let worker = Arc::clone(&pool);
-            let interactive_only = worker_count > 1 && index == 0;
-            std::thread::spawn(move || worker.run(interactive_only));
-        }
+        pool.set_worker_count(crate::settings::default_parallel_workers());
         pool
+    }
+
+    pub fn set_worker_count(self: &Arc<Self>, count: usize) {
+        let count = count.clamp(1, 16);
+        let mut spawned = self.spawned_workers.lock().unwrap();
+        let queue = self.queue.0.lock().unwrap();
+        self.worker_count.store(count, Ordering::Release);
+        for index in *spawned..count {
+            let worker = Arc::clone(self);
+            std::thread::spawn(move || worker.run(index));
+        }
+        *spawned = (*spawned).max(count);
+        drop(queue);
+        self.queue.1.notify_all();
     }
 
     pub fn submit<F>(&self, priority: Priority, request_id: Option<u64>, work: F)
@@ -205,16 +214,19 @@ impl TaskPool {
         wake.notify_all();
     }
 
-    fn run(&self, interactive_only: bool) {
+    fn run(&self, worker_index: usize) {
         let (lock, wake) = &*self.queue;
         loop {
             let job = {
                 let mut queue = lock.lock().unwrap();
                 loop {
+                    let worker_count = self.worker_count.load(Ordering::Acquire);
+                    let interactive_only = worker_count > 1 && worker_index == 0;
                     if let Some(index) = queue.iter().position(|job| {
-                        job.cancel.is_cancelled()
-                            || !interactive_only
-                            || job.priority <= Priority::High
+                        worker_index < worker_count
+                            && (job.cancel.is_cancelled()
+                                || !interactive_only
+                                || job.priority <= Priority::High)
                     }) {
                         break queue.remove(index).unwrap();
                     }

@@ -63,7 +63,7 @@ interface FolderSelection {
 
 interface FolderScanProgress {
   phase: "queued" | "scanning" | "indexing" | "done" | "cancelled" | "error";
-  kind: "folderTree" | "folderImages";
+  kind: "folderTree" | "folderImages" | "folderCheck";
   rootId: string;
   folderKey: string;
   jobId: number;
@@ -1793,11 +1793,13 @@ export class WarbleApp extends LitElement {
   }
 
   private onFolderScanProgress(progress: FolderScanProgress): void {
+    const label = progress.kind === "folderCheck" ? "Check for folder changes"
+      : progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images";
     let task = this.folderScanTasks.get(progress.jobId);
     if (progress.phase === "queued") {
       task = beginTask({
         kind: "folder",
-        label: progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images",
+        label,
         priority: "background",
         status: "queued",
         target: progress.folderKey,
@@ -1809,7 +1811,7 @@ export class WarbleApp extends LitElement {
       if (!task) {
         task = beginTask({
           kind: "folder",
-          label: progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images",
+          label,
           priority: "background",
           target: progress.folderKey,
         });
@@ -1817,9 +1819,7 @@ export class WarbleApp extends LitElement {
       }
       task.update({
         status: "running",
-        label: progress.kind === "folderTree"
-          ? "Scan folder structure"
-          : "Index folder images",
+        label,
       });
       return;
     }
@@ -2644,28 +2644,18 @@ export class WarbleApp extends LitElement {
         class="ctx-menu"
         role="menu"
         aria-label=${`Actions for ${cm.name}`}
-        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 230))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - (cm.isRoot ? 118 : 62)))}px;"
+        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 230))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - (cm.isRoot ? 164 : 110)))}px;"
       >
-        ${cm.available
-          ? html`<button
-              role="menuitem"
-              @click=${() => this.syncFolder(cm.path, cm.name)}
-            >
-              Sync Folder
-            </button>`
-          : html`<button
-              role="menuitem"
-              @click=${() => {
-                this.folderContextMenu = null;
-                void this.reconnectRoot(
-                  new CustomEvent("root-reconnect", {
-                    detail: { rootId: cm.folderId },
-                  }),
-                );
-              }}
-            >
-              Reconnect Folder
-            </button>`}
+        <button role="menuitem" @click=${() => this.syncFolder(cm.path, cm.name)}>Sync Folder</button>
+        ${!cm.available ? html`<button
+          role="menuitem"
+          @click=${() => {
+            this.folderContextMenu = null;
+            void this.reconnectRoot(new CustomEvent("root-reconnect", {
+              detail: { rootId: cm.folderId.split("/")[0] },
+            }));
+          }}
+        >Reconnect Folder…</button>` : null}
         ${cm.isRoot
           ? html`<button
               class="danger"

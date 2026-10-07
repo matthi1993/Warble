@@ -473,3 +473,95 @@ test("metadata warmup starts immediately, reuses known metadata, and rejects sto
   await Promise.resolve();
   assert.equal(pipeline.enrich(photos)[1].filterInfo.dateTaken, "2026-10-08");
 });
+
+test("slow photo saves stay ordered, update the preview immediately, and preserve a final revert", async (t) => {
+  const previousWindow = globalThis.window;
+  const timers = new Map();
+  let timerId = 0;
+  globalThis.window = {
+    setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  t.after(() => { globalThis.window = previousWindow; });
+  const calls = [];
+  const requests = [];
+  const store = loadService("edits/edits-store.ts", {
+    "@tauri-apps/api/core": { invoke: (command, args) => {
+      calls.push({ command, ...args });
+      const request = deferred();
+      requests.push(request);
+      return request.promise;
+    } },
+    "@domain/edits": {
+      isToneZero: (value) => !value || value.exposure === 0,
+      isCurveZero: (value) => !value,
+      isColorZero: (value) => !value,
+      normalizeColor: (value) => value,
+    },
+  });
+  const previews = [];
+  store.subscribePhotoEdits((path) => previews.push(store.getPhotoEdit(path)?.tone?.exposure ?? 0));
+  const settle = () => new Promise(setImmediate);
+  store.setPhotoTone("photo", { exposure: 10 });
+  assert.deepEqual(previews, [10]);
+  assert.equal(calls.length, 0);
+  const first = store.flushPhotoEdit("photo");
+  await settle();
+  store.setPhotoTone("photo", { exposure: 20 });
+  const second = store.flushPhotoEdit("photo");
+  await settle();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(previews, [10, 20]);
+  requests[0].resolve();
+  await settle();
+  assert.equal(calls[1].tone.exposure, 20);
+  store.setPhotoTone("photo", null);
+  const revert = store.flushPhotoEdit("photo");
+  assert.deepEqual(previews, [10, 20, 0]);
+  await settle();
+  assert.equal(calls.length, 2);
+  requests[1].resolve();
+  await settle();
+  assert.equal(calls[2].command, "clear_photo_edit");
+  requests[2].resolve();
+  await Promise.all([first, second, revert]);
+  assert.equal(store.getPhotoEdit("photo"), null);
+  assert.equal(timers.size, 0);
+});
+
+test("the editor keeps its HD texture through slider pauses and restores the original when closed", (t) => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: () => ({}) };
+  t.after(() => { globalThis.document = previousDocument; });
+  let invalidations = 0;
+  const { PfImageCanvas } = loadSource("features/image-viewer/pf-image-canvas.ts", {
+    ...componentDependencies(),
+    "@services/images/thumbnail-service": {},
+    "@services/images/hd-image-cache": {},
+    "@services/images/full-image-cache": {},
+    "./canvas-state-adapter": { canvasState: { getPostProcess: () => ({}), cropEnabled: () => false } },
+    "./canvas/decoder-bootstrap": {},
+    "@features/editor/rendering/render-pipeline": {
+      EditorRenderPipeline: class { invalidate() { invalidations++; } },
+    },
+    "@features/editor/registry": {},
+    "./canvas/crop-geometry": {},
+    "./canvas/view-sizing": {},
+  });
+  const viewer = new PfImageCanvas();
+  viewer.path = "photo";
+  viewer.enableFullRes = true;
+  viewer.bitmap = { width: 1920, height: 1280 };
+  viewer.fullBitmap = { width: 6000, height: 4000 };
+  viewer.fullBitmapForPath = "photo";
+  assert.equal(viewer.currentBitmap, viewer.fullBitmap);
+  viewer.editing = true;
+  for (let tick = 0; tick < 120; tick++) {
+    viewer.markEditingActive();
+    assert.equal(viewer.effectiveSource().source, viewer.bitmap);
+  }
+  assert.equal(invalidations, 0);
+  assert.equal(viewer.editSettleTimer, null);
+  viewer.editing = false;
+  assert.equal(viewer.currentBitmap, viewer.fullBitmap);
+});

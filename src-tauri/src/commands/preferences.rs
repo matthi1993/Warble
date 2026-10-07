@@ -8,7 +8,7 @@
 //!     so the app re-opens whatever was on screen last session.
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 
@@ -37,44 +37,56 @@ pub fn set_post_process_presets(
 }
 
 #[tauri::command]
-pub fn get_photo_effects(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    state.repository()?.get_setting(PHOTO_EFFECTS_KEY)
+pub async fn get_photo_effects(app: AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .repository()?
+            .get_setting(PHOTO_EFFECTS_KEY)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn set_photo_effects(effects_json: String, state: State<'_, AppState>) -> Result<(), String> {
-    let next = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&effects_json)
-        .map_err(|e| e.to_string())?;
-    let repo = state.repository()?;
-    let previous = repo
-        .get_setting(PHOTO_EFFECTS_KEY)?
-        .and_then(|raw| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()
-        })
-        .unwrap_or_default();
-    let paths = previous
-        .keys()
-        .chain(next.keys())
-        .collect::<std::collections::BTreeSet<_>>();
-    for path in paths {
-        // `effects_json` is the whole map. Only touch the source file whose
-        // value changed; otherwise adjusting one slider would rewrite every
-        // sidecar in a large library.
-        if previous.get(path) == next.get(path) {
-            continue;
-        }
-        let source = match state.resolve_library_path(path) {
-            Ok(source) => source,
-            Err(error) => {
-                // Keep the device-local index for a disconnected root. Its
-                // sidecar will be reconciled when that root is connected.
-                eprintln!("skipping effects sidecar for {path}: {error}");
+pub async fn set_photo_effects(effects_json: String, app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let next =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&effects_json)
+                .map_err(|e| e.to_string())?;
+        let repo = state.repository()?;
+        let previous = repo
+            .get_setting(PHOTO_EFFECTS_KEY)?
+            .and_then(|raw| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()
+            })
+            .unwrap_or_default();
+        let paths = previous
+            .keys()
+            .chain(next.keys())
+            .collect::<std::collections::BTreeSet<_>>();
+        for path in paths {
+            // `effects_json` is the whole map. Only touch the source file whose
+            // value changed; otherwise adjusting one slider would rewrite every
+            // sidecar in a large library.
+            if previous.get(path) == next.get(path) {
                 continue;
             }
-        };
-        crate::sidecar::write_effects(&source, next.get(path))?;
-    }
-    repo.set_setting(PHOTO_EFFECTS_KEY, &effects_json)
+            let source = match state.resolve_library_path(path) {
+                Ok(source) => source,
+                Err(error) => {
+                    // Keep the device-local index for a disconnected root. Its
+                    // sidecar will be reconciled when that root is connected.
+                    eprintln!("skipping effects sidecar for {path}: {error}");
+                    continue;
+                }
+            };
+            crate::sidecar::write_effects(&source, next.get(path))?;
+        }
+        repo.set_setting(PHOTO_EFFECTS_KEY, &effects_json)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -2,7 +2,6 @@ use crate::app_state;
 use crate::imaging;
 
 use app_state::AppState;
-#[cfg(target_os = "ios")]
 use tauri::Emitter;
 use tauri::Manager;
 
@@ -157,6 +156,7 @@ pub fn init_settings_and_caches(app: &tauri::App) {
         let _ = repo.delete_setting("cache_settings");
     }
     let s = state.settings.get();
+    crate::tasks::pool().set_worker_count(s.parallel_workers);
     thumbnails::set_disk_cache_max_entries(s.thumbnail_disk_max_entries);
     hd_image::set_disk_cache_max_entries(s.hd_image_disk_max_entries);
     full_image::set_memory_cache_capacity(s.full_image_memory_max_entries);
@@ -207,14 +207,9 @@ pub fn enqueue_media_root_scan(
     state
         .scan_coordinator
         .enqueue_root(app, root.id.clone(), root.name, path.clone());
-    state.scan_coordinator.enqueue_images(
-        app,
-        root.id.clone(),
-        root.id,
-        path,
-        true,
-        true,
-    );
+    state
+        .scan_coordinator
+        .enqueue_images(app, root.id.clone(), root.id, path, true, true);
 }
 
 /// Queue every connected media root for a background, root-scoped scan.
@@ -222,7 +217,6 @@ pub fn enqueue_media_root_scans(
     app: &tauri::AppHandle,
     repo: &LibraryRepository,
     state: &AppState,
-    sync_images: bool,
 ) {
     let Ok(roots) = repo.media_roots() else {
         return;
@@ -238,16 +232,14 @@ pub fn enqueue_media_root_scans(
         state
             .scan_coordinator
             .enqueue_root(app, root.id.clone(), root.name, path.clone());
-        if sync_images {
-            state.scan_coordinator.enqueue_images(
-                app,
-                root.id.clone(),
-                root.id,
-                path.clone(),
-                true,
-                true,
-            );
-        }
+        state.scan_coordinator.enqueue_images(
+            app,
+            root.id.clone(),
+            root.id,
+            path.clone(),
+            true,
+            true,
+        );
     }
 }
 
@@ -266,6 +258,15 @@ pub fn sync_portable_photo_keys(
     let Ok(_sync_guard) = PORTABLE_INDEX_SYNC.lock() else {
         return None;
     };
+    let (root_id, _) = crate::library::split_portable_key(folder_key).ok()?;
+    if !repo
+        .media_roots()
+        .ok()?
+        .iter()
+        .any(|root| root.id == root_id)
+    {
+        return None;
+    }
     let mut effects = repo
         .get_setting("photo_effects_v1")
         .ok()
@@ -329,14 +330,17 @@ pub fn sync_portable_photo_keys(
             Err(error) => eprintln!("failed to commit portable photo state batch: {error}"),
         }
     }
-    #[cfg(not(target_os = "ios"))]
     let prune_missing = prune_missing
         && crate::library::split_portable_key(folder_key).is_ok_and(|(_, relative)| {
+            let folder = root_path.join(relative);
             std::fs::read_dir(root_path).is_ok()
-                && std::fs::read_dir(root_path.join(relative)).is_ok()
+                && (std::fs::read_dir(&folder).is_ok()
+                    || (std::fs::symlink_metadata(&folder)
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                        && folder
+                            .parent()
+                            .is_some_and(|parent| std::fs::read_dir(parent).is_ok())))
         });
-    #[cfg(target_os = "ios")]
-    let _ = root_path;
     if prune_missing {
         match repo.prune_missing_photos(folder_key, recursive, &discovered) {
             Ok(removed) => result.metadata_changed |= removed,
@@ -364,10 +368,16 @@ pub fn sync_portable_photo_keys(
     Some(result)
 }
 
-/// Restore persisted roots as lightweight placeholders. Connected roots are
-/// scanned independently after the app shell is available.
-fn restore_media_root_placeholders(repo: &LibraryRepository, state: &AppState) {
+fn restore_catalog(repo: &LibraryRepository, state: &AppState) {
     let mut catalog = LibraryCatalog::default();
+    match repo.catalog_roots() {
+        Ok(snapshots) => {
+            for snapshot in snapshots {
+                catalog.restore(snapshot);
+            }
+        }
+        Err(error) => eprintln!("failed to restore folder index: {error}"),
+    }
     let Ok(roots) = repo.media_roots() else {
         return;
     };
@@ -376,10 +386,14 @@ fn restore_media_root_placeholders(repo: &LibraryRepository, state: &AppState) {
     };
     let bindings = state.device_storage.bindings_for(&library_id);
     for root in roots {
-        if bindings.contains_key(&root.id) {
-            catalog.add_pending_root(&root.id, &root.name);
-        } else {
-            catalog.add_unavailable_root(&root.id, &root.name);
+        if !catalog.roots.iter().any(|folder| folder.id == root.id) {
+            if bindings.contains_key(&root.id) {
+                catalog.add_pending_root(&root.id, &root.name);
+            } else {
+                catalog.add_unavailable_root(&root.id, &root.name);
+            }
+        } else if !bindings.contains_key(&root.id) {
+            catalog.set_folder_available(&root.id, false);
         }
     }
     if let Ok(mut active) = state.catalog.lock() {
@@ -387,44 +401,46 @@ fn restore_media_root_placeholders(repo: &LibraryRepository, state: &AppState) {
     }
 }
 
-#[cfg(target_os = "ios")]
-fn hydrate_media_roots_after_startup(
-    app: &tauri::App,
-    repo: Arc<LibraryRepository>,
-    library_id: String,
-) {
-    let app = app.handle().clone();
-    // Queue this after setup, then keep bookmark resolution and recursive disk
-    // scanning away from the iOS main thread. If either blocks, the shell is
-    // already usable and presents an empty library rather than a black screen.
-    let queued_app = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        tauri::async_runtime::spawn_blocking(move || {
-            let state = queued_app.state::<AppState>();
-            if state.active_library_id().ok().as_deref() != Some(library_id.as_str()) {
-                return;
-            }
-            restore_security_scoped_roots(&queued_app, &state, &library_id);
-            if state.active_library_id().ok().as_deref() != Some(library_id.as_str()) {
-                return;
-            }
-            restore_media_root_placeholders(repo.as_ref(), &state);
-            enqueue_media_root_scans(&queued_app, repo.as_ref(), &state, false);
-            let _ = queued_app.emit("folders-rehydrated", ());
-        });
-    });
-}
-
-#[cfg(not(target_os = "ios"))]
 fn hydrate_media_roots_after_startup(
     app: &tauri::App,
     repo: Arc<LibraryRepository>,
     library_id: String,
 ) {
     let state = app.state::<AppState>();
-    restore_security_scoped_roots(app.handle(), &state, &library_id);
-    restore_media_root_placeholders(repo.as_ref(), &state);
-    enqueue_media_root_scans(app.handle(), repo.as_ref(), &state, false);
+    restore_catalog(repo.as_ref(), &state);
+    let handle = app.handle().clone();
+    let hydrate = move || {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = handle.state::<AppState>();
+            if state.active_library_id().ok().as_deref() != Some(library_id.as_str()) {
+                return;
+            }
+            restore_security_scoped_roots(&handle, &state, &library_id);
+            if state.active_library_id().ok().as_deref() != Some(library_id.as_str()) {
+                return;
+            }
+            let bindings = state.device_storage.bindings_for(&library_id);
+            if let Ok(roots) = repo.media_roots() {
+                for root in roots {
+                    if let Some(path) = bindings.get(&root.id) {
+                        state.scan_coordinator.enqueue_check(
+                            &handle,
+                            root.id,
+                            root.name,
+                            path.clone(),
+                        );
+                    }
+                }
+            }
+            let _ = handle.emit("folders-rehydrated", ());
+        });
+    };
+    #[cfg(target_os = "ios")]
+    if let Err(error) = app.handle().run_on_main_thread(hydrate) {
+        eprintln!("failed to schedule folder checks: {error}");
+    }
+    #[cfg(not(target_os = "ios"))]
+    hydrate();
 }
 
 fn persist_legacy_bindings(repo: &LibraryRepository, state: &AppState, library_id: &str) {

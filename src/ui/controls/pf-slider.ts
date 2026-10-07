@@ -77,6 +77,11 @@ export class PfSlider extends LitElement {
       appearance: none;
       height: var(--pf-slider-thumb-size);
       cursor: pointer;
+      touch-action: none;
+    }
+    @media (pointer: coarse) {
+      .wrap, input[type="range"] { height: 40px; }
+      :host { --pf-slider-thumb-size: 20px; }
     }
     input[type="range"]:focus {
       outline: none;

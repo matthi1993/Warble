@@ -392,10 +392,12 @@ export class PfImageCanvas extends LitElement {
       },
       onPostProcess: (next) => {
         this.postProcess = next;
+        this.markEditingActive();
         this.scheduleDraw();
       },
-      onEffects: () => this.scheduleDraw(),
+      onEffects: () => { this.markEditingActive(); this.scheduleDraw(); },
       onEffectEnabled: (scope, id) => {
+        this.markEditingActive();
         if (scope === "photo" && this.savedCrop && (id === "crop" || id === "all")) {
           this.userInteracted = false;
           this.forceFitOnNextRecompute = true;
@@ -412,19 +414,9 @@ export class PfImageCanvas extends LitElement {
     this.savedCrop = canvasState.getCrop(this.path);
   }
 
-  /**
-   * Pin the canvas to the HD bitmap for {@link EDIT_SETTLE_MS} so a
-   * burst of edit-store pushes (slider drag, crop nudge) doesn't keep
-   * forcing a 40 MP texture re-upload through the tone pipeline. When
-   * the timer expires we drop back to the full-resolution bitmap (if
-   * available) and invalidate the tone texture so the next paint
-   * re-uploads the now-larger source.
-   *
-   * No-op when full-res mode is off — there's only one bitmap source
-   * to choose from.
-   */
+  /** Briefly use HD previews for changes made outside the editor. */
   private markEditingActive() {
-    if (!this.enableFullRes) return;
+    if (!this.enableFullRes || this.editing) return;
     const wasActive = this.editingActive;
     if (!wasActive) {
       // Capture the source dims BEFORE flipping the flag so we can
@@ -449,9 +441,9 @@ export class PfImageCanvas extends LitElement {
     this.editSettleTimer = window.setTimeout(() => {
       this.editSettleTimer = null;
       if (!this.editingActive) return;
-      this.editingActive = false;
       const prevSrc = this.effectiveSource();
       const prevW = prevSrc?.width ?? 0;
+      this.editingActive = false;
       this.rotatedCache = null;
       this.renderPipeline.invalidate();
       if (this.userInteracted && prevW > 0) {
@@ -918,6 +910,7 @@ export class PfImageCanvas extends LitElement {
     //     doesn't keep reuploading a 40 MP texture every slider tick).
     if (
       this.enableFullRes &&
+      !this.editing &&
       !this.editingActive &&
       this.fullBitmap &&
       this.fullBitmapForPath === this.path

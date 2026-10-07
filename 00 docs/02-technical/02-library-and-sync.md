@@ -4,13 +4,13 @@ Warble discovers files in the background and keeps portable photo changes beside
 
 ## Discovery
 
-Adding or reconnecting a root scans its folder tree, then indexes its photos and videos recursively in the background. Opening a folder can still request its media before the initial scan finishes; manual Sync checks the chosen area, including nested folders, for external changes. The media list can appear before metadata is ready.
+Startup restores the complete folder tree, photo list, and index readiness from SQLite before accessing drives. Background checks compare the immediate entries and file timestamps of each directory with its saved fingerprint; only changed directories need image and sidecar reconciliation. Libraries created before this index was introduced need one initial check to populate it. Adding or reconnecting a root scans its folder tree, then indexes its photos and videos recursively in the background. Opening a folder can still request its media before the initial scan finishes; manual Sync checks the chosen area, including nested folders, for external changes. The media list can appear before metadata is ready.
 
 Start in [the scan coordinator](../../src-tauri/src/library/scanner.rs) for discovery and [the app shell](../../src/app/app-shell.ts) for selection and Sync.
 
 ## Storage and reconciliation
 
-SQLite holds the local library index and speeds up browsing. XMP sidecars carry ratings and labels; Warble sidecars carry edits and effects. When a folder is scanned, portable sidecar data is read back into the index. Device-specific folder access and generated previews are separate from this portable photo state. Original image pixels are not rewritten by Sync.
+SQLite holds the local library index and speeds up browsing. Unavailable drives retain their tree and cached photo entries and display a red exclamation mark. Sync retries the existing connection; on iPad it resolves the stored bookmark again. Entries are pruned only after a successful listing confirms their removal, or when the user removes the import. XMP sidecars carry ratings and labels; Warble sidecars carry edits and effects. When a folder is scanned, portable sidecar data is read back into the index. Device-specific folder access and generated previews are separate from this portable photo state. Original image pixels are not rewritten by Sync.
 
 Start in [the library repository](../../src-tauri/src/library/repository.rs) for the index and [the sidecar adapter](../../src-tauri/src/sidecar.rs) for portable files.
 

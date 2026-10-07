@@ -59,7 +59,8 @@ export class PfFolderTreeItem extends LitElement {
       color: var(--pf-danger);
     }
     .status {
-      font-size: var(--pf-text-xs);
+      font-size: var(--pf-text-sm);
+      font-weight: 800;
       color: var(--pf-danger);
     }
     .spinner {
@@ -122,6 +123,11 @@ export class PfFolderTreeItem extends LitElement {
     }
   }
 
+  disconnectedCallback(): void {
+    this.cancelLongPress();
+    super.disconnectedCallback();
+  }
+
   private toggle(e: Event) {
     e.stopPropagation();
     this.expanded = !this.expanded;
@@ -130,16 +136,6 @@ export class PfFolderTreeItem extends LitElement {
   private select() {
     if (this.suppressNextClick) {
       this.suppressNextClick = false;
-      return;
-    }
-    if (!this.folder.available) {
-      this.dispatchEvent(
-        new CustomEvent<{ rootId: string }>("root-reconnect", {
-          detail: { rootId: this.folder.id },
-          bubbles: true,
-          composed: true,
-        })
-      );
       return;
     }
     this.dispatchEvent(
@@ -222,13 +218,11 @@ export class PfFolderTreeItem extends LitElement {
           : html`<span class="chevron placeholder">·</span>`}
         <pf-icon class="folder-icon" name="folder"></pf-icon>
         <span class="name" title=${this.folder.path}>${label}</span>
-        ${this.folder.available
-          ? html`<span class="count" title="Photos including subfolders">${this.photoCounts[this.folder.id]?.toLocaleString() ?? "…"}</span>`
-          : null}
+        <span class="count" title="Photos including subfolders">${this.photoCounts[this.folder.id]?.toLocaleString() ?? "…"}</span>
         ${this.folder.scanning
           ? html`<span class="spinner" title="Scanning folder" aria-label="Scanning folder"></span>`
           : null}
-        ${this.folder.available ? null : html`<span class="status">Reconnect</span>`}
+        ${this.folder.available ? null : html`<span class="status" role="img" aria-label="Folder unavailable" title="Folder unavailable. Connect the drive and sync, or reconnect the folder.">!</span>`}
       </div>
       ${this.expanded && hasChildren
         ? html`<div class="children">

@@ -116,10 +116,14 @@ async function persist(path: string): Promise<void> {
 const PERSIST_DEBOUNCE_MS = 150;
 const pendingPersists = new Map<string, number>();
 const inFlightPersists = new Set<Promise<void>>();
+const persistsByPath = new Map<string, Promise<void>>();
 const failedPersists = new Set<string>();
 
 function runPersist(path: string): Promise<void> {
-  const operation = persist(path);
+  const operation = (persistsByPath.get(path) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => persist(path));
+  persistsByPath.set(path, operation);
   inFlightPersists.add(operation);
   void operation
     .then(
@@ -129,7 +133,10 @@ function runPersist(path: string): Promise<void> {
         console.error("Failed to persist photo edit", err);
       }
     )
-    .finally(() => inFlightPersists.delete(operation));
+    .finally(() => {
+      inFlightPersists.delete(operation);
+      if (persistsByPath.get(path) === operation) persistsByPath.delete(path);
+    });
   return operation;
 }
 
@@ -153,7 +160,7 @@ export async function flushPhotoEdit(path: string): Promise<void> {
     pendingPersists.delete(path);
     await runPersist(path);
   }
-  await Promise.allSettled([...inFlightPersists]);
+  await Promise.allSettled([persistsByPath.get(path)]);
   if (failedPersists.has(path)) await runPersist(path);
 }
 

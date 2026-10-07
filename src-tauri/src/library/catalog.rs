@@ -11,14 +11,150 @@ use super::folder::Folder;
 use super::photo::{is_photo_extension, parse_variant, viewable_rank, Photo, PhotoFile};
 use super::portable_path::{make_portable_key, split_portable_key};
 
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct LibraryCatalog {
     pub roots: Vec<Folder>,
     pub photos: HashMap<String, Photo>,
     indexed_folders: HashSet<String>,
+    fingerprints: HashMap<String, String>,
 }
 
 impl LibraryCatalog {
+    pub fn root_snapshot(&self, root_id: &str) -> Self {
+        let under_root = |key: &str| key == root_id || key.starts_with(&format!("{root_id}/"));
+        let mut roots: Vec<_> = self
+            .roots
+            .iter()
+            .filter(|root| root.id == root_id)
+            .cloned()
+            .collect();
+        fn clear_scanning(folder: &mut Folder) {
+            folder.scanning = false;
+            for child in &mut folder.children {
+                clear_scanning(child);
+            }
+        }
+        for root in &mut roots {
+            clear_scanning(root);
+        }
+        Self {
+            roots,
+            photos: self
+                .photos
+                .iter()
+                .filter(|(key, _)| under_root(key))
+                .map(|(key, photo)| (key.clone(), photo.clone()))
+                .collect(),
+            indexed_folders: self
+                .indexed_folders
+                .iter()
+                .filter(|key| under_root(key))
+                .cloned()
+                .collect(),
+            fingerprints: self
+                .fingerprints
+                .iter()
+                .filter(|(key, _)| under_root(key))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        }
+    }
+
+    pub fn restore(&mut self, snapshot: Self) {
+        self.roots.extend(snapshot.roots);
+        self.photos.extend(snapshot.photos);
+        self.indexed_folders.extend(snapshot.indexed_folders);
+        self.fingerprints.extend(snapshot.fingerprints);
+    }
+
+    pub fn set_folder_available(&mut self, folder_key: &str, available: bool) {
+        fn update(folders: &mut [Folder], key: &str, available: bool) {
+            for folder in folders {
+                if folder.id == key {
+                    set_available(folder, available);
+                } else {
+                    update(&mut folder.children, key, available);
+                }
+            }
+        }
+        update(&mut self.roots, folder_key, available);
+    }
+
+    pub fn update_fingerprints(&mut self, snapshot: Self) {
+        self.fingerprints.extend(snapshot.fingerprints);
+    }
+
+    pub fn record_fingerprints(&mut self, folder_key: &str, root: &Path, recursive: bool) {
+        let mut keys = vec![folder_key.to_string()];
+        if recursive {
+            keys.clear();
+            collect_keys_from_match(&self.roots, folder_key, &mut keys);
+        }
+        for key in keys {
+            if let Ok((_, _, fingerprint)) = inspect_directory(&key, root) {
+                self.fingerprints.insert(key, fingerprint);
+            }
+        }
+    }
+
+    pub fn check_root(
+        &mut self,
+        root_id: &str,
+        root: &Path,
+        prepare: &impl Fn(&str) -> Result<(), String>,
+    ) -> Result<Vec<(String, Vec<String>, bool)>, String> {
+        let existing = self
+            .roots
+            .iter()
+            .find(|folder| folder.id == root_id)
+            .cloned()
+            .ok_or_else(|| "unknown media root".to_string())?;
+        let mut changed = Vec::new();
+        let folder = self.check_folder(existing, root, prepare, &mut changed);
+        self.merge_root_tree(folder);
+        Ok(changed)
+    }
+
+    fn check_folder(
+        &mut self,
+        mut folder: Folder,
+        root: &Path,
+        prepare: &impl Fn(&str) -> Result<(), String>,
+        changed: &mut Vec<(String, Vec<String>, bool)>,
+    ) -> Folder {
+        let inspected = prepare(&folder.id).and_then(|_| inspect_directory(&folder.id, root));
+        let Ok((children, photos, fingerprint)) = inspected else {
+            set_available(&mut folder, false);
+            return folder;
+        };
+        folder.available = true;
+        folder.scanning = false;
+        let updated = self.fingerprints.get(&folder.id) != Some(&fingerprint)
+            || !self.indexed_folders.contains(&folder.id);
+        let mut existing: HashMap<_, _> = folder
+            .children
+            .into_iter()
+            .map(|child| (child.id.clone(), child))
+            .collect();
+        folder.children = children
+            .into_iter()
+            .map(|child| {
+                let child = existing.remove(&child.id).unwrap_or(child);
+                self.check_folder(child, root, prepare, changed)
+            })
+            .collect();
+        for removed in existing.into_values() {
+            changed.push((removed.id, Vec::new(), true));
+        }
+        if updated {
+            changed.push((folder.id.clone(), photos.keys().cloned().collect(), false));
+            self.merge_folder_images(&folder.id, photos, false);
+            self.fingerprints.insert(folder.id.clone(), fingerprint);
+        }
+        folder
+    }
+
     pub fn add_unavailable_root(&mut self, root_id: &str, name: &str) {
         self.roots.push(Folder {
             id: root_id.to_string(),
@@ -32,11 +168,7 @@ impl LibraryCatalog {
 
     /// Show a connected root immediately while its background scan runs.
     pub fn add_pending_root(&mut self, root_id: &str, name: &str) {
-        if let Some(root) = self
-            .roots
-            .iter_mut()
-            .find(|root| root.id == root_id && root.available)
-        {
+        if let Some(root) = self.roots.iter_mut().find(|root| root.id == root_id) {
             root.name = name.to_string();
             root.scanning = true;
             return;
@@ -59,6 +191,8 @@ impl LibraryCatalog {
     pub fn remove_root(&mut self, root_id: &str) {
         remove_photos_under_root(&mut self.photos, root_id);
         remove_keys_under(&mut self.indexed_folders, root_id);
+        self.fingerprints
+            .retain(|key, _| key != root_id && !key.starts_with(&format!("{root_id}/")));
         self.roots.retain(|root| root.id != root_id);
     }
 
@@ -67,7 +201,11 @@ impl LibraryCatalog {
     pub fn merge_root_tree(&mut self, folder: Folder) {
         let root_id = folder.id.clone();
         let folder_ids = collect_folder_ids(&folder);
-        remove_keys_under(&mut self.indexed_folders, &root_id);
+        let prefix = format!("{root_id}/");
+        self.indexed_folders
+            .retain(|key| !key.starts_with(&prefix) || folder_ids.contains(key));
+        self.fingerprints
+            .retain(|key, _| !key.starts_with(&prefix) || folder_ids.contains(key));
         self.photos.retain(|path, _| {
             !path.starts_with(&format!("{root_id}/"))
                 || Path::new(path)
@@ -95,7 +233,10 @@ impl LibraryCatalog {
             return Err("folder disappeared while it was being refreshed".to_string());
         }
         let prefix = format!("{}/", folder_key.trim_end_matches('/'));
-        remove_keys_under(&mut self.indexed_folders, folder_key);
+        self.indexed_folders
+            .retain(|key| !key.starts_with(&prefix) || folder_ids.contains(key));
+        self.fingerprints
+            .retain(|key, _| !key.starts_with(&prefix) || folder_ids.contains(key));
         self.photos.retain(|path, _| {
             if !path.starts_with(&prefix) {
                 return true;
@@ -137,6 +278,19 @@ impl LibraryCatalog {
         }
     }
 
+    pub fn folder_available(&self, folder_key: &str) -> bool {
+        fn find(folders: &[Folder], key: &str) -> Option<bool> {
+            folders.iter().find_map(|folder| {
+                if folder.id == key {
+                    Some(folder.available)
+                } else {
+                    find(&folder.children, key)
+                }
+            })
+        }
+        find(&self.roots, folder_key).unwrap_or(false)
+    }
+
     pub fn folder_images_indexed(&self, folder_key: &str, recursive: bool) -> bool {
         if !recursive {
             return self.indexed_folders.contains(folder_key);
@@ -162,7 +316,7 @@ impl LibraryCatalog {
             let children_ready = folder.children.iter().fold(true, |complete, child| {
                 collect_indexed(child, indexed, ready) && complete
             });
-            let complete = folder.available && indexed.contains(&folder.id) && children_ready;
+            let complete = indexed.contains(&folder.id) && children_ready;
             if complete {
                 ready.insert(folder.id.clone());
             }
@@ -209,7 +363,6 @@ impl LibraryCatalog {
     pub fn all_photos(&self) -> Vec<Photo> {
         self.roots
             .iter()
-            .filter(|root| root.available)
             .flat_map(|root| self.photos_in_folder_filtered(Path::new(&root.path), true))
             .collect()
     }
@@ -300,6 +453,80 @@ impl LibraryCatalog {
         result.sort_by(|a, b| a.filename.cmp(&b.filename));
         result
     }
+}
+
+fn set_available(folder: &mut Folder, available: bool) {
+    folder.available = available;
+    folder.scanning = false;
+    for child in &mut folder.children {
+        set_available(child, available);
+    }
+}
+
+fn inspect_directory(
+    folder_key: &str,
+    root: &Path,
+) -> Result<(Vec<Folder>, HashMap<String, Photo>, String), String> {
+    use std::hash::{Hash, Hasher};
+    use std::time::UNIX_EPOCH;
+    let (root_id, relative) = split_portable_key(folder_key)?;
+    let entries = fs::read_dir(root.join(relative)).map_err(|e| e.to_string())?;
+    let mut children = Vec::new();
+    let mut photos = HashMap::new();
+    let mut states = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let warble_sidecar = name.ends_with(".warble.json");
+        if name.starts_with('.') && !warble_sidecar {
+            continue;
+        }
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let photo = photo_from_path(&path, root, root_id);
+        let sidecar = warble_sidecar
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xmp"));
+        if !kind.is_dir() && photo.is_none() && !sidecar {
+            continue;
+        }
+        let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+        let modified = metadata
+            .modified()
+            .map_err(|e| e.to_string())?
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        // Child contents are checked independently; they must not dirty the parent.
+        states.push((
+            name.clone(),
+            kind.is_dir(),
+            if kind.is_dir() { 0 } else { modified },
+            if kind.is_dir() { 0 } else { metadata.len() },
+        ));
+        if kind.is_dir() {
+            let id = format!("{folder_key}/{name}");
+            children.push(Folder {
+                path: id.clone(),
+                id,
+                name,
+                children: Vec::new(),
+                available: true,
+                scanning: false,
+            });
+        } else if let Some(photo) = photo {
+            if metadata.is_file() {
+                photos.insert(photo.path.clone(), photo);
+            }
+        }
+    }
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    states.sort();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    states.hash(&mut hash);
+    Ok((children, photos, format!("{:x}", hash.finish())))
 }
 
 pub fn scan_root_tree(root_id: &str, name: &str, root: &Path) -> Result<Folder, String> {
@@ -708,6 +935,92 @@ fn photo_from_path(entry_path: &Path, root: &Path, root_id: &str) -> Option<Phot
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_only_changed_directories_and_preserves_disconnected_roots() {
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-incremental-{root_id}"));
+        for folder in ["First", "Second", "Empty"] {
+            fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        fs::write(root.join("First/photo.jpg"), b"first").unwrap();
+        fs::write(root.join("Second/photo.jpg"), b"second").unwrap();
+        let mut catalog = LibraryCatalog::default();
+        catalog.add_pending_root(&root_id, "Photos");
+        let prepare = |_: &str| Ok(());
+        assert_eq!(
+            catalog.check_root(&root_id, &root, &prepare).unwrap().len(),
+            4
+        );
+        assert!(catalog.folder_images_indexed(&root_id, true));
+        assert!(catalog
+            .check_root(&root_id, &root, &prepare)
+            .unwrap()
+            .is_empty());
+        fs::write(root.join("First/photo.jpg"), b"changed image").unwrap();
+        let changed = catalog.check_root(&root_id, &root, &prepare).unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].0, format!("{root_id}/First"));
+        fs::write(
+            root.join("Second/.photo.jpg.warble.json"),
+            b"changed sidecar",
+        )
+        .unwrap();
+        let changed = catalog.check_root(&root_id, &root, &prepare).unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].0, format!("{root_id}/Second"));
+        let disconnected = root.with_extension("disconnected");
+        fs::rename(&root, &disconnected).unwrap();
+        assert!(catalog
+            .check_root(&root_id, &root, &prepare)
+            .unwrap()
+            .is_empty());
+        assert!(!catalog.roots[0].available);
+        assert_eq!(catalog.roots[0].children.len(), 3);
+        assert_eq!(catalog.all_photos().len(), 2);
+        assert_eq!(catalog.folder_photo_counts()[&root_id], 2);
+        fs::rename(&disconnected, &root).unwrap();
+        assert!(catalog
+            .check_root(&root_id, &root, &prepare)
+            .unwrap()
+            .is_empty());
+        assert!(catalog.roots[0].available);
+        fs::remove_dir_all(root.join("First")).unwrap();
+        let changed = catalog.check_root(&root_id, &root, &prepare).unwrap();
+        assert!(changed.iter().any(
+            |(key, photos, recursive)| key == &format!("{root_id}/First")
+                && photos.is_empty()
+                && *recursive
+        ));
+        assert_eq!(catalog.roots[0].children.len(), 2);
+        assert_eq!(catalog.all_photos().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_child_keeps_its_cached_tree_and_photos() {
+        let root_id = uuid::Uuid::new_v4().to_string();
+        let root = std::env::temp_dir().join(format!("warble-unavailable-{root_id}"));
+        fs::create_dir_all(root.join("Remote/Nested")).unwrap();
+        fs::write(root.join("Remote/Nested/photo.jpg"), []).unwrap();
+        let mut catalog = LibraryCatalog::default();
+        catalog.add_pending_root(&root_id, "Photos");
+        catalog.check_root(&root_id, &root, &|_| Ok(())).unwrap();
+        let changed = catalog
+            .check_root(&root_id, &root, &|key| {
+                if key.ends_with("/Remote") {
+                    Err("provider unavailable".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap();
+        assert!(changed.is_empty());
+        assert!(!catalog.roots[0].children[0].available);
+        assert_eq!(catalog.roots[0].children[0].children.len(), 1);
+        assert_eq!(catalog.all_photos().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn groups_live_photo_motion_with_its_still() {

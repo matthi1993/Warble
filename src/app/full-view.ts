@@ -317,8 +317,8 @@ export class PfFullView extends LitElement {
     this.unsubscribeStore = subscribeVariantOverrides(() => {
       this.variantTick++;
     });
-    this.unsubscribeEdits = subscribePhotoEdits(() => {
-      this.editsTick++;
+    this.unsubscribeEdits = subscribePhotoEdits((path) => {
+      if (!path || path === this.editTargetPath()) this.editsTick++;
     });
     // Reflect global post-process toggle in the footer label.
     this.unsubscribePostProcess = subscribePostProcess(() => {
@@ -1200,7 +1200,7 @@ export class PfFullView extends LitElement {
 
   /** Drop every tool's persisted edits on the active target. */
   private resetAllEdits = async () => {
-    for (const t of this.tools) await t.reset(this.toolHost);
+    await Promise.all(this.tools.map((tool) => tool.reset(this.toolHost)));
   };
 
   private hasAnyEdit(): boolean {
@@ -1473,7 +1473,7 @@ export class PfFullView extends LitElement {
             .rotation=${rotation}
             ?horizonMode=${horizonMode}
             .previewOriginal=${this.previewOriginal}
-            .editing=${this.editMode}
+            .editing=${this.editMode && (this.activeTab === "edit" || this.activeTab === "post")}
             .enableFullRes=${this.fullResolutionEnabled}
             background=${this.bgCss(this.bg)}
             @crop-change=${this.onCanvasCropChange}

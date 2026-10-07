@@ -4,7 +4,7 @@ Warble browses photos in their existing folders without copying originals into a
 
 ## Folders and Sync
 
-Add a folder to see its tree, then select a folder to see its photos. You can include subfolders. If files change outside Warble, use Sync to check for changes; it does not watch folders automatically. Unavailable folders can be reconnected.
+Add a folder to see its tree, then select a folder to see its photos. You can include subfolders. The saved folder tree and photo list appear on startup, including folders on disconnected drives. Background checks sync only directories whose contents changed. Use Sync to check for changes while the app is running; it does not watch folders continuously. Unavailable folders show a red ! and retain their structure. After connecting a drive, restart or use Sync; Reconnect lets you choose a new location or renew permission.
 
 Start in [the app shell](../../src/app/app-shell.ts) for folder selection and Sync, or [the library scanner](../../src-tauri/src/library/scanner.rs) for discovery.
 
