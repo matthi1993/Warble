@@ -89,11 +89,12 @@ pub async fn get_full_image_bytes(
 pub async fn get_hd_image_bytes(
     photo_path: String,
     request_id: Option<u64>,
+    priority: Option<Priority>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
+    let bytes = tasks::run(priority.unwrap_or(Priority::Urgent), request_id, move |cancel| {
         hd_image::load_bytes(&resolved, &photo_path, cancel)
     })
     .await?;

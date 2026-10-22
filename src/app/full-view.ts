@@ -85,7 +85,8 @@ import {
   resolvedPath,
 } from "./views/full-view/variant-selector";
 import { ExifLoader } from "./views/full-view/exif-loader";
-import { loadHdImage } from "@services/images/hd-image-cache";
+import { HD_PRELOAD_COUNT, loadHdImage } from "@services/images/hd-image-cache";
+import { HdImagePreloader } from "@services/images/hd-image-preloader";
 import {
   loadSlideshowSettings,
   saveSlideshowSettings,
@@ -110,6 +111,7 @@ let editClipboard: Record<string, unknown> | null = null;
 
 @customElement("pf-full-view")
 export class PfFullView extends LitElement {
+  private readonly hdPreloader = new HdImagePreloader();
   static styles = fullViewStyles;
 
   @property({ attribute: false })
@@ -335,6 +337,7 @@ export class PfFullView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.hdPreloader.stop();
     this.stopPresentation();
     this.chromeObserver?.disconnect();
     this.chromeObserver = null;
@@ -427,6 +430,26 @@ export class PfFullView extends LitElement {
   private syncToolsFromStore() {
     const target = this.editTargetPath();
     for (const t of this.tools) t.syncFromStore(target);
+  }
+
+  updated(changed: Map<string, unknown>): void {
+    if (["photos", "index", "variantTick", "presenting", "playLivePhoto"].some((key) => changed.has(key))) {
+      this.syncHdPreloads();
+    }
+  }
+
+  private syncHdPreloads(): void {
+    const current = this.currentPhoto;
+    const path = current && !this.activeVideoPath ? resolvedPath(current) : null;
+    const upcoming: string[] = [];
+    if (path) {
+      for (let index = this.index + 1; index < this.photos.length && upcoming.length < HD_PRELOAD_COUNT; index++) {
+        const next = this.presenting ? this.slidePath(this.photos[index]) : resolvedPath(this.photos[index]);
+        if (next !== path && !isVideoPath(next) && !upcoming.includes(next)) upcoming.push(next);
+      }
+    }
+    const canvas = this.canvasEl();
+    this.hdPreloader.update(path, upcoming, canvas?.path === path && !!canvas?.imageReady);
   }
 
   private bgCss(bg: BgColor): string {
@@ -650,7 +673,7 @@ export class PfFullView extends LitElement {
     const abort = isVideoPath(path) ? null : new AbortController();
     this.preloadAbort = abort;
     const preload = abort
-      ? loadHdImage(path, { signal: abort.signal }).catch((error: unknown) => {
+      ? loadHdImage(path, { signal: abort.signal, priority: "background" }).catch((error: unknown) => {
           if (!abort.signal.aborted) console.warn("Slideshow preload failed", error);
         })
       : Promise.resolve();
@@ -684,6 +707,7 @@ export class PfFullView extends LitElement {
   }
 
   private onSlideImageReady = (event: CustomEvent<{ path: string }>) => {
+    if (event.detail.path === this.editTargetPath()) this.syncHdPreloads();
     if (!this.presenting || event.detail.path !== this.editTargetPath()) return;
     if (this.transitionPath === event.detail.path) {
       this.transitionPath = null;

@@ -55,7 +55,7 @@ const FULL_IMAGE_DELAY_MS = 1000;
 
 const EDIT_SETTLE_MS = 120;
 const VIEWPORT_SETTLE_MS = 120;
-const INTERACTION_RENDER_SCALE = 0.85;
+const INTERACTION_RENDER_SCALE = 0.6;
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {

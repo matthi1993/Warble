@@ -20,8 +20,12 @@ Three coordinators keep browsing responsive; there is no single queue for all wo
 
 Priority changes which *waiting* request runs next; it does not interrupt work already running. Switching folders or photos cancels work that is no longer useful, and late results are ignored. See [Background work](../01-features/04-background-work.md) for the visible behavior.
 
+Once the open photo's HD preview is ready, the viewer prepares and decodes the next three photos in display order. Video entries are skipped. [The HD preloader](../../src/services/images/hd-image-preloader.ts) loads one preview at a time at background priority, cancels obsolete requests when navigating away or closing the viewer, and shares in-flight requests with the canvas. Opening a photo that is still preloading promotes that request to urgent priority.
+
 ## Caches and progress
 
 Caches avoid repeating work, while the task list reports its progress.
 
 Memory and disk caches reuse previews; changed sources invalidate affected results, which are rebuilt on demand. [The task manager](../../src/services/tasks/task-manager.ts) tracks active and recent work for the footer and details view; it shows status but does not schedule the native queues.
+
+The decoded HD cache holds at least five previews to accommodate the open photo, three upcoming photos, and a recent photo. The open photo remains protected from eviction while its viewer is connected. The lookahead count is set by `HD_PRELOAD_COUNT` in [the HD cache](../../src/services/images/hd-image-cache.ts).

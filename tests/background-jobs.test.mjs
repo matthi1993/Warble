@@ -647,6 +647,7 @@ test("navigating after an edit clears its preview state and upgrades the next ph
 function imageCache(path) {
   const requests = [];
   const cancelled = [];
+  const priorities = [];
   let nextId = 0;
   const cache = loadService(`images/${path}-image-cache.ts`, {
     "@tauri-apps/api/core": { invoke: (_, args) => {
@@ -656,13 +657,14 @@ function imageCache(path) {
     } },
     "@tauri-apps/api/event": {},
     "@services/tasks/task-manager": {
-      beginTask: () => ({ finish() {} }),
+      beginTask: () => ({ finish() {}, update() {} }),
       nextRequestId: () => ++nextId,
       cancelTaskRequest: (id) => cancelled.push(id),
+      setTaskRequestPriority: (id, priority) => priorities.push({ id, priority }),
       isTaskCancellation: (error) => error.name === "AbortError",
     },
   });
-  return { cache, requests, cancelled };
+  return { cache, requests, cancelled, priorities };
 }
 
 test("a cancelled full-resolution decode cannot evict the active photo or replace a newer result", async () => {
@@ -872,15 +874,21 @@ function editedViewport(t) {
   return { ...fixture, renders, draw: () => Object.getPrototypeOf(viewer).draw.call(viewer) };
 }
 
-test("wheel zoom uses a gentle preview then restores detail using the same full source", (t) => {
+function assertInteractionPreview(render) {
+  assert.ok(render.width >= 600 && render.width < 1200);
+  assert.ok(render.height >= 400 && render.height < 800);
+  assert.equal(render.width / render.height, 1.5);
+  assert.deepEqual(render.effectSize, { width: 1200, height: 800 });
+}
+
+test("wheel zoom uses a reduced preview then restores detail using the same full source", (t) => {
   const { viewer, renders, delays, runTimer, draw } = editedViewport(t);
   draw();
   assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1200, 800]);
   viewer.onWheel({ clientX: 600, clientY: 400, deltaY: -10, preventDefault() {} });
   draw();
   assert.equal(delays.get(viewer.viewportSettleTimer), 120);
-  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1020, 680]);
-  assert.deepEqual(renders.at(-1).effectSize, { width: 1200, height: 800 });
+  assertInteractionPreview(renders.at(-1));
   assert.equal(renders.at(-1).source, viewer.fullBitmap);
   runTimer(viewer.viewportSettleTimer);
   draw();
@@ -894,7 +902,7 @@ test("pan and pinch keep the lightweight preview until the last pointer ends or 
   viewer.beginPan(600, 400);
   viewer.onPointerMove({ pointerType: "mouse", clientX: 610, clientY: 410 });
   draw();
-  assert.equal(renders.at(-1).width, 1020);
+  assertInteractionPreview(renders.at(-1));
   assert.equal(timers.size, 0);
   viewer.onPointerUp({ pointerType: "mouse", pointerId: 1 });
   draw();
@@ -904,7 +912,7 @@ test("pan and pinch keep the lightweight preview until the last pointer ends or 
   viewer.beginPinch();
   viewer.onPointerMove({ pointerType: "touch", pointerId: 2, clientX: 900, clientY: 400, preventDefault() {} });
   draw();
-  assert.equal(renders.at(-1).width, 1020);
+  assertInteractionPreview(renders.at(-1));
   viewer.onPointerUp({ pointerType: "touch", pointerId: 2, type: "pointerup" });
   assert.equal(viewer.viewportInteracting, true);
   viewer.onPointerUp({ pointerType: "touch", pointerId: 1, type: "pointercancel" });
@@ -1027,7 +1035,7 @@ test("slider previews retain detail from the full source even when an HD bitmap 
   viewer.markEditingActive();
   draw();
   assert.equal(renders.at(-1).source, viewer.fullBitmap);
-  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1020, 680]);
+  assertInteractionPreview(renders.at(-1));
   viewer.endEditInteraction();
   draw();
   assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1200, 800]);
@@ -1046,4 +1054,129 @@ test("panning or pinching beyond fit does not soften an unmoving image", (t) => 
   assert.equal(viewer.scale, viewer.fitScale);
   assert.equal(viewer.viewportInteracting, false);
   assert.equal(timers.size, 0);
+});
+
+
+function hdPreloader() {
+  const fixture = imageCache("hd");
+  fixture.cache.setHdImageDecoder(async (bitmap) => bitmap);
+  const { HdImagePreloader } = loadService("images/hd-image-preloader.ts", {
+    "./hd-image-cache": fixture.cache,
+    "./video-source": { isVideoPath: (path) => path.endsWith(".mov") },
+    "@services/tasks/task-manager": { isTaskCancellation: (error) => error.name === "AbortError" },
+  });
+  return { ...fixture, preloader: new HdImagePreloader() };
+}
+
+function hdBitmap() {
+  return { width: 1920, height: 1280, closed: false, close() { this.closed = true; } };
+}
+
+test("HD lookahead waits for the open photo and prepares only the next three distinct images sequentially", async () => {
+  const { preloader, cache, requests } = hdPreloader();
+  const upcoming = ["current", "first", "first", "clip.mov", "second", "third", "fourth"];
+  preloader.update("current", upcoming, false);
+  assert.equal(requests.length, 0);
+  preloader.update("current", upcoming, true);
+  for (let index = 0; index < 3; index++) {
+    assert.equal(requests.length, index + 1);
+    assert.equal(requests[index].photoPath, ["first", "second", "third"][index]);
+    assert.equal(requests[index].priority, "background");
+    requests[index].resolve(hdBitmap());
+    await new Promise(setImmediate);
+  }
+  assert.equal(requests.length, 3);
+  for (const path of ["first", "second", "third"]) assert.ok(cache.getHdImage(path));
+  assert.equal(cache.getHdImage("fourth"), null);
+  preloader.update("third", [], true);
+  assert.equal(requests.length, 3);
+  preloader.stop();
+});
+
+test("opening a prefetched photo shares its request and promotes it to urgent priority", async () => {
+  const { preloader, cache, requests, cancelled, priorities } = hdPreloader();
+  preloader.update("current", ["first", "second", "third"], true);
+  preloader.update("first", ["second", "third", "fourth"], false);
+  const visible = cache.loadHdImage("first");
+  assert.equal(requests.length, 1);
+  assert.deepEqual(priorities, [{ id: requests[0].requestId, priority: "urgent" }]);
+  assert.deepEqual(cancelled, []);
+  const bitmap = hdBitmap();
+  requests[0].resolve(bitmap);
+  assert.equal(await visible, bitmap);
+  await new Promise(setImmediate);
+  assert.equal(requests.length, 1);
+  preloader.update("first", ["second", "third", "fourth"], true);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].photoPath, "second");
+  preloader.stop();
+  await new Promise(setImmediate);
+});
+
+test("HD lookahead cancels obsolete work on a jump or close and discards late results", async () => {
+  const { preloader, cache, requests, cancelled } = hdPreloader();
+  preloader.update("current", ["first", "second", "third"], true);
+  preloader.update("far", ["next", "last"], false);
+  await new Promise(setImmediate);
+  assert.deepEqual(cancelled, [requests[0].requestId]);
+  requests[0].resolve(hdBitmap());
+  await new Promise(setImmediate);
+  assert.equal(cache.getHdImage("first"), null);
+  assert.equal(requests.length, 1);
+  preloader.update("far", ["next", "last"], true);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].photoPath, "next");
+  preloader.stop();
+  requests[1].resolve(hdBitmap());
+  await new Promise(setImmediate);
+  assert.equal(cache.getHdImage("next"), null);
+  assert.equal(requests.length, 2);
+});
+
+test("cancelling visible or background HD consumers preserves shared work at the remaining priority", async () => {
+  const { cache, requests, cancelled, priorities } = imageCache("hd");
+  cache.setHdImageDecoder(async (bitmap) => bitmap);
+  const backgroundAbort = new AbortController();
+  const visibleAbort = new AbortController();
+  const background = cache.loadHdImage("first", { priority: "background", signal: backgroundAbort.signal });
+  const visible = cache.loadHdImage("first", { signal: visibleAbort.signal });
+  visibleAbort.abort();
+  await assert.rejects(visible, { name: "AbortError" });
+  assert.deepEqual(priorities.map((entry) => entry.priority), ["urgent", "background"]);
+  assert.deepEqual(cancelled, []);
+  const replacement = cache.loadHdImage("first");
+  backgroundAbort.abort();
+  await assert.rejects(background, { name: "AbortError" });
+  assert.deepEqual(cancelled, []);
+  const bitmap = hdBitmap();
+  requests[0].resolve(bitmap);
+  assert.equal(await replacement, bitmap);
+  assert.equal(requests.length, 1);
+});
+
+test("HD lookahead keeps all three upcoming previews and protects the open bitmap from eviction", async () => {
+  const { preloader, cache, requests } = hdPreloader();
+  const currentRequest = cache.loadHdImage("current");
+  const current = hdBitmap();
+  requests[0].resolve(current);
+  await currentRequest;
+  preloader.update("current", ["first", "second", "third"], true);
+  for (let index = 1; index <= 3; index++) {
+    requests[index].resolve(hdBitmap());
+    await new Promise(setImmediate);
+  }
+  for (let index = 0; index < 4; index++) {
+    const extra = cache.loadHdImage(`extra-${index}`, { priority: "background" });
+    requests.at(-1).resolve(hdBitmap());
+    await extra;
+  }
+  assert.equal(current.closed, false);
+  assert.equal(cache.getHdImage("current"), current);
+  preloader.stop();
+  for (let index = 4; index < 9; index++) {
+    const extra = cache.loadHdImage(`extra-${index}`, { priority: "background" });
+    requests.at(-1).resolve(hdBitmap());
+    await extra;
+  }
+  assert.equal(current.closed, true);
 });
