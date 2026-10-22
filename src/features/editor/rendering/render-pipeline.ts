@@ -206,8 +206,8 @@ export class EditorRenderPipeline {
       ${composeToolFunctions()}
 
       void main() {
-        vec3 source = sampleSource(v_uv);
-        vec3 color = source;
+        vec3 color = sampleSource(v_uv);
+        ${composeToolStage("source")}
         ${composeToolStage("photo")}
         ${composeToolStage("post")}
         color = clamp(color, 0.0, 1.0);

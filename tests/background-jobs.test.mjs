@@ -705,6 +705,52 @@ test("HD requests for separate viewers do not cancel each other", async () => {
   assert.deepEqual(cancelled, []);
 });
 
+test("bloom survives Tone and runs once before photo and Post color adjustments, including both black-and-white conversions", () => {
+  const config = loadSource("domain/edits/adjustment-config.ts", {});
+  const glsl = loadSource("features/editor/rendering/glsl.ts", {});
+  const { toneShader } = loadSource("features/editor/tools/tone/tone.shader.ts", {
+    "../../rendering/glsl": glsl,
+    "@domain/edits": { ...config, defaultTone: () => ({}), isToneZero: () => true },
+  });
+  const { bloomShader } = loadSource("features/editor/tools/bloom/bloom.shader.ts", {
+    "@domain/edits": { defaultBloom: () => ({ threshold: 70, radius: 30, softness: 50, spread: 50 }) },
+  });
+  const { colorShader } = loadSource("features/editor/tools/color/color.shader.ts", {
+    "../../rendering/glsl": glsl,
+    "@domain/edits": config,
+  });
+  const composer = loadSource("features/editor/rendering/shader-composer.ts", {
+    "../registry": { EDITOR_TOOLS: [{ shader: toneShader }, { shader: colorShader }, { shader: bloomShader }] },
+  });
+  const { EditorRenderPipeline } = loadSource("features/editor/rendering/render-pipeline.ts", {
+    "@domain/edits": {},
+    "./shader-composer": composer,
+    "../tools/grain/grain.shader": {},
+  });
+  const shader = EditorRenderPipeline.prototype.fragmentSource();
+  const main = shader.slice(shader.indexOf("void main()"));
+  const bloom = main.indexOf("color = toolApplyBloom(color)");
+  assert.ok(bloom >= 0);
+  assert.equal(main.match(/toolApplyBloom\(color\)/g).length, 1);
+  const applyPhotoTone = new Function("color", "toolApplyTone",
+    `${toneShader.photoApply.replace(/\bu_\w+/g, "0")} return color;`);
+  const bloomedPixel = [0.35, 0.25, 0.15];
+  assert.equal(applyPhotoTone(bloomedPixel, (pixel) => pixel), bloomedPixel);
+  assert.ok(main.indexOf("color = toolApplyTone(") > bloom);
+  for (const operation of ["u_editColorEnabled", "u_editBlackAndWhite", "u_postColorEnabled", "u_postBlackAndWhite"]) {
+    assert.ok(main.indexOf(operation) > bloom, `${operation} must process the bloomed image`);
+  }
+  assert.match(composer.composeToolStage("source"), /if \(u_bloomStrength > 0\.0\)/);
+  const strengths = [];
+  const context = {
+    sourceScaleX: 1, sourceScaleY: 1, outputWidth: 1200, outputHeight: 800,
+    set1f: (name, value) => { if (name === "u_bloomStrength") strengths.push(value); }, set2f() {},
+  };
+  bloomShader.bind(context, undefined, { strength: 65 });
+  bloomShader.bind(context, undefined, undefined);
+  assert.deepEqual(strengths, [65, 0]);
+});
+
 test("shadow lifts keep near-black color noise subdued and preserve luminance and normal colors", () => {
   const config = loadSource("domain/edits/adjustment-config.ts", {});
   const { toneShader } = loadSource("features/editor/tools/tone/tone.shader.ts", {

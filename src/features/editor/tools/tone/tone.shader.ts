@@ -119,7 +119,7 @@ export const toneShader: ToolShaderModule = {
   `,
   photoApply: `
     color = toolApplyTone(
-      source, u_temperature, u_tint, u_exposure, u_contrast,
+      color, u_temperature, u_tint, u_exposure, u_contrast,
       u_saturation, u_blacks, u_shadows, u_highlights, u_whites
     );
   `,

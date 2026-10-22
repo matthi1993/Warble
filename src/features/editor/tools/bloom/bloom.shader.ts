@@ -82,8 +82,9 @@ export const bloomShader: ToolShaderModule = {
       return linearToSrgb(bloomed);
     }
   `,
+  sourceApply: `if (u_bloomStrength > 0.0) color = toolApplyBloom(color);`,
   photoApply: "",
-  postApply: `if (u_bloomStrength > 0.0) color = toolApplyBloom(color);`,
+  postApply: "",
   bind(context, _photoValue, postValue) { bindBloom(context, postValue); },
   isActive(value) { return ((value as { strength?: number } | null)?.strength ?? 0) > 0; },
 };
