@@ -1319,6 +1319,8 @@ export class PfFullView extends LitElement {
      <pf-edit-side-panel
        aria-label="Edit panel"
        @click=${(e: Event) => e.stopPropagation()}
+       @slider-interaction-start=${() => this.canvasEl()?.beginEditInteraction()}
+       @slider-interaction-end=${() => this.canvasEl()?.endEditInteraction()}
      >
         ${this.renderTabContent()}
         ${this.activeTab === "edit" ? this.renderEditTabFooter() : null}

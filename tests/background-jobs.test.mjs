@@ -533,9 +533,10 @@ function imageViewer(t, dependencies = {}) {
   const previousWindow = globalThis.window;
   const previousRaf = globalThis.requestAnimationFrame;
   const timers = new Map();
+  const delays = new Map();
   let timerId = 0;
   globalThis.window = {
-    setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
+    setTimeout: (callback, delay) => { timers.set(++timerId, callback); delays.set(timerId, delay); return timerId; },
     clearTimeout: (id) => timers.delete(id),
   };
   globalThis.requestAnimationFrame = () => 0;
@@ -564,10 +565,10 @@ function imageViewer(t, dependencies = {}) {
     timers.delete(id);
     callback();
   };
-  return { viewer, timers, runTimer };
+  return { viewer, timers, delays, runTimer };
 }
 
-test("editing uses HD during changes and restores full resolution after a pause with the editor still open", (t) => {
+test("editing preserves the full-resolution source and viewport throughout slider changes", (t) => {
   const { viewer, timers, runTimer } = imageViewer(t);
   viewer.path = "photo";
   viewer.editing = true;
@@ -579,10 +580,10 @@ test("editing uses HD during changes and restores full resolution after a pause 
   assert.equal(viewer.currentBitmap, viewer.fullBitmap);
   for (let tick = 0; tick < 120; tick++) {
     viewer.markEditingActive();
-    assert.equal(viewer.effectiveSource().source, viewer.bitmap);
+    assert.equal(viewer.effectiveSource().source, viewer.fullBitmap);
     assert.equal(timers.size, 1);
   }
-  assert.equal(viewer.scale, 6000 / 1920);
+  assert.equal(viewer.scale, 1);
   runTimer(viewer.editSettleTimer);
   assert.equal(viewer.currentBitmap, viewer.fullBitmap);
   assert.equal(viewer.scale, 1);
@@ -741,4 +742,308 @@ test("shadow lifts keep near-black color noise subdued and preserve luminance an
   const liftedTwice = remap(remap([0, 0, 1 / 255], 0.22), 0.44);
   near(luma(liftedTwice), 0.44);
   assert.ok(Math.max(...liftedTwice) - Math.min(...liftedTwice) < 0.04);
+});
+
+
+test("sliders leave native capture alone and finish once when released outside the control", () => {
+  const { PfSlider } = loadSource("ui/controls/pf-slider.ts", componentDependencies());
+  const slider = new PfSlider();
+  const ownerDocument = new EventTarget();
+  ownerDocument.defaultView = new EventTarget();
+  slider.ownerDocument = ownerDocument;
+  const events = [];
+  for (const type of ["slider-interaction-start", "change", "slider-interaction-end"]) {
+    slider.addEventListener(type, (event) => events.push(event));
+  }
+  const pointer = { button: 0, pointerId: 7, currentTarget: {
+    setPointerCapture() { assert.fail("native range inputs must own their pointer capture"); },
+  } };
+  const release = (type, pointerId = 7) => {
+    const event = new Event(type);
+    event.pointerId = pointerId;
+    ownerDocument.dispatchEvent(event);
+  };
+  slider.onPointerDown(pointer);
+  slider.onInput({ target: { value: "35" } });
+  release("pointerup", 8);
+  assert.deepEqual(events.map((event) => event.type), ["slider-interaction-start", "change"]);
+  release("pointerup");
+  release("pointerup");
+  assert.deepEqual(events.map((event) => event.type), ["slider-interaction-start", "change", "slider-interaction-end"]);
+  assert.equal(events[1].detail, 35);
+  assert.ok(events.every((event) => event.bubbles && event.composed));
+  slider.onPointerDown(pointer);
+  release("pointercancel");
+  assert.equal(events.at(-1).type, "slider-interaction-end");
+  assert.equal(events.length, 5);
+  slider.onPointerDown(pointer);
+  slider.stopNativeChange({ stopPropagation() {} });
+  release("pointerup");
+  assert.equal(events.length, 7);
+  assert.equal(slider.activePointer, null);
+  assert.equal(slider.interactionDocument, null);
+  slider.onPointerDown(pointer);
+  ownerDocument.defaultView.dispatchEvent(new Event("blur"));
+  release("pointerup");
+  assert.equal(events.length, 9);
+  assert.equal(slider.activePointer, null);
+});
+
+test("slider release restores full rendering immediately without switching sources during a paused drag", (t) => {
+  const { viewer, timers, delays, runTimer } = imageViewer(t);
+  viewer.path = "photo";
+  viewer.editing = true;
+  viewer.bitmap = { width: 1920, height: 1280 };
+  viewer.fullBitmap = { width: 6000, height: 4000 };
+  viewer.fullBitmapForPath = "photo";
+  viewer.userInteracted = true;
+  viewer.scale = 1;
+  viewer.beginEditInteraction();
+  for (let change = 0; change < 100; change++) viewer.markEditingActive();
+  assert.equal(viewer.currentBitmap, viewer.fullBitmap);
+  assert.equal(timers.size, 0);
+  assert.equal(viewer.editingActive, true);
+  viewer.endEditInteraction();
+  assert.equal(viewer.editingActive, false);
+  assert.equal(viewer.currentBitmap, viewer.fullBitmap);
+  assert.equal(viewer.scale, 1);
+  assert.equal(timers.size, 0);
+  viewer.markEditingActive();
+  assert.equal(delays.get(viewer.editSettleTimer), 120);
+  runTimer(viewer.editSettleTimer);
+  assert.equal(viewer.currentBitmap, viewer.fullBitmap);
+});
+
+test("rotated full-resolution sources remain stable across repeated slider drags", (t) => {
+  const { viewer } = imageViewer(t);
+  viewer.path = "photo";
+  viewer.bitmap = { width: 1920, height: 1280 };
+  viewer.fullBitmap = { width: 6000, height: 4000 };
+  viewer.fullBitmapForPath = "photo";
+  viewer.normalizedRotation = () => 10;
+  let rotations = 0;
+  let invalidations = 0;
+  viewer.buildRotatedCache = (bitmap) => {
+    rotations++;
+    return { canvas: {}, width: bitmap.width, height: bitmap.height };
+  };
+  viewer.renderPipeline.invalidate = () => invalidations++;
+  const fullSource = viewer.effectiveSource().source;
+  for (let drag = 0; drag < 10; drag++) {
+    assert.equal(viewer.effectiveSource().source, fullSource);
+    viewer.beginEditInteraction();
+    viewer.markEditingActive();
+    assert.equal(viewer.effectiveSource().source, fullSource);
+    viewer.endEditInteraction();
+  }
+  assert.equal(rotations, 1);
+  assert.equal(invalidations, 0);
+});
+
+function editedViewport(t) {
+  const renders = [];
+  const fixture = imageViewer(t, {
+    "./canvas-state-adapter": { canvasState: {
+      getPostProcess: () => ({}), cropEnabled: () => false, readValues: () => ({}),
+    } },
+    "@features/editor/registry": { hasActiveEditorToolValues: () => true },
+    "@features/editor/rendering/render-pipeline": { EditorRenderPipeline: class {
+      invalidate() {}
+      render(source, values, rect, width, height, effectSize) {
+        renders.push({ source, width, height, effectSize });
+        return { width, height };
+      }
+    } },
+  });
+  const { viewer } = fixture;
+  viewer.path = "photo";
+  viewer.fullBitmap = { width: 2400, height: 1600 };
+  viewer.fullBitmapForPath = "photo";
+  viewer.canvas = {
+    width: 1200, height: 800,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 800 }),
+    classList: { add() {}, remove() {} }, removeEventListener() {}, releasePointerCapture() {},
+  };
+  viewer.ctx = {
+    save() {}, restore() {}, clearRect() {}, fillRect() {}, beginPath() {}, roundRect() {}, clip() {}, drawImage() {},
+  };
+  viewer.scale = 0.5;
+  viewer.fitScale = 0.5;
+  return { ...fixture, renders, draw: () => Object.getPrototypeOf(viewer).draw.call(viewer) };
+}
+
+test("wheel zoom uses a gentle preview then restores detail using the same full source", (t) => {
+  const { viewer, renders, delays, runTimer, draw } = editedViewport(t);
+  draw();
+  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1200, 800]);
+  viewer.onWheel({ clientX: 600, clientY: 400, deltaY: -10, preventDefault() {} });
+  draw();
+  assert.equal(delays.get(viewer.viewportSettleTimer), 120);
+  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1020, 680]);
+  assert.deepEqual(renders.at(-1).effectSize, { width: 1200, height: 800 });
+  assert.equal(renders.at(-1).source, viewer.fullBitmap);
+  runTimer(viewer.viewportSettleTimer);
+  draw();
+  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1200, 800]);
+  assert.equal(renders.at(-1).source, viewer.fullBitmap);
+});
+
+test("pan and pinch keep the lightweight preview until the last pointer ends or cancels", (t) => {
+  const { viewer, timers, renders, draw } = editedViewport(t);
+  viewer.scale = 0.75;
+  viewer.beginPan(600, 400);
+  viewer.onPointerMove({ pointerType: "mouse", clientX: 610, clientY: 410 });
+  draw();
+  assert.equal(renders.at(-1).width, 1020);
+  assert.equal(timers.size, 0);
+  viewer.onPointerUp({ pointerType: "mouse", pointerId: 1 });
+  draw();
+  assert.equal(renders.at(-1).width, 1200);
+  viewer.touchPointers.set(1, { x: 400, y: 400 });
+  viewer.touchPointers.set(2, { x: 800, y: 400 });
+  viewer.beginPinch();
+  viewer.onPointerMove({ pointerType: "touch", pointerId: 2, clientX: 900, clientY: 400, preventDefault() {} });
+  draw();
+  assert.equal(renders.at(-1).width, 1020);
+  viewer.onPointerUp({ pointerType: "touch", pointerId: 2, type: "pointerup" });
+  assert.equal(viewer.viewportInteracting, true);
+  viewer.onPointerUp({ pointerType: "touch", pointerId: 1, type: "pointercancel" });
+  draw();
+  assert.equal(renders.at(-1).width, 1200);
+  assert.equal(viewer.viewportInteracting, false);
+});
+
+test("navigation clears gesture timers and releases the previous photo's GPU textures", async (t) => {
+  let invalidations = 0;
+  const { viewer, timers } = imageViewer(t);
+  viewer.renderPipeline.invalidate = () => invalidations++;
+  viewer.markEditingActive();
+  viewer.markViewportInteraction();
+  assert.equal(timers.size, 2);
+  viewer.path = null;
+  await viewer.startLoad();
+  assert.equal(timers.size, 0);
+  assert.equal(viewer.editingActive, false);
+  assert.equal(viewer.viewportInteracting, false);
+  assert.equal(invalidations, 1);
+});
+
+test("the renderer reuses both source textures without uploads or mipmaps and preserves effect sizes in previews", (t) => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: () => ({ width: 0, height: 0 }) };
+  t.after(() => { globalThis.document = previousDocument; });
+  const bindings = [];
+  const uploads = [];
+  const deleted = [];
+  const effectSizes = [];
+  let mipmaps = 0;
+  let textureId = 0;
+  let activeUnit = 0;
+  let boundTexture;
+  const gl = {
+    TEXTURE0: 0,
+    createTexture: () => ({ id: ++textureId }),
+    activeTexture: (unit) => { activeUnit = unit; },
+    bindTexture: (_, texture) => { boundTexture = texture; bindings.push({ unit: activeUnit, texture }); },
+    texParameteri() {}, pixelStorei() {},
+    texImage2D: (...args) => uploads.push({ source: args.at(-1), texture: boundTexture }),
+    generateMipmap: () => mipmaps++,
+    deleteTexture: (texture) => deleted.push(texture),
+    viewport() {}, useProgram() {}, bindVertexArray() {}, drawArrays() {},
+    getUniformLocation: () => null, uniform2f() {},
+  };
+  const { EditorRenderPipeline } = loadSource("features/editor/rendering/render-pipeline.ts", {
+    "@domain/edits": {},
+    "./shader-composer": { TOOL_SHADER_MODULES: [{ id: "tone", bind: (context) => {
+      effectSizes.push([context.outputWidth, context.outputHeight]);
+    } }] },
+    "../tools/grain/grain.shader": {},
+  });
+  const pipeline = new EditorRenderPipeline();
+  pipeline.gl = gl;
+  const hd = { width: 1920, height: 1280 };
+  const full = { width: 6000, height: 4000 };
+  pipeline.warmup(hd);
+  pipeline.warmup(full);
+  const hdTexture = uploads[0].texture;
+  const fullTexture = uploads[1].texture;
+  const values = { photo: {}, post: {} };
+  for (let frame = 0; frame < 120; frame++) {
+    const source = frame % 2 ? full : hd;
+    pipeline.render(source, values, { sx: 0, sy: 0, sw: source.width, sh: source.height },
+      600, 400, { width: 1200, height: 800 });
+    assert.equal(bindings.filter((binding) => binding.unit === 0).at(-1).texture, source === full ? fullTexture : hdTexture);
+  }
+  assert.equal(uploads.length, 2);
+  assert.equal(mipmaps, 2);
+  assert.ok(effectSizes.every(([width, height]) => width === 1200 && height === 800));
+  pipeline.warmup({ width: 320, height: 213 });
+  assert.equal(deleted.length, 1);
+  pipeline.invalidate();
+  assert.equal(deleted.length, 3);
+  pipeline.warmup(full);
+  assert.equal(uploads.length, 4);
+  pipeline.dispose();
+  assert.equal(deleted.length, 4);
+});
+
+
+test("zooming past either wheel limit keeps full quality and does not prolong an existing preview", (t) => {
+  const { viewer, timers, draw, renders } = editedViewport(t);
+  const wheel = (deltaY) => viewer.onWheel({ clientX: 600, clientY: 400, deltaY, preventDefault() {} });
+  for (let event = 0; event < 10; event++) wheel(100);
+  assert.equal(viewer.viewportInteracting, false);
+  assert.equal(timers.size, 0);
+  assert.equal(viewer.userInteracted, false);
+  draw();
+  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1200, 800]);
+  wheel(-100);
+  assert.equal(viewer.viewportInteracting, true);
+  wheel(10000);
+  wheel(100);
+  assert.equal(viewer.scale, viewer.fitScale);
+  assert.equal(viewer.viewportInteracting, false);
+  assert.equal(timers.size, 0);
+  viewer.scale = 20;
+  wheel(-100);
+  assert.equal(viewer.viewportInteracting, false);
+  assert.equal(timers.size, 0);
+});
+
+test("clicking a slider without changing its value keeps full rendering quality", (t) => {
+  const { viewer, renders, timers, draw } = editedViewport(t);
+  viewer.beginEditInteraction();
+  draw();
+  assert.equal(viewer.editingActive, false);
+  assert.equal(renders.at(-1).width, 1200);
+  assert.equal(timers.size, 0);
+  viewer.endEditInteraction();
+});
+
+test("slider previews retain detail from the full source even when an HD bitmap is available", (t) => {
+  const { viewer, renders, draw } = editedViewport(t);
+  viewer.bitmap = { width: 600, height: 400 };
+  viewer.beginEditInteraction();
+  viewer.markEditingActive();
+  draw();
+  assert.equal(renders.at(-1).source, viewer.fullBitmap);
+  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1020, 680]);
+  viewer.endEditInteraction();
+  draw();
+  assert.deepEqual([renders.at(-1).width, renders.at(-1).height], [1200, 800]);
+});
+
+test("panning or pinching beyond fit does not soften an unmoving image", (t) => {
+  const { viewer, timers } = editedViewport(t);
+  viewer.beginPan(600, 400);
+  viewer.onPointerMove({ pointerType: "mouse", clientX: 610, clientY: 410 });
+  assert.equal(viewer.viewportInteracting, false);
+  viewer.onPointerUp({ pointerType: "mouse", pointerId: 1 });
+  viewer.touchPointers.set(1, { x: 400, y: 400 });
+  viewer.touchPointers.set(2, { x: 800, y: 400 });
+  viewer.beginPinch();
+  viewer.onPointerMove({ pointerType: "touch", pointerId: 2, clientX: 700, clientY: 400, preventDefault() {} });
+  assert.equal(viewer.scale, viewer.fitScale);
+  assert.equal(viewer.viewportInteracting, false);
+  assert.equal(timers.size, 0);
 });

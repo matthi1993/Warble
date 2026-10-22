@@ -53,7 +53,9 @@ export type {
  * resolution decode in addition to the HD preview.  */
 const FULL_IMAGE_DELAY_MS = 1000;
 
-const EDIT_SETTLE_MS = 1000;
+const EDIT_SETTLE_MS = 120;
+const VIEWPORT_SETTLE_MS = 120;
+const INTERACTION_RENDER_SCALE = 0.85;
 
 @customElement("pf-image-canvas")
 export class PfImageCanvas extends LitElement {
@@ -250,17 +252,12 @@ export class PfImageCanvas extends LitElement {
   private fullLoadTimer: number | null = null;
   /** Abort handle for the deferred full-res load itself. */
   private fullLoadAbort: AbortController | null = null;
-  /**
-   * `true` while the user is actively editing this photo (recent
-   * tone/crop store push). The canvas pins itself to the HD bitmap
-   * while this flag is set so the tone pipeline keeps working on a
-   * cheap texture; once the user pauses (no edit pushes for
-   * {@link EDIT_SETTLE_MS}) the flag clears and the full-res bitmap,
-   * if available, takes over again.
-   */
   @state()
   private editingActive = false;
   private editSettleTimer: number | null = null;
+  private editPointerActive = false;
+  private viewportInteracting = false;
+  private viewportSettleTimer: number | null = null;
 
   private scale = 1;
   private offsetX = 0; // device px, relative to canvas centre
@@ -378,7 +375,7 @@ export class PfImageCanvas extends LitElement {
           this.userInteracted = false;
           this.forceFitOnNextRecompute = true;
           if ((prevCrop?.rotation ?? 0) !== (this.savedCrop?.rotation ?? 0)) {
-            this.rotatedCache = null;
+            this.rotatedCaches.clear();
             this.renderPipeline.invalidate();
           }
           this.recomputeFit();
@@ -413,48 +410,60 @@ export class PfImageCanvas extends LitElement {
     this.savedCrop = canvasState.getCrop(this.path);
   }
 
-  /** Briefly use HD previews while adjustments are changing. */
-  private markEditingActive() {
-    if (!this.enableFullRes) return;
-    const wasActive = this.editingActive;
-    if (!wasActive) {
-      // Capture the source dims BEFORE flipping the flag so we can
-      // adjust user-zoom for the full→HD downsize.
-      const prevSrc = this.effectiveSource();
-      const prevW = prevSrc?.width ?? 0;
-      this.editingActive = true;
-      this.rotatedCache = null;
-      this.renderPipeline.invalidate();
-      if (this.userInteracted && prevW > 0) {
-        const newSrc = this.effectiveSource();
-        const newW = newSrc?.width ?? 0;
-        if (newW > 0 && newW !== prevW) {
-          this.scale = (this.scale * prevW) / newW;
-        }
-      }
-      this.recomputeFit();
-    }
-    if (this.editSettleTimer !== null) {
-      window.clearTimeout(this.editSettleTimer);
-    }
+  beginEditInteraction(): void {
+    this.editPointerActive = true;
+    this.clearEditSettleTimer();
+  }
+
+  endEditInteraction(): void {
+    this.editPointerActive = false;
+    this.clearEditSettleTimer();
+    this.setEditingActive(false);
+  }
+
+  private clearEditSettleTimer(): void {
+    if (this.editSettleTimer === null) return;
+    window.clearTimeout(this.editSettleTimer);
+    this.editSettleTimer = null;
+  }
+
+  private markEditingActive(): void {
+    this.setEditingActive(true);
+    this.clearEditSettleTimer();
+    if (this.editPointerActive) return;
     this.editSettleTimer = window.setTimeout(() => {
       this.editSettleTimer = null;
-      if (!this.editingActive) return;
-      const prevSrc = this.effectiveSource();
-      const prevW = prevSrc?.width ?? 0;
-      this.editingActive = false;
-      this.rotatedCache = null;
-      this.renderPipeline.invalidate();
-      if (this.userInteracted && prevW > 0) {
-        const newSrc = this.effectiveSource();
-        const newW = newSrc?.width ?? 0;
-        if (newW > 0 && newW !== prevW) {
-          this.scale = (this.scale * prevW) / newW;
-        }
-      }
-      this.recomputeFit();
-      this.scheduleDraw();
+      this.setEditingActive(false);
     }, EDIT_SETTLE_MS);
+  }
+
+  private setEditingActive(active: boolean): void {
+    if (this.editingActive === active) return;
+    this.editingActive = active;
+    this.scheduleDraw();
+  }
+
+  private markViewportInteraction(): void {
+    this.viewportInteracting = true;
+    this.clearViewportSettleTimer();
+    if (this.dragging || this.pinch) return;
+    this.viewportSettleTimer = window.setTimeout(() => {
+      this.viewportSettleTimer = null;
+      this.finishViewportInteraction();
+    }, VIEWPORT_SETTLE_MS);
+  }
+
+  private clearViewportSettleTimer(): void {
+    if (this.viewportSettleTimer === null) return;
+    window.clearTimeout(this.viewportSettleTimer);
+    this.viewportSettleTimer = null;
+  }
+
+  private finishViewportInteraction(): void {
+    this.clearViewportSettleTimer();
+    if (!this.viewportInteracting) return;
+    this.viewportInteracting = false;
+    this.scheduleDraw();
   }
 
   disconnectedCallback(): void {
@@ -470,10 +479,12 @@ export class PfImageCanvas extends LitElement {
     this.viewportSize = null;
     this.loadAbort?.abort();
     this.cancelFullImageLoad();
-    if (this.editSettleTimer !== null) {
-      window.clearTimeout(this.editSettleTimer);
-      this.editSettleTimer = null;
-    }
+    this.clearEditSettleTimer();
+    this.clearViewportSettleTimer();
+    this.editPointerActive = false;
+    this.viewportInteracting = false;
+    this.editingActive = false;
+    this.rotatedCaches.clear();
     if (this.activationTimer !== null) {
       window.clearTimeout(this.activationTimer);
       this.activationTimer = null;
@@ -495,6 +506,7 @@ export class PfImageCanvas extends LitElement {
         this.scheduleFullImageLoad(this.path, this.loadAbort);
       } else {
         this.cancelFullImageLoad();
+        this.endEditInteraction();
       }
       this.userInteracted = false;
       this.forceFitOnNextRecompute = true;
@@ -554,7 +566,7 @@ export class PfImageCanvas extends LitElement {
       // Effective rotation source changes when toggling cropMode (live
       // `this.rotation` vs persisted `savedCrop.rotation`); drop the
       // rotated cache and tone texture so the next render rebakes.
-      this.rotatedCache = null;
+      this.rotatedCaches.clear();
       this.renderPipeline.invalidate();
       requestAnimationFrame(() => this.onResize());
     }
@@ -626,6 +638,7 @@ export class PfImageCanvas extends LitElement {
       this.offsetY = 0;
       requestAnimationFrame(() => this.onResize());
     }
+    if (changed.has("editing") && !this.editing) this.endEditInteraction();
     if (changed.has("editing") && this.editing) {
       // Pre-warm the GL pipeline so the first slider drag doesn't pay
       // for context creation + a 40 MP texture upload on the same
@@ -645,6 +658,8 @@ export class PfImageCanvas extends LitElement {
     const run = () => {
       if (!this.editing || this.effectiveSource()?.source !== source) return;
       this.renderPipeline.warmup(source);
+      const preview = this.bitmap ? this.editedSource(this.bitmap)?.source : null;
+      if (preview && preview !== source) this.renderPipeline.warmup(preview);
     };
     const ric = (window as unknown as {
       requestIdleCallback?: (cb: () => void) => number;
@@ -666,10 +681,13 @@ export class PfImageCanvas extends LitElement {
 
   private async startLoad() {
     this.loadAbort?.abort();
-    if (this.editSettleTimer !== null) {
-      window.clearTimeout(this.editSettleTimer);
-      this.editSettleTimer = null;
-    }
+    this.renderPipeline.invalidate();
+    this.rotatedCaches.clear();
+    this.presentationCache = null;
+    this.clearEditSettleTimer();
+    this.clearViewportSettleTimer();
+    this.editPointerActive = false;
+    this.viewportInteracting = false;
     this.editingActive = false;
     // Any pending full-res load is for the previous path; cancel both
     // the linger timer and the in-flight backend job.
@@ -863,10 +881,6 @@ export class PfImageCanvas extends LitElement {
     const prevW = prevSrc?.width ?? 0;
     this.fullBitmap = bm;
     this.fullBitmapForPath = path;
-    // The rotated cache and tone texture are keyed on the underlying
-    // source bitmap; swapping in a new one must drop both.
-    this.rotatedCache = null;
-    this.renderPipeline.invalidate();
     if (this.userInteracted && prevW > 0) {
       const newSrc = this.effectiveSource();
       const newW = newSrc?.width ?? 0;
@@ -876,6 +890,7 @@ export class PfImageCanvas extends LitElement {
     }
     this.recomputeFit();
     this.scheduleDraw();
+    this.warmupTonePipeline();
   }
 
   private async loadHdPreview(path: string, ac: AbortController) {
@@ -916,16 +931,8 @@ export class PfImageCanvas extends LitElement {
   }
 
   private get currentBitmap(): ImageBitmap | null {
-    // Prefer the full-resolution bitmap when:
-    //   * the host opted in,
-    //   * we actually have a decoded full-res bitmap for the *current*
-    //     photo, and
-    //   * the user isn't actively editing this photo right now (during
-    //     edits we stay on the HD bitmap so the WebGL tone pipeline
-    //     doesn't keep reuploading a 40 MP texture every slider tick).
     if (
       this.enableFullRes &&
-      !this.editingActive &&
       this.fullBitmap &&
       this.fullBitmapForPath === this.path
     ) {
@@ -937,13 +944,12 @@ export class PfImageCanvas extends LitElement {
   /** Offscreen canvas holding `currentBitmap` rotated by `rotation`,
    * cached so the tone pipeline + 2D draw both see the rotated pixels
    * without re-rotating per frame. Keyed by `(bitmap, rotation)`. */
-  private rotatedCache: {
-    source: ImageBitmap;
+  private rotatedCaches = new Map<ImageBitmap, {
     rotation: number;
     canvas: HTMLCanvasElement | OffscreenCanvas;
     width: number;
     height: number;
-  } | null = null;
+  }>();
 
   private presentationCache: {
     source: EditorSource;
@@ -976,31 +982,26 @@ export class PfImageCanvas extends LitElement {
     return { source: canvas, width: canvas.width, height: canvas.height };
   }
 
-  private editedSource(): {
+  private editedSource(bm = this.currentBitmap): {
     source: EditorSource;
     width: number;
     height: number;
   } | null {
-    const bm = this.currentBitmap;
     if (!bm) return null;
     const rot = this.normalizedRotation();
     if (rot === 0) {
       return { source: bm, width: bm.width, height: bm.height };
     }
-    if (
-      this.rotatedCache &&
-      this.rotatedCache.source === bm &&
-      this.rotatedCache.rotation === rot
-    ) {
-      return {
-        source: this.rotatedCache.canvas,
-        width: this.rotatedCache.width,
-        height: this.rotatedCache.height,
-      };
+    const cached = this.rotatedCaches.get(bm);
+    if (cached?.rotation === rot) {
+      return { source: cached.canvas, width: cached.width, height: cached.height };
     }
     const cache = this.buildRotatedCache(bm, rot);
     if (!cache) return { source: bm, width: bm.width, height: bm.height };
-    this.rotatedCache = { source: bm, rotation: rot, ...cache };
+    this.rotatedCaches.set(bm, { rotation: rot, ...cache });
+    if (this.rotatedCaches.size > 2) {
+      this.rotatedCaches.delete(this.rotatedCaches.keys().next().value!);
+    }
     return {
       source: cache.canvas,
       width: cache.width,
@@ -1279,15 +1280,18 @@ export class PfImageCanvas extends LitElement {
             1,
             Math.min(Math.ceil(visH), Math.ceil(subSh))
           );
+          const renderScale = this.viewportInteracting || this.editingActive
+            ? INTERACTION_RENDER_SCALE : 1;
           const toned = this.renderPipeline.render(
             src.source,
             { photo: photoValues, post: postValues },
             { sx: subSx, sy: subSy, sw: subSw, sh: subSh },
-            outW,
-            outH,
+            Math.max(1, Math.ceil(outW * renderScale)),
+            Math.max(1, Math.ceil(outH * renderScale)),
+            { width: outW, height: outH },
           );
           if (toned) {
-            ctx.drawImage(toned, 0, 0, outW, outH, visX0, visY0, visW, visH);
+            ctx.drawImage(toned, 0, 0, toned.width, toned.height, visX0, visY0, visW, visH);
           } else {
             ctx.drawImage(src.source, sx, sy, sw, sh, x, y, drawW, drawH);
           }
@@ -1458,7 +1462,11 @@ export class PfImageCanvas extends LitElement {
 
   private onContextMenu = (event: MouseEvent) => event.preventDefault();
 
-  private onWindowBlur = () => { this.endLongPress(); };
+  private onWindowBlur = () => {
+    this.endLongPress();
+    this.endEditInteraction();
+    this.finishViewportInteraction();
+  };
 
   private isOverImage(clientX: number, clientY: number): boolean {
     if (!this.canvas) return false;
@@ -1524,7 +1532,12 @@ export class PfImageCanvas extends LitElement {
     const minScale = this.minScale();
     const maxScale = Math.max(20 * dpr, this.fitScale * 20);
     const newScale = Math.min(maxScale, Math.max(minScale, this.scale * factor));
+    if (newScale === this.scale) {
+      this.finishViewportInteraction();
+      return;
+    }
     this.zoomAround(px, py, newScale);
+    this.markViewportInteraction();
     this.userInteracted = true;
     this.scheduleDraw();
   };
@@ -1669,11 +1682,19 @@ export class PfImageCanvas extends LitElement {
           mx - (this.pinch.midpointX - this.pinch.imageCenterX) * ratio;
         const nextCenterY =
           my - (this.pinch.midpointY - this.pinch.imageCenterY) * ratio;
+        const previousScale = this.scale;
+        const previousX = this.offsetX;
+        const previousY = this.offsetY;
         this.scale = nextScale;
         this.offsetX = nextCenterX - this.canvas.width / 2;
         this.offsetY = nextCenterY - this.canvas.height / 2;
         this.clampOffsets();
+        if (this.scale === previousScale && this.offsetX === previousX && this.offsetY === previousY) {
+          this.finishViewportInteraction();
+          return;
+        }
         this.userInteracted = Math.abs(nextScale - this.fitScale) >= 1e-3;
+        this.markViewportInteraction();
         this.scheduleDraw();
         return;
       }
@@ -1683,9 +1704,16 @@ export class PfImageCanvas extends LitElement {
       this.pointerDragMoved = true;
     }
     const dpr = window.devicePixelRatio || 1;
+    const previousX = this.offsetX;
+    const previousY = this.offsetY;
     this.offsetX = this.dragOffX + (e.clientX - this.dragStartX) * dpr;
     this.offsetY = this.dragOffY + (e.clientY - this.dragStartY) * dpr;
     this.clampOffsets();
+    if (this.offsetX === previousX && this.offsetY === previousY) {
+      this.finishViewportInteraction();
+      return;
+    }
+    this.markViewportInteraction();
     this.userInteracted = true;
     this.scheduleDraw();
   };
@@ -1711,6 +1739,7 @@ export class PfImageCanvas extends LitElement {
         return;
       }
       this.dragging = false;
+      this.finishViewportInteraction();
       this.canvas?.classList.remove("dragging");
       this.canvas?.removeEventListener("pointermove", this.onPointerMove);
       this.canvas?.removeEventListener("pointerup", this.onPointerUp);
@@ -1728,6 +1757,7 @@ export class PfImageCanvas extends LitElement {
       this.suppressClickUntil = performance.now() + 100;
     }
     this.dragging = false;
+    this.finishViewportInteraction();
     this.canvas?.classList.remove("dragging");
     try {
       this.canvas?.releasePointerCapture(e.pointerId);

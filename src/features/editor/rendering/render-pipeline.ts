@@ -24,11 +24,10 @@ export class EditorRenderPipeline {
   private gl: WebGL2RenderingContext | null = null;
   private program: WebGLProgram | null = null;
   private vao: WebGLVertexArrayObject | null = null;
-  private sourceTexture: WebGLTexture | null = null;
+  private readonly sourceTextures = new Map<EditorSource, WebGLTexture>();
   private photoCurveTexture: WebGLTexture | null = null;
   private postCurveTexture: WebGLTexture | null = null;
   private grainTexture: WebGLTexture | null = null;
-  private uploadedSource: EditorSource | null = null;
   private uploadedPhotoCurve: CurveEdit | null = null;
   private uploadedPostCurve: CurveEdit | null = null;
   private uniformLocations = new Map<string, WebGLUniformLocation | null>();
@@ -40,12 +39,14 @@ export class EditorRenderPipeline {
     sourceRect: { sx: number; sy: number; sw: number; sh: number },
     outputWidth: number,
     outputHeight: number,
+    effectSize = { width: outputWidth, height: outputHeight },
   ): HTMLCanvasElement | null {
     if (this.failed || (!this.gl && !this.initialize())) return null;
     const gl = this.gl!;
     if (this.canvas.width !== outputWidth) this.canvas.width = outputWidth;
     if (this.canvas.height !== outputHeight) this.canvas.height = outputHeight;
-    if (this.uploadedSource !== source) this.uploadSource(source);
+    const sourceTexture = this.getSourceTexture(source);
+    if (!sourceTexture) return null;
 
     const width = source.width;
     const height = source.height;
@@ -62,8 +63,8 @@ export class EditorRenderPipeline {
     const bindingContext: ToolShaderBindingContext = {
       sourceScaleX: scaleX,
       sourceScaleY: scaleY,
-      outputWidth,
-      outputHeight,
+      outputWidth: effectSize.width,
+      outputHeight: effectSize.height,
       set1f: (name, value) => this.set1f(name, value),
       set1i: (name, value) => this.set1i(name, value),
       set2f: (name, x, y) => this.set2f(name, x, y),
@@ -75,7 +76,7 @@ export class EditorRenderPipeline {
       module.bind(bindingContext, values.photo[module.id], values.post[module.id]);
     }
 
-    this.bindTexture(0, this.sourceTexture);
+    this.bindTexture(0, sourceTexture);
     this.bindTexture(1, this.photoCurveTexture);
     this.bindTexture(2, this.postCurveTexture);
     this.bindTexture(3, this.grainTexture);
@@ -85,11 +86,14 @@ export class EditorRenderPipeline {
 
   warmup(source: EditorSource): void {
     if (this.failed || (!this.gl && !this.initialize())) return;
-    if (this.uploadedSource !== source) this.uploadSource(source);
+    this.getSourceTexture(source);
   }
 
   invalidate(): void {
-    this.uploadedSource = null;
+    if (this.gl) {
+      for (const texture of this.sourceTextures.values()) this.gl.deleteTexture(texture);
+    }
+    this.sourceTextures.clear();
   }
 
   dispose(): void {
@@ -98,21 +102,21 @@ export class EditorRenderPipeline {
     if (this.program) gl.deleteProgram(this.program);
     if (this.vao) gl.deleteVertexArray(this.vao);
     for (const texture of [
-      this.sourceTexture,
       this.photoCurveTexture,
       this.postCurveTexture,
       this.grainTexture,
     ]) {
       if (texture) gl.deleteTexture(texture);
     }
+    this.invalidate();
     this.gl = null;
     this.program = null;
     this.vao = null;
-    this.sourceTexture = null;
     this.photoCurveTexture = null;
     this.postCurveTexture = null;
     this.grainTexture = null;
-    this.uploadedSource = null;
+    this.uploadedPhotoCurve = null;
+    this.uploadedPostCurve = null;
     this.uniformLocations.clear();
   }
 
@@ -161,13 +165,11 @@ export class EditorRenderPipeline {
     this.set1i("u_postLut", 2);
     this.set1i("u_grainTexture", 3);
     this.createGeometry();
-    this.sourceTexture = this.createSourceTexture();
     this.photoCurveTexture = this.createCurveTexture();
     this.postCurveTexture = this.createCurveTexture();
     this.grainTexture = this.createGrainTexture();
     const ready = !!(
       this.vao
-      && this.sourceTexture
       && this.photoCurveTexture
       && this.postCurveTexture
       && this.grainTexture
@@ -232,13 +234,26 @@ export class EditorRenderPipeline {
     else this.uploadedPostCurve = value;
   }
 
-  private uploadSource(source: EditorSource): void {
+  private getSourceTexture(source: EditorSource): WebGLTexture | null {
+    const cached = this.sourceTextures.get(source);
+    if (cached) {
+      this.sourceTextures.delete(source);
+      this.sourceTextures.set(source, cached);
+      return cached;
+    }
     const gl = this.gl!;
-    gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+    const texture = this.createSourceTexture();
+    if (!texture) return null;
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.generateMipmap(gl.TEXTURE_2D);
-    this.uploadedSource = source;
+    this.sourceTextures.set(source, texture);
+    if (this.sourceTextures.size > 2) {
+      const oldest = this.sourceTextures.entries().next().value!;
+      this.sourceTextures.delete(oldest[0]);
+      gl.deleteTexture(oldest[1]);
+    }
+    return texture;
   }
 
   private uploadCurve(texture: WebGLTexture | null, curve: CurveEdit): void {
@@ -271,23 +286,12 @@ export class EditorRenderPipeline {
   private createSourceTexture(): WebGLTexture | null {
     const gl = this.gl!;
     const texture = gl.createTexture();
+    if (!texture) return null;
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      1,
-      1,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      new Uint8Array([0, 0, 0, 255]),
-    );
-    gl.generateMipmap(gl.TEXTURE_2D);
     return texture;
   }
 

@@ -151,6 +151,39 @@ export class PfSlider extends LitElement {
   @property({ type: Number, attribute: "fill-from" })
   fillFrom = 0;
 
+  private activePointer: number | null = null;
+  private interactionDocument: Document | null = null;
+
+  private onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0 || this.activePointer !== null) return;
+    this.activePointer = event.pointerId;
+    this.interactionDocument = this.ownerDocument;
+    this.interactionDocument.addEventListener("pointerup", this.onPointerEnd, true);
+    this.interactionDocument.addEventListener("pointercancel", this.onPointerEnd, true);
+    this.interactionDocument.defaultView?.addEventListener("blur", this.finishInteraction);
+    this.dispatchEvent(new CustomEvent("slider-interaction-start", { bubbles: true, composed: true }));
+  };
+
+  private onPointerEnd = (event: PointerEvent) => {
+    if (event.pointerId !== this.activePointer) return;
+    this.finishInteraction();
+  };
+
+  private finishInteraction = () => {
+    if (this.activePointer === null) return;
+    this.activePointer = null;
+    this.interactionDocument?.removeEventListener("pointerup", this.onPointerEnd, true);
+    this.interactionDocument?.removeEventListener("pointercancel", this.onPointerEnd, true);
+    this.interactionDocument?.defaultView?.removeEventListener("blur", this.finishInteraction);
+    this.interactionDocument = null;
+    this.dispatchEvent(new CustomEvent("slider-interaction-end", { bubbles: true, composed: true }));
+  };
+
+  disconnectedCallback(): void {
+    this.finishInteraction();
+    super.disconnectedCallback();
+  }
+
   private onInput = (e: Event) => {
     const v = Number((e.target as HTMLInputElement).value);
     this.value = v;
@@ -169,6 +202,7 @@ export class PfSlider extends LitElement {
    * value back to zero on mouse-up. */
   private stopNativeChange = (e: Event) => {
     e.stopPropagation();
+    this.finishInteraction();
   };
 
   private onDoubleClick = () => {
@@ -221,6 +255,8 @@ export class PfSlider extends LitElement {
           aria-valuenow=${this.value}
           @input=${this.onInput}
           @change=${this.stopNativeChange}
+          @pointerdown=${this.onPointerDown}
+          @blur=${this.finishInteraction}
           @dblclick=${this.onDoubleClick}
         />
       </div>
