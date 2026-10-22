@@ -529,11 +529,17 @@ test("slow photo saves stay ordered, update the preview immediately, and preserv
   assert.equal(timers.size, 0);
 });
 
-test("the editor keeps its HD texture through slider pauses and restores the original when closed", (t) => {
-  const previousDocument = globalThis.document;
-  globalThis.document = { createElement: () => ({}) };
-  t.after(() => { globalThis.document = previousDocument; });
-  let invalidations = 0;
+function imageViewer(t, dependencies = {}) {
+  const previousWindow = globalThis.window;
+  const previousRaf = globalThis.requestAnimationFrame;
+  const timers = new Map();
+  let timerId = 0;
+  globalThis.window = {
+    setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  globalThis.requestAnimationFrame = () => 0;
+  t.after(() => { globalThis.window = previousWindow; globalThis.requestAnimationFrame = previousRaf; });
   const { PfImageCanvas } = loadSource("features/image-viewer/pf-image-canvas.ts", {
     ...componentDependencies(),
     "@services/images/thumbnail-service": {},
@@ -541,27 +547,198 @@ test("the editor keeps its HD texture through slider pauses and restores the ori
     "@services/images/full-image-cache": {},
     "./canvas-state-adapter": { canvasState: { getPostProcess: () => ({}), cropEnabled: () => false } },
     "./canvas/decoder-bootstrap": {},
-    "@features/editor/rendering/render-pipeline": {
-      EditorRenderPipeline: class { invalidate() { invalidations++; } },
-    },
+    "@features/editor/rendering/render-pipeline": { EditorRenderPipeline: class { invalidate() {} } },
     "@features/editor/registry": {},
     "./canvas/crop-geometry": {},
     "./canvas/view-sizing": {},
+    ...dependencies,
   });
   const viewer = new PfImageCanvas();
+  viewer.recomputeFit = () => {};
+  viewer.scheduleDraw = () => {};
+  viewer.draw = () => {};
+  viewer.warmupTonePipeline = () => {};
+  const runTimer = (id) => {
+    const callback = timers.get(id);
+    assert.ok(callback, "expected a pending timer");
+    timers.delete(id);
+    callback();
+  };
+  return { viewer, timers, runTimer };
+}
+
+test("editing uses HD during changes and restores full resolution after a pause with the editor still open", (t) => {
+  const { viewer, timers, runTimer } = imageViewer(t);
   viewer.path = "photo";
-  viewer.enableFullRes = true;
+  viewer.editing = true;
   viewer.bitmap = { width: 1920, height: 1280 };
   viewer.fullBitmap = { width: 6000, height: 4000 };
   viewer.fullBitmapForPath = "photo";
+  viewer.userInteracted = true;
+  viewer.scale = 1;
   assert.equal(viewer.currentBitmap, viewer.fullBitmap);
-  viewer.editing = true;
   for (let tick = 0; tick < 120; tick++) {
     viewer.markEditingActive();
     assert.equal(viewer.effectiveSource().source, viewer.bitmap);
+    assert.equal(timers.size, 1);
   }
-  assert.equal(invalidations, 0);
-  assert.equal(viewer.editSettleTimer, null);
-  viewer.editing = false;
+  assert.equal(viewer.scale, 6000 / 1920);
+  runTimer(viewer.editSettleTimer);
   assert.equal(viewer.currentBitmap, viewer.fullBitmap);
+  assert.equal(viewer.scale, 1);
+  assert.equal(viewer.editing, true);
+});
+
+test("turning full resolution on loads the current photo and turning it off cancels the upgrade", async (t) => {
+  const pending = deferred();
+  const requests = [];
+  const { viewer, timers, runTimer } = imageViewer(t, {
+    "@services/images/full-image-cache": {
+      getFullImage: () => null,
+      loadFullImage: (path, options) => { requests.push({ path, ...options }); return pending.promise; },
+    },
+  });
+  viewer.path = "photo";
+  viewer.loadAbort = new AbortController();
+  viewer.enableFullRes = false;
+  viewer.willUpdate(new Map([["enableFullRes", true]]));
+  assert.equal(timers.size, 0);
+  viewer.enableFullRes = true;
+  viewer.willUpdate(new Map([["enableFullRes", false]]));
+  runTimer(viewer.fullLoadTimer);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, "photo");
+  viewer.enableFullRes = false;
+  viewer.willUpdate(new Map([["enableFullRes", true]]));
+  assert.equal(requests[0].signal.aborted, true);
+  const staleBitmap = { width: 6000, height: 4000 };
+  pending.resolve(staleBitmap);
+  await new Promise(setImmediate);
+  assert.equal(viewer.fullBitmap, null);
+  assert.equal(viewer.fullLoading, false);
+  viewer.enableFullRes = true;
+  viewer.willUpdate(new Map([["enableFullRes", false]]));
+  assert.equal(timers.size, 1);
+});
+
+test("navigating after an edit clears its preview state and upgrades the next photo", async (t) => {
+  const hd = { width: 1920, height: 1280 };
+  const full = { width: 6000, height: 4000 };
+  const { viewer, timers, runTimer } = imageViewer(t, {
+    "@services/images/hd-image-cache": { getHdImage: () => hd },
+    "@services/images/full-image-cache": { getFullImage: () => full },
+  });
+  viewer.path = "first";
+  viewer.editing = true;
+  viewer.markEditingActive();
+  const oldSettleTimer = viewer.editSettleTimer;
+  viewer.path = "second";
+  await viewer.startLoad();
+  assert.equal(timers.has(oldSettleTimer), false);
+  assert.equal(viewer.editingActive, false);
+  assert.equal(viewer.currentBitmap, hd);
+  runTimer(viewer.fullLoadTimer);
+  assert.equal(viewer.currentBitmap, full);
+  assert.equal(viewer.fullBitmapForPath, "second");
+  assert.equal(viewer.fullLoading, false);
+});
+
+function imageCache(path) {
+  const requests = [];
+  const cancelled = [];
+  let nextId = 0;
+  const cache = loadService(`images/${path}-image-cache.ts`, {
+    "@tauri-apps/api/core": { invoke: (_, args) => {
+      const request = deferred();
+      requests.push({ ...request, ...args });
+      return request.promise;
+    } },
+    "@tauri-apps/api/event": {},
+    "@services/tasks/task-manager": {
+      beginTask: () => ({ finish() {} }),
+      nextRequestId: () => ++nextId,
+      cancelTaskRequest: (id) => cancelled.push(id),
+      isTaskCancellation: (error) => error.name === "AbortError",
+    },
+  });
+  return { cache, requests, cancelled };
+}
+
+test("a cancelled full-resolution decode cannot evict the active photo or replace a newer result", async () => {
+  const { cache, requests, cancelled } = imageCache("full");
+  const staleDecode = deferred();
+  const staleBytes = new ArrayBuffer(1);
+  cache.setFullImageDecoder((bytes) => bytes === staleBytes ? staleDecode.promise : Promise.resolve(bytes));
+  const abort = new AbortController();
+  const stale = cache.loadFullImage("first", { signal: abort.signal });
+  requests[0].resolve(staleBytes);
+  await Promise.resolve();
+  abort.abort();
+  await assert.rejects(stale, { name: "AbortError" });
+  assert.equal(cancelled.length, 1);
+  const activeBitmap = { width: 6000, height: 4000, closed: false, close() { this.closed = true; } };
+  const active = cache.loadFullImage("second");
+  requests[1].resolve(activeBitmap);
+  await active;
+  const staleBitmap = { closed: false, close() { this.closed = true; } };
+  staleDecode.resolve(staleBitmap);
+  await new Promise(setImmediate);
+  assert.equal(staleBitmap.closed, true);
+  assert.equal(activeBitmap.closed, false);
+  assert.equal(cache.getFullImage("second"), activeBitmap);
+  assert.equal(cache.getFullImage("first"), null);
+});
+
+test("HD requests for separate viewers do not cancel each other", async () => {
+  const { cache, requests, cancelled } = imageCache("hd");
+  cache.setHdImageDecoder(async (bitmap) => bitmap);
+  const first = cache.loadHdImage("first");
+  const second = cache.loadHdImage("second");
+  const firstBitmap = { width: 1920, height: 1280 };
+  const secondBitmap = { width: 1280, height: 1920 };
+  requests[0].resolve(firstBitmap);
+  requests[1].resolve(secondBitmap);
+  assert.deepEqual(await Promise.all([first, second]), [firstBitmap, secondBitmap]);
+  assert.deepEqual(cancelled, []);
+});
+
+test("shadow lifts keep near-black color noise subdued and preserve luminance and normal colors", () => {
+  const config = loadSource("domain/edits/adjustment-config.ts", {});
+  const { toneShader } = loadSource("features/editor/tools/tone/tone.shader.ts", {
+    "../../rendering/glsl": loadSource("features/editor/rendering/glsl.ts", {}),
+    "@domain/edits": { ...config, defaultTone: () => ({}), isToneZero: () => true },
+  });
+  const body = toneShader.functions.match(/vec3 toolRemapToneLuma\([^)]*\)\s*\{([^}]+)\}/)?.[1];
+  assert.ok(body);
+  const remapChannel = new Function("col", "sourceLuma", "targetLuma", body
+    .replace(/\bfloat\s+/g, "let ")
+    .replace(/\bvec3\(/g, "(")
+    .replace(/\bmax\(/g, "Math.max("));
+  const luma = (rgb) => rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const remap = (rgb, target) => rgb.map((channel) => remapChannel(channel, luma(rgb), target));
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10,
+    `expected ${actual} to be close to ${expected}`);
+
+  for (const target of [0.12, 0.22, 0.34]) {
+    assert.deepEqual(remap([0, 0, 0], target), [target, target, target]);
+    for (const pixel of [[1 / 255, 0, 0], [0, 1 / 255, 0], [0, 0, 1 / 255],
+      [1 / 255, 0, 2 / 255], [0.01, 0.01, 0.01]]) {
+      const lifted = remap(pixel, target);
+      near(luma(lifted), target);
+      assert.ok(Math.max(...lifted) - Math.min(...lifted) < 0.06);
+      assert.ok(lifted.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 1));
+    }
+  }
+  for (const pixel of [[0.2, 0.1, 0.05], [0.05, 0.1, 0.3], [0.1, 0.2, 0.1]]) {
+    for (const target of [0, luma(pixel) / 2, luma(pixel), luma(pixel) + 0.22]) {
+      const adjusted = remap(pixel, target);
+      pixel.forEach((channel, index) => near(adjusted[index], channel * target / luma(pixel)));
+    }
+  }
+  for (const pixel of [[0, 0, 0], [1e-8, 0, 0], [0, 0, 1e-8]]) {
+    remap(pixel, luma(pixel)).forEach((channel, index) => near(channel, pixel[index]));
+  }
+  const liftedTwice = remap(remap([0, 0, 1 / 255], 0.22), 0.44);
+  near(luma(liftedTwice), 0.44);
+  assert.ok(Math.max(...liftedTwice) - Math.min(...liftedTwice) < 0.04);
 });

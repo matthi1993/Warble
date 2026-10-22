@@ -217,6 +217,7 @@ function startLoad(path: string): PendingEntry {
 function releaseRef(path: string, entry: PendingEntry): void {
   entry.refcount -= 1;
   if (entry.refcount > 0) return;
+  entry.invalidated = true;
   // No live callers; cancel the backend job if it's still ours.
   cancelTaskRequest(entry.requestId);
   if (pending.get(path) === entry) {

@@ -49,6 +49,13 @@ export const toneShader: ToolShaderModule = {
     uniform float u_postWhites;
   `,
   functions: `
+    vec3 toolRemapToneLuma(vec3 col, float sourceLuma, float targetLuma) {
+      float chromaGain = targetLuma >= sourceLuma
+        ? max(1.0, targetLuma / max(sourceLuma, 0.05))
+        : targetLuma / max(sourceLuma, 1e-6);
+      return vec3(targetLuma) + (col - vec3(sourceLuma)) * chromaGain;
+    }
+
     vec3 toolApplyTone(
       vec3 col,
       float temperature,
@@ -103,7 +110,7 @@ export const toneShader: ToolShaderModule = {
           + highlights * ${glslFloat(TONE_REGION_FALLOFFS.highlights.strength)} * wHighlights
           + whites * ${glslFloat(TONE_REGION_FALLOFFS.whites.strength)} * wWhites;
         float targetToneLuma = max(toneLuma + toneOffset, 0.0);
-        if (workingLuma > 1e-6) col *= targetToneLuma / workingLuma;
+        col = toolRemapToneLuma(col, workingLuma, targetToneLuma);
       }
       col = (col - 0.5) * contrast + 0.5;
       float luma = dot(col, LUMA);

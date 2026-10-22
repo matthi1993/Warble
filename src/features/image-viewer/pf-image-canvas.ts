@@ -53,7 +53,6 @@ export type {
  * resolution decode in addition to the HD preview.  */
 const FULL_IMAGE_DELAY_MS = 1000;
 
-// Time to wait until editing changes are applied to full res image after slider change
 const EDIT_SETTLE_MS = 1000;
 
 @customElement("pf-image-canvas")
@@ -231,8 +230,8 @@ export class PfImageCanvas extends LitElement {
   private canvas?: HTMLCanvasElement;
   private ctx?: CanvasRenderingContext2D;
   /**
-   * Reference to the cached full bitmap currently being painted. The
-   * cache (`full-image-cache`) owns the bitmap's lifecycle — we never
+   * Reference to the cached HD bitmap currently being painted. The
+   * cache (`hd-image-cache`) owns the bitmap's lifecycle — we never
    * call `close()` on it; eviction is the cache's responsibility.
    */
   private bitmap: ImageBitmap | null = null;
@@ -414,9 +413,9 @@ export class PfImageCanvas extends LitElement {
     this.savedCrop = canvasState.getCrop(this.path);
   }
 
-  /** Briefly use HD previews for changes made outside the editor. */
+  /** Briefly use HD previews while adjustments are changing. */
   private markEditingActive() {
-    if (!this.enableFullRes || this.editing) return;
+    if (!this.enableFullRes) return;
     const wasActive = this.editingActive;
     if (!wasActive) {
       // Capture the source dims BEFORE flipping the flag so we can
@@ -491,6 +490,16 @@ export class PfImageCanvas extends LitElement {
   }
 
   willUpdate(changed: Map<string, unknown>) {
+    if (changed.has("enableFullRes")) {
+      if (this.enableFullRes && this.path && this.loadAbort) {
+        this.scheduleFullImageLoad(this.path, this.loadAbort);
+      } else {
+        this.cancelFullImageLoad();
+      }
+      this.userInteracted = false;
+      this.forceFitOnNextRecompute = true;
+      requestAnimationFrame(() => this.onResize());
+    }
     if (changed.has("path")) {
       this.endLongPress();
       this.presentationCache = null;
@@ -657,6 +666,11 @@ export class PfImageCanvas extends LitElement {
 
   private async startLoad() {
     this.loadAbort?.abort();
+    if (this.editSettleTimer !== null) {
+      window.clearTimeout(this.editSettleTimer);
+      this.editSettleTimer = null;
+    }
+    this.editingActive = false;
     // Any pending full-res load is for the previous path; cancel both
     // the linger timer and the in-flight backend job.
     this.cancelFullImageLoad();
@@ -753,7 +767,7 @@ export class PfImageCanvas extends LitElement {
     // would for full-resolution decodes. Rapid arrow-key navigation is
     // still safe: the worker queue drops queued jobs whose request id
     // is cancelled by `loadAbort`.
-    void this.loadFullImage(path, ac);
+    void this.loadHdPreview(path, ac);
 
     // Phase 3 (optional): after the user has lingered on this photo
     // for FULL_IMAGE_DELAY_MS, kick off a true full-resolution decode
@@ -792,7 +806,8 @@ export class PfImageCanvas extends LitElement {
   private scheduleFullImageLoad(path: string, parent: AbortController) {
     if (!this.enableFullRes) return;
     if (parent.signal.aborted) return;
-    if (this.fullLoadTimer !== null) return;
+    if (this.fullLoadTimer !== null || this.fullLoadAbort !== null) return;
+    if (this.fullBitmapForPath === path && this.fullBitmap) return;
 
     this.fullLoading = true;
     this.fullLoadTimer = window.setTimeout(() => {
@@ -863,7 +878,7 @@ export class PfImageCanvas extends LitElement {
     this.scheduleDraw();
   }
 
-  private async loadFullImage(path: string, ac: AbortController) {
+  private async loadHdPreview(path: string, ac: AbortController) {
     try {
       // Goes through the shared LRU cache: dedupes concurrent requests,
       // returns instantly if another canvas already decoded this photo,
@@ -878,7 +893,7 @@ export class PfImageCanvas extends LitElement {
       // Cache owns the bitmap; just take a reference.
       this.bitmap = bm;
       this.bitmapForPath = path;
-      // Drop the thumb once the full is in.
+      // Drop the thumbnail once the HD preview is in.
       this.thumbBitmap?.close?.();
       this.thumbBitmap = null;
       this.thumbForPath = null;
@@ -889,7 +904,7 @@ export class PfImageCanvas extends LitElement {
       this.dispatchEvent(new CustomEvent("image-ready", { detail: { path } }));
     } catch (err) {
       if (ac.signal.aborted || this.path !== path) return;
-      console.error("full image load failed", err);
+      console.error("HD preview load failed", err);
       this.status = "error";
       this.errorMsg = String(err);
       this.dispatchEvent(new CustomEvent("image-error", { detail: { path } }));
@@ -902,7 +917,7 @@ export class PfImageCanvas extends LitElement {
 
   private get currentBitmap(): ImageBitmap | null {
     // Prefer the full-resolution bitmap when:
-    //   * the host opted in (the windowed viewer doesn't),
+    //   * the host opted in,
     //   * we actually have a decoded full-res bitmap for the *current*
     //     photo, and
     //   * the user isn't actively editing this photo right now (during
@@ -910,7 +925,6 @@ export class PfImageCanvas extends LitElement {
     //     doesn't keep reuploading a 40 MP texture every slider tick).
     if (
       this.enableFullRes &&
-      !this.editing &&
       !this.editingActive &&
       this.fullBitmap &&
       this.fullBitmapForPath === this.path

@@ -4,8 +4,7 @@
  *
  * Mirrors `full-image-cache.ts` — same lifecycle and dedupe — but pulls bytes from the backend's HD pipeline
  * (`get_hd_image_bytes`) instead of the full-resolution one. The HD
- * JPEG is what the canvas actually displays today; full-resolution
- * decoding is left in place for a future zoom-to-100 % path.
+ * JPEG provides a quick preview before the full-resolution image loads.
  *
  * Cache size follows `full_image_bitmap_max_entries`, with a floor of two
  * lightweight HD bitmaps for recently viewed photos.
@@ -99,12 +98,6 @@ export function loadHdImage(
 
   if (signal?.aborted) {
     return Promise.reject(new DOMException("aborted", "AbortError"));
-  }
-
-  // The HD preview represents the current photo. Once another path is
-  // requested, no caller should keep older HD work alive.
-  for (const [pendingPath, entry] of [...pending]) {
-    if (pendingPath !== path) entry.cancel();
   }
 
   const cached = getHdImage(path);
