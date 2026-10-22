@@ -14,6 +14,9 @@
  */
 
 import {
+  defaultAnalog, normalizeAnalog, normalizeClarity, type AnalogSettings,
+  defaultClarity,
+  type ClaritySettings,
   defaultColor,
   defaultCurve,
   normalizeColor,
@@ -43,6 +46,8 @@ export interface PostProcessSettings {
    *  it applied. */
   enabled: boolean;
   tone: ToneEdit;
+  clarity: ClaritySettings;
+  analog: AnalogSettings;
   color: ColorEdit;
   curve: CurveEdit;
   /** Global sharpening pass applied AFTER per-photo edits and the
@@ -61,6 +66,8 @@ function defaultSettings(): PostProcessSettings {
   return {
     enabled: true,
     tone: defaultTone(),
+    clarity: defaultClarity(),
+    analog: defaultAnalog(),
     color: defaultColor(),
     curve: defaultCurve(),
     sharpen: defaultSharpen(),
@@ -81,6 +88,8 @@ function load(): PostProcessSettings {
       tone: parsed.tone
         ? { ...defaultTone(), ...parsed.tone }
         : defaultTone(),
+      clarity: normalizeClarity(parsed.clarity),
+      analog: normalizeAnalog(parsed.analog),
       color: parsed.color ? normalizeColor(parsed.color) : defaultColor(),
       curve: parsed.curve ?? defaultCurve(),
       sharpen: parsed.sharpen
@@ -169,6 +178,22 @@ export function setPostTone(tone: ToneEdit): void {
 
 export function resetPostTone(): void {
   commit({ ...getCommittedPostProcess(), tone: defaultTone() });
+}
+
+export function setPostClarity(clarity: ClaritySettings): void {
+  commit({ ...getCommittedPostProcess(), clarity: normalizeClarity(clarity) });
+}
+
+export function resetPostClarity(): void {
+  commit({ ...getCommittedPostProcess(), clarity: defaultClarity() });
+}
+
+export function setPostAnalog(analog: AnalogSettings): void {
+  commit({ ...getCommittedPostProcess(), analog: normalizeAnalog(analog) });
+}
+
+export function resetPostAnalog(): void {
+  commit({ ...getCommittedPostProcess(), analog: defaultAnalog() });
 }
 
 export function setPostCurve(curve: CurveEdit): void {

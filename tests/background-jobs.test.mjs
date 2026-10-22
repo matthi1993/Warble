@@ -35,6 +35,367 @@ function componentDependencies() {
   };
 }
 
+function clarityFixture() {
+  const domain = loadSource("domain/edits/effects.ts", {});
+  const { clarityShader } = loadSource("features/editor/tools/clarity/clarity.shader.ts", { "@domain/edits": domain });
+  return { domain, clarityShader };
+}
+
+function analogFixture() {
+  const domain = loadSource("domain/edits/effects.ts", {});
+  const shader = loadSource("features/editor/tools/analog/analog.shader.ts", { "@domain/edits": domain });
+  return { domain, ...shader };
+}
+
+test("removed Clarity and Analog controls are dropped from saved values and amounts default safely", () => {
+  const { domain, analogShader } = analogFixture();
+  assert.deepEqual(domain.normalizeClarity({ clarity: 25, structure: -20, scale: 90, noiseProtection: 100, haloProtection: 100 }),
+    { clarity: 25, structure: -20 });
+  assert.deepEqual(domain.normalizeAnalog({ dust: 45, vignette: -20, halation: 1000, scratches: 70, vignetteBlur: 90, extra: 30 }),
+    { vignette: 0, halation: 100, chromaticAberration: 0 });
+  assert.equal(analogShader.isActive(domain.normalizeAnalog({ dust: 80, scratches: 70 })), false);
+  assert.equal(analogShader.isActive(domain.defaultAnalog()), false);
+  for (const key of Object.keys(domain.defaultAnalog())) {
+    assert.equal(analogShader.isActive({ ...domain.defaultAnalog(), [key]: 20 }), true);
+  }
+});
+
+test("Analog effects persist per photo, preserve other effects, and can be cleared independently", async (t) => {
+  const { domain } = analogFixture();
+  const previousWindow = globalThis.window;
+  const previousStorage = globalThis.localStorage;
+  globalThis.window = { setTimeout: () => 1, clearTimeout() {} };
+  globalThis.localStorage = { getItem: () => null };
+  t.after(() => { globalThis.window = previousWindow; globalThis.localStorage = previousStorage; });
+  let persisted = JSON.stringify({ first: { analog: { vignette: 35 }, clarity: { clarity: 20, scale: 90 } } });
+  const store = loadService("effects/effects-store.ts", {
+    "@domain/edits": domain,
+    "@tauri-apps/api/core": { invoke: async (command, args) => {
+      if (command === "get_photo_effects") return persisted;
+      assert.equal(command, "set_photo_effects");
+      persisted = args.effectsJson;
+    } },
+  });
+  await store.loadPhotoEffects();
+  assert.deepEqual(store.getPhotoClarity("first"), { clarity: 20, structure: 0 });
+  assert.deepEqual(store.getPhotoAnalog("first"), { ...domain.defaultAnalog(), vignette: 35 });
+  const value = { ...domain.defaultAnalog(), halation: 40, chromaticAberration: 60 };
+  store.setPhotoAnalog("second", value);
+  value.halation = 99;
+  assert.equal(store.getPhotoAnalog("second").halation, 40);
+  await store.flushPhotoEffects();
+  await store.reloadPhotoEffects();
+  assert.equal(store.hasEffects("second"), true);
+  assert.equal(store.getPhotoAnalog("second").chromaticAberration, 60);
+  store.setPhotoAnalog("first", null);
+  assert.equal(store.getPhotoClarity("first").clarity, 20);
+  store.setPhotoAnalog("second", null);
+  assert.equal(store.hasEffects("second"), false);
+  await store.flushPhotoEffects();
+  assert.equal(JSON.parse(persisted).second, undefined);
+});
+
+test("Analog runs after all edits, samples the edited targets, reuses them, and releases them when disabled", (t) => {
+  const { domain, ...shader } = analogFixture();
+  const { AnalogRenderPass } = loadSource("features/editor/rendering/analog-render-pass.ts", {
+    "@domain/edits": domain, "../tools/analog/analog.shader": shader,
+  });
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: () => ({ width: 0, height: 0 }) };
+  t.after(() => { globalThis.document = previousDocument; });
+  let nextId = 0;
+  const handle = () => ({ id: ++nextId });
+  let framebuffer = null;
+  let program = null;
+  let activeUnit = 0;
+  const bound = new Map();
+  const uniforms = new Map();
+  const draws = [];
+  const uploads = [];
+  const deletedTextures = [];
+  const deletedFramebuffers = [];
+  const mipmaps = [];
+  const gl = new Proxy({
+    TEXTURE0: 0, TEXTURE1: 1,
+    createShader: handle, shaderSource() {}, compileShader() {}, getShaderParameter: () => true, deleteShader() {},
+    createProgram: handle, attachShader() {}, linkProgram() {}, getProgramParameter: () => true, deleteProgram() {},
+    createVertexArray: handle, bindVertexArray() {}, deleteVertexArray() {},
+    createBuffer: handle, bindBuffer() {}, bufferData() {}, deleteBuffer() {},
+    enableVertexAttribArray() {}, vertexAttribPointer() {},
+    createTexture: handle, texParameteri() {}, pixelStorei() {}, generateMipmap: () => mipmaps.push(bound.get(activeUnit)),
+    activeTexture: unit => { activeUnit = unit; },
+    bindTexture: (_, texture) => bound.set(activeUnit, texture),
+    texImage2D: (...args) => uploads.push({ texture: bound.get(activeUnit), data: args.at(-1) }),
+    deleteTexture: texture => deletedTextures.push(texture),
+    createFramebuffer: handle,
+    bindFramebuffer: (_, target) => { framebuffer = target; },
+    framebufferTexture2D() {}, checkFramebufferStatus: () => "FRAMEBUFFER_COMPLETE",
+    deleteFramebuffer: target => deletedFramebuffers.push(target),
+    viewport() {}, useProgram: value => { program = value; },
+    getUniformLocation: (_, name) => name,
+    uniform1f: (name, value) => uniforms.set(name, value),
+    uniform1i: (name, value) => uniforms.set(name, value),
+    uniform1ui: (name, value) => uniforms.set(name, value),
+    uniform2f: (name, ...values) => uniforms.set(name, values),
+    drawArrays: () => draws.push({ framebuffer, texture: bound.get(0), program, uniforms: new Map(uniforms) }),
+  }, { get: (target, key) => key in target ? target[key] : key });
+  const { EditorRenderPipeline } = loadSource("features/editor/rendering/render-pipeline.ts", {
+    "@domain/edits": domain,
+    "./shader-composer": { TOOL_SHADER_MODULES: [] },
+    "../tools/grain/grain.shader": {}, "./analog-render-pass": { AnalogRenderPass },
+  });
+  const pipeline = new EditorRenderPipeline();
+  pipeline.gl = gl;
+  pipeline.program = { editor: true };
+  const source = { width: 2400, height: 1600 };
+  const values = { photo: { analog: { ...domain.defaultAnalog(), vignette: 40 }, color: { blackAndWhite: true } },
+    post: { analog: { ...domain.defaultAnalog(), halation: 50 } } };
+  const render = () => pipeline.render(source, values, { sx: 600, sy: 400, sw: 1200, sh: 800 }, 600, 400);
+  render();
+  assert.equal(draws.length, 3);
+  assert.equal(draws[0].program, pipeline.program);
+  assert.ok(draws[0].framebuffer);
+  assert.ok(draws[1].framebuffer);
+  assert.notEqual(draws[0].framebuffer, draws[1].framebuffer);
+  assert.equal(draws[2].framebuffer, null);
+  assert.notEqual(draws[1].texture, draws[0].texture);
+  assert.notEqual(draws[2].texture, draws[1].texture);
+  assert.equal(draws[1].uniforms.get("u_vignette"), 0.4);
+  assert.equal(draws[2].uniforms.get("u_halation"), 0.5);
+  assert.equal(draws[2].uniforms.get("u_vignette"), 0);
+  assert.equal(draws[2].uniforms.get("u_monochrome"), 1);
+  assert.deepEqual(draws[2].uniforms.get("u_srcOffset"), [0.25, 0.25]);
+  assert.deepEqual(draws[2].uniforms.get("u_srcScale"), [0.5, 0.5]);
+  assert.equal(uploads.length, 3);
+  assert.deepEqual(mipmaps, [draws[0].texture, draws[2].texture]);
+  render();
+  assert.equal(uploads.length, 3);
+  values.photo.analog = domain.defaultAnalog();
+  values.post.analog = domain.defaultAnalog();
+  const before = draws.length;
+  render();
+  assert.equal(draws.length, before + 1);
+  assert.equal(draws.at(-1).framebuffer, null);
+  assert.equal(deletedFramebuffers.length, 2);
+  assert.equal(deletedTextures.length, 2);
+  pipeline.invalidate();
+  assert.equal(deletedTextures.length, 3);
+  pipeline.dispose();
+});
+
+test("clarity protects noise and strong edges, preserves monochrome and cannot clip color channels", () => {
+  const { clarityShader, domain } = clarityFixture();
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const smoothstep = (min, max, value) => {
+    const t = clamp((value - min) / (max - min), 0, 1);
+    return t * t * (3 - 2 * t);
+  };
+  const detailBody = clarityShader.functions.match(/float clarityDetail\([^)]*\)\s*\{([^}]+)\}/)[1];
+  const detail = new Function("difference", "haloProtection", "noiseProtection", "smoothstep",
+    detailBody.replace(/\bfloat\s+/g, "let ").replace(/\babs\(/g, "Math.abs("));
+  const unprotected = detail(0.25, 0, 0, smoothstep);
+  assert.ok(unprotected > 0);
+  assert.ok(detail(0.25, 1, 0, smoothstep) < unprotected);
+  assert.ok(detail(0.002, 0, 1, smoothstep) < detail(0.002, 0, 0, smoothstep));
+  assert.equal(detail(0, 0.6, 0.2, smoothstep), 0);
+  assert.equal(detail(-0.1, 0.6, 0.2, smoothstep), -detail(0.1, 0.6, 0.2, smoothstep));
+
+  const blendBody = clarityShader.functions.match(/vec3 clarityBlend\([^)]*\)\s*\{([^}]+)\}/)[1];
+  const blend = new Function("current", "delta", "smoothstep", "clamp", blendBody
+    .replace(/\bfloat\s+/g, "let ")
+    .replace("dot(current, LUMA)", "(current[0] * 0.2126 + current[1] * 0.7152 + current[2] * 0.0722)")
+    .replace(/current\.([rgb])/g, (_, channel) => `current[${"rgb".indexOf(channel)}]`)
+    .replace(/\bmin\(/g, "Math.min(").replace(/\bmax\(/g, "Math.max(")
+    .replace("return current + vec3(protectedDelta);", "return current.map(channel => channel + protectedDelta);"));
+  const apply = (rgb, delta) => blend(rgb, delta, smoothstep, clamp);
+  assert.deepEqual(apply([0.5, 0.5, 0.5], 0), [0.5, 0.5, 0.5]);
+  assert.ok(apply([0.5, 0.5, 0.5], 0.1)[0] > 0.5);
+  assert.ok(apply([0.5, 0.5, 0.5], -0.1)[0] < 0.5);
+  for (const rgb of [[0, 0, 0], [1, 1, 1], [0.5, 0.5, 0.5], [0.9, 0.2, 0.1]]) {
+    for (const delta of [-2, -0.1, 0, 0.1, 2]) {
+      const result = apply(rgb, delta);
+      assert.ok(result.every(channel => channel >= 0 && channel <= 1));
+      if (rgb[0] === rgb[1] && rgb[1] === rgb[2]) assert.equal(new Set(result).size, 1);
+    }
+  }
+  assert.deepEqual(apply([0, 0, 0], 1), [0, 0, 0]);
+  assert.deepEqual(apply([1, 1, 1], -1), [1, 1, 1]);
+  assert.equal(clarityShader.isActive(domain.defaultClarity()), false);
+  assert.equal(clarityShader.isActive({ ...domain.defaultClarity(), structure: -50 }), true);
+  assert.equal(clarityShader.isActive({ ...domain.defaultClarity(), clarity: 40 }), true);
+
+  const uniforms = new Map();
+  clarityShader.bind({
+    sourceScaleX: 0.5, sourceScaleY: 0.5, outputWidth: 1200, outputHeight: 800,
+    set1f: (name, value) => uniforms.set(name, value),
+    set2f: (name, ...values) => uniforms.set(name, values),
+  }, { ...domain.defaultClarity(), structure: -50 }, undefined);
+  assert.equal(uniforms.get("u_editStructure"), -0.5);
+  assert.equal(uniforms.get("u_postStructure"), 0);
+  assert.deepEqual(uniforms.get("u_clarityStep"), [0.5 / 1200, 0.5 / 800]);
+});
+
+test("clarity-only photo effects persist, survive other effect resets and reload with defaults for older data", async (t) => {
+  const { domain } = clarityFixture();
+  const previousWindow = globalThis.window;
+  const previousStorage = globalThis.localStorage;
+  globalThis.window = { setTimeout: () => 1, clearTimeout() {} };
+  globalThis.localStorage = { getItem: () => null };
+  t.after(() => { globalThis.window = previousWindow; globalThis.localStorage = previousStorage; });
+  let persisted = JSON.stringify({ old: { grain: { amount: 20 } }, photo: { clarity: { clarity: 40 } } });
+  const store = loadService("effects/effects-store.ts", {
+    "@domain/edits": domain,
+    "@tauri-apps/api/core": { invoke: async (command, args) => {
+      if (command === "get_photo_effects") return persisted;
+      assert.equal(command, "set_photo_effects");
+      persisted = args.effectsJson;
+    } },
+  });
+  await store.loadPhotoEffects();
+  assert.equal(store.getPhotoClarity("old"), null);
+  assert.deepEqual(store.getPhotoGrain("old"), { ...domain.defaultGrain(), amount: 20 });
+  assert.deepEqual(store.getPhotoClarity("photo"), { ...domain.defaultClarity(), clarity: 40 });
+  store.setPhotoClarity("new", { ...domain.defaultClarity(), structure: -25 });
+  store.setPhotoSharpen("new", domain.defaultSharpen());
+  store.setPhotoSharpen("new", null);
+  assert.equal(store.hasEffects("new"), true);
+  await store.flushPhotoEffects();
+  assert.equal(JSON.parse(persisted).new.clarity.structure, -25);
+  await store.reloadPhotoEffects();
+  assert.equal(store.getPhotoClarity("new").structure, -25);
+  store.setPhotoClarity("new", null);
+  assert.equal(store.hasEffects("new"), false);
+  assert.equal(store.getPhotoEffects("new"), null);
+  store.setPhotoClarity("old", domain.defaultClarity());
+  store.setPhotoClarity("old", null);
+  assert.equal(store.getPhotoGrain("old").amount, 20);
+  await store.flushPhotoEffects();
+  assert.equal(JSON.parse(persisted).new, undefined);
+});
+
+test("clarity and Analog persist in Post settings and presets while older presets stay neutral", async (t) => {
+  const { domain } = clarityFixture();
+  const previousStorage = globalThis.localStorage;
+  const storage = new Map([["warble.postProcess.v4", JSON.stringify({ enabled: false })]]);
+  globalThis.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  t.after(() => { globalThis.localStorage = previousStorage; });
+  const edits = {
+    ...domain, defaultTone: () => ({}), defaultColor: () => ({}), defaultCurve: () => ({}), normalizeColor: value => value,
+  };
+  const store = loadService("post-process/post-process-store.ts", {
+    "@domain/edits": edits, "@services/effects/effects-store": domain,
+  });
+  assert.deepEqual(store.getPostProcess().clarity, domain.defaultClarity());
+  assert.deepEqual(store.getPostProcess().analog, domain.defaultAnalog());
+  store.setPostClarity({ ...domain.defaultClarity(), clarity: 35, structure: 20 });
+  store.setPostAnalog({ ...domain.defaultAnalog(), vignette: 65, halation: 25 });
+  assert.equal(JSON.parse(storage.get("warble.postProcess.v4")).clarity.clarity, 35);
+  assert.equal(JSON.parse(storage.get("warble.postProcess.v4")).analog.vignette, 65);
+  const presets = loadService("post-process/post-process-presets-store.ts", {
+    "./post-process-store": store, "@domain/edits": edits,
+    "@tauri-apps/api/core": { invoke: async (command) => command === "get_post_process_presets" ? null : undefined },
+  });
+  await presets.loadPostProcessPresets();
+  const saved = presets.savePostProcessPreset("Texture", store.getPostProcess());
+  store.resetPostClarity();
+  store.resetPostAnalog();
+  assert.equal(saved.values.clarity.clarity, 35);
+  assert.deepEqual(store.getPostProcess().clarity, domain.defaultClarity());
+  assert.equal(JSON.parse(presets.exportPostProcessPresets()).postProcess[0].values.clarity.structure, 20);
+  assert.equal(JSON.parse(presets.exportPostProcessPresets()).postProcess[0].values.analog.halation, 25);
+  const restored = presets.settingsFromPostProcessPreset(saved, store.getPostProcess());
+  store.setPostProcess(restored);
+  assert.equal(store.getPostProcess().clarity.structure, 20);
+  assert.equal(store.getPostProcess().analog.vignette, 65);
+  assert.equal(presets.importPostProcessPresets(JSON.stringify([{ name: "Legacy", values: { tone: {} } }])), 1);
+  assert.deepEqual(presets.getPostProcessPresets().at(-1).values.clarity, domain.defaultClarity());
+  assert.deepEqual(presets.getPostProcessPresets().at(-1).values.analog, domain.defaultAnalog());
+});
+
+test("clarity supports photo copy, paste, reset and independent Post reset", () => {
+  const { domain } = clarityFixture();
+  const { ClarityTool, readClarityToolValue } = loadSource("features/editor/tools/clarity/clarity.logic.ts", {
+    lit: componentDependencies().lit,
+    "@domain/edits": domain,
+    "../../tool": loadSource("features/editor/tool.ts", {}),
+    "./clarity.ui": {},
+  });
+  const photos = new Map([["first", { ...domain.defaultClarity(), clarity: 30 }]]);
+  let post = { ...domain.defaultClarity(), structure: 15 };
+  const state = {
+    getPhotoClarity: path => photos.get(path) ?? null,
+    setPhotoClarity: (path, value) => value ? photos.set(path, value) : photos.delete(path),
+    getPostProcess: () => ({ clarity: post }),
+    resetPostClarity: () => { post = domain.defaultClarity(); },
+  };
+  const tool = new ClarityTool("photo", state);
+  const host = { editTarget: "second", requestUpdate() {} };
+  const copy = tool.serializeEdit("first");
+  tool.applyEdit(host, copy);
+  copy.clarity = 90;
+  assert.equal(tool.hasEdits("second"), true);
+  assert.equal(readClarityToolValue("photo", "second", state).clarity, 30);
+  tool.reset(host);
+  assert.equal(tool.hasEdits("second"), false);
+  assert.equal(photos.get("first").clarity, 30);
+  assert.equal(readClarityToolValue("post", "second", state).structure, 15);
+  new ClarityTool("post", state).reset(host);
+  assert.deepEqual(post, domain.defaultClarity());
+});
+
+test("Clarity follows Dynamic Range and Analog is last in both scopes, with independent effect toggles", () => {
+  const { domain, clarityShader } = clarityFixture();
+  const clarityLogic = loadSource("features/editor/tools/clarity/clarity.logic.ts", {
+    lit: componentDependencies().lit, "@domain/edits": domain,
+    "../../tool": loadSource("features/editor/tool.ts", {}), "./clarity.ui": {},
+  });
+  const dependencies = {
+    "@domain/edits": { defaultTone: () => ({}) },
+    "./tools/clarity/clarity.logic": clarityLogic,
+    "./tools/clarity/clarity.shader": { clarityShader },
+    "./tools/analog/analog.shader": analogFixture(),
+    "./tools/analog/analog.logic": loadSource("features/editor/tools/analog/analog.logic.ts", {
+      lit: componentDependencies().lit, "@domain/edits": domain,
+      "../../tool": loadSource("features/editor/tool.ts", {}), "./analog.ui": {},
+    }),
+  };
+  for (const id of ["crop", "tone", "color", "curve", "sharpen", "grain", "bloom"]) {
+    const name = id[0].toUpperCase() + id.slice(1);
+    dependencies[`./tools/${id}/${id}.logic`] = {
+      [`${name}Tool`]: class { constructor() { this.id = id; } },
+      [`read${name}ToolValue`]: () => null,
+    };
+    dependencies[`./tools/${id}/${id}.shader`] = { [`${id}Shader`]: { id, isActive: () => false } };
+  }
+  const registry = loadSource("features/editor/registry.ts", dependencies);
+  const disabled = new Set();
+  const value = { ...domain.defaultClarity(), clarity: 40 };
+  const analog = { ...domain.defaultAnalog(), vignette: 40 };
+  const state = {
+    isEffectEnabled: (scope, path, id) => !disabled.has(`${scope}:${id}`),
+    getPhotoClarity: () => value, getPhotoAnalog: () => analog,
+    getPostProcess: () => ({ clarity: value, analog }),
+  };
+  for (const scope of ["photo", "post"]) {
+    const tools = registry.createEditorTools(scope, state);
+    assert.equal(tools.findIndex(tool => tool.id === "clarity"), tools.findIndex(tool => tool.id === "tone") + 1);
+    assert.equal(tools.at(-1).id, "analog");
+    const values = registry.readEditorToolValues(scope, "photo", state);
+    assert.equal(values.clarity, value);
+    assert.equal(values.analog, analog);
+    assert.equal(registry.hasActiveEditorToolValues(values), true);
+    disabled.add(`${scope}:clarity`);
+    assert.equal(registry.readEditorToolValues(scope, "photo", state).clarity, undefined);
+    disabled.add(`${scope}:analog`);
+    assert.equal(registry.readEditorToolValues(scope, "photo", state).analog, undefined);
+  }
+  disabled.add("photo:all");
+  assert.deepEqual(registry.readEditorToolValues("photo", "photo", state), {});
+  const composer = loadSource("features/editor/rendering/shader-composer.ts", { "../registry": registry });
+  assert.match(composer.composeToolStage("photo"), /toolApplyClarity\(color, u_editClarity/);
+  assert.match(composer.composeToolStage("post"), /toolApplyClarity\(color, u_postClarity/);
+});
+
 test("touch hold starts photo dragging while taps and scrolling keep their normal behavior", (t) => {
   const previousWindow = globalThis.window;
   const timers = new Map();
@@ -723,9 +1084,10 @@ test("bloom survives Tone and runs once before photo and Post color adjustments,
     "../registry": { EDITOR_TOOLS: [{ shader: toneShader }, { shader: colorShader }, { shader: bloomShader }] },
   });
   const { EditorRenderPipeline } = loadSource("features/editor/rendering/render-pipeline.ts", {
-    "@domain/edits": {},
+    "@domain/edits": loadSource("domain/edits/effects.ts", {}),
     "./shader-composer": composer,
     "../tools/grain/grain.shader": {},
+    "./analog-render-pass": {},
   });
   const shader = EditorRenderPipeline.prototype.fragmentSource();
   const main = shader.slice(shader.indexOf("void main()"));
@@ -888,7 +1250,7 @@ test("rotated full-resolution sources remain stable across repeated slider drags
   assert.equal(invalidations, 0);
 });
 
-function editedViewport(t) {
+function editedViewport(t, dependencies = {}) {
   const renders = [];
   const fixture = imageViewer(t, {
     "./canvas-state-adapter": { canvasState: {
@@ -898,10 +1260,11 @@ function editedViewport(t) {
     "@features/editor/rendering/render-pipeline": { EditorRenderPipeline: class {
       invalidate() {}
       render(source, values, rect, width, height, effectSize) {
-        renders.push({ source, width, height, effectSize });
+        renders.push({ source, values, rect, width, height, effectSize });
         return { width, height };
       }
     } },
+    ...dependencies,
   });
   const { viewer } = fixture;
   viewer.path = "photo";
@@ -918,6 +1281,64 @@ function editedViewport(t) {
   viewer.scale = 0.5;
   viewer.fitScale = 0.5;
   return { ...fixture, renders, draw: () => Object.getPrototypeOf(viewer).draw.call(viewer) };
+}
+
+for (const cropped of [false, true]) {
+  for (const zoomed of [false, true]) {
+    test(`before/after preserves ${zoomed ? "zoom and pan" : "fit"} with ${cropped ? "crop and rotation" : "an uncropped photo"}`, (t) => {
+      const { viewer, renders, draw } = editedViewport(t, {
+        "./canvas-state-adapter": { canvasState: {
+          getPostProcess: () => ({ enabled: true }), cropEnabled: () => true,
+          readValues: (scope) => ({ tone: { exposure: scope === "photo" ? 20 : 10 } }),
+        } },
+        "@features/editor/registry": { hasActiveEditorToolValues: (values) => Object.keys(values).length > 0 },
+        "./canvas/crop-geometry": loadSource("features/image-viewer/canvas/crop-geometry.ts", {}),
+        "./canvas/view-sizing": loadSource("features/image-viewer/canvas/view-sizing.ts", {}),
+      });
+      if (cropped) viewer.savedCrop = { x: 0.1, y: 0.2, width: 0.7, height: 0.6, rotation: 10 };
+      let rotations = 0;
+      viewer.buildRotatedCache = () => {
+        rotations++;
+        return { canvas: {}, width: 2800, height: 2000 };
+      };
+      const prototype = Object.getPrototypeOf(viewer);
+      viewer.recomputeFit = () => prototype.recomputeFit.call(viewer);
+      viewer.recomputeFit();
+      viewer.userInteracted = zoomed;
+      if (zoomed) {
+        viewer.scale = 1.25;
+        viewer.offsetX = 170;
+        viewer.offsetY = -90;
+      }
+      const viewport = () => [viewer.scale, viewer.fitScale, viewer.offsetX, viewer.offsetY,
+        viewer.userInteracted, viewer.forceFitOnNextRecompute];
+      const initialViewport = viewport();
+      const source = viewer.effectiveSource();
+      const rect = viewer.effectiveRect(source);
+      const originalDraws = [];
+      viewer.ctx.drawImage = (...args) => originalDraws.push(args);
+      viewer.scheduleDraw = draw;
+      draw();
+      assert.deepEqual(renders.at(-1).values, { photo: { tone: { exposure: 20 } }, post: { tone: { exposure: 10 } } });
+      for (const preview of [true, false, true, false]) {
+        const rendered = renders.length;
+        viewer.previewOriginal = preview;
+        viewer.willUpdate(new Map([["previewOriginal", !preview]]));
+        assert.deepEqual(viewport(), initialViewport);
+        assert.equal(viewer.effectiveSource().source, source.source);
+        assert.deepEqual(viewer.effectiveRect(viewer.effectiveSource()), rect);
+        if (preview) {
+          assert.equal(renders.length, rendered);
+          assert.deepEqual(originalDraws.at(-1).slice(0, 5), [source.source, rect.sx, rect.sy, rect.sw, rect.sh]);
+        } else {
+          assert.equal(renders.length, rendered + 1);
+        }
+        viewer.onResize();
+        assert.deepEqual(viewport(), initialViewport);
+      }
+      assert.equal(rotations, cropped ? 1 : 0);
+    });
+  }
 }
 
 function assertInteractionPreview(render) {
@@ -1007,11 +1428,12 @@ test("the renderer reuses both source textures without uploads or mipmaps and pr
     getUniformLocation: () => null, uniform2f() {},
   };
   const { EditorRenderPipeline } = loadSource("features/editor/rendering/render-pipeline.ts", {
-    "@domain/edits": {},
+    "@domain/edits": loadSource("domain/edits/effects.ts", {}),
     "./shader-composer": { TOOL_SHADER_MODULES: [{ id: "tone", bind: (context) => {
       effectSizes.push([context.outputWidth, context.outputHeight]);
     } }] },
     "../tools/grain/grain.shader": {},
+    "./analog-render-pass": {},
   });
   const pipeline = new EditorRenderPipeline();
   pipeline.gl = gl;

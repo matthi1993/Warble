@@ -1,3 +1,46 @@
+export interface ClaritySettings {
+  clarity: number;
+  structure: number;
+}
+
+export function defaultClarity(): ClaritySettings {
+  return { clarity: 0, structure: 0 };
+}
+
+export function normalizeClarity(value: Partial<ClaritySettings> | null | undefined): ClaritySettings {
+  return { clarity: effectAmount(value?.clarity, -100), structure: effectAmount(value?.structure, -100) };
+}
+
+export function isClarityZero(value: ClaritySettings | null | undefined): boolean {
+  return !value || (value.clarity === 0 && value.structure === 0);
+}
+
+export interface AnalogSettings {
+  vignette: number;
+  halation: number;
+  chromaticAberration: number;
+}
+
+export function defaultAnalog(): AnalogSettings {
+  return { vignette: 0, halation: 0, chromaticAberration: 0 };
+}
+
+function effectAmount(value: number | undefined, min = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(100, value)) : 0;
+}
+
+export function normalizeAnalog(value: Partial<AnalogSettings> | null | undefined): AnalogSettings {
+  return {
+    vignette: effectAmount(value?.vignette),
+    halation: effectAmount(value?.halation),
+    chromaticAberration: effectAmount(value?.chromaticAberration),
+  };
+}
+
+export function isAnalogZero(value: AnalogSettings | null | undefined): boolean {
+  return !value || Object.values(value).every((amount) => amount === 0);
+}
+
 export interface SharpenSettings {
   strength: number;
   radius: number;

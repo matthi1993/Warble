@@ -320,7 +320,7 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
             <span class="settings-section-label">Post-Processing</span>
             <div class="settings-options">
               <button class="menu-item" type="button" aria-pressed=${opts.postProcessEnabled}
-                title="Toggle post-processing (grain, dust, post curve)"
+                title="Toggle post-processing"
                 @click=${opts.onTogglePostProcess}
               >${opts.postProcessEnabled ? "On" : "Off"}</button>
             </div>

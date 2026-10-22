@@ -378,7 +378,7 @@ export const fullViewStyles = css`
     border-radius: var(--pf-radius-sm, 4px);
     font-size: var(--pf-text-sm);
   }
-  .edit-tool-stack { display: flex; flex-direction: column; gap: var(--pf-space-2); }
+  .edit-tool-stack { display: grid; gap: var(--pf-space-2); }
   .edit-tool-stack.dim { opacity: 0.5; }
   .edit-footer {
     display: flex;

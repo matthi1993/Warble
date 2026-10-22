@@ -198,11 +198,13 @@ export class PfPostPresetsCard extends LitElement {
     const current = getCommittedPostProcess();
     return JSON.stringify(preset.values) === JSON.stringify({
       tone: current.tone,
+      clarity: current.clarity,
       color: current.color,
       curve: current.curve,
       sharpen: current.sharpen,
       grain: current.grain,
       bloom: current.bloom,
+      analog: current.analog,
     });
   }
 

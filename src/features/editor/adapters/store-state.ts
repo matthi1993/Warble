@@ -4,10 +4,10 @@ import {
   setPhotoCurve, setPhotoTone,
 } from "@services/edits/edits-store";
 import {
-  getPhotoGrain, getPhotoSharpen, setPhotoGrain, setPhotoSharpen,
+  getPhotoAnalog, setPhotoAnalog, getPhotoClarity, getPhotoGrain, getPhotoSharpen, setPhotoClarity, setPhotoGrain, setPhotoSharpen,
 } from "@services/effects/effects-store";
 import {
-  getPostProcess, resetPostBloom, resetPostColor, resetPostCurve,
+  setPostAnalog, resetPostAnalog, getPostProcess, resetPostClarity, setPostClarity, resetPostBloom, resetPostColor, resetPostCurve,
   resetPostGrain, resetPostSharpen, resetPostTone, setPostBloom,
   setPostColor, setPostCurve, setPostGrain, setPostSharpen, setPostTone,
 } from "@services/post-process/post-process-store";
@@ -15,9 +15,9 @@ import { isEffectEnabled, setEffectEnabled } from "@services/effects/effect-enab
 
 export const editorStateAdapter: EditorState = {
   flushPhotoEdit, getPhotoEdit, setPhotoColor, setPhotoCrop,
-  setPhotoCurve, setPhotoTone, getPhotoGrain, getPhotoSharpen,
+  setPhotoCurve, setPhotoTone, getPhotoAnalog, setPhotoAnalog, getPhotoClarity, setPhotoClarity, getPhotoGrain, getPhotoSharpen,
   setPhotoGrain, setPhotoSharpen, getPostProcess,
-  resetPostBloom, resetPostColor, resetPostCurve, resetPostGrain,
+  setPostAnalog, resetPostAnalog, resetPostClarity, setPostClarity, resetPostBloom, resetPostColor, resetPostCurve, resetPostGrain,
   resetPostSharpen, resetPostTone, setPostBloom, setPostColor,
   setPostCurve, setPostGrain, setPostSharpen, setPostTone,
   isEffectEnabled, setEffectEnabled,

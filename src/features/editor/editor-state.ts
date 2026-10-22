@@ -1,6 +1,6 @@
 import type { PhotoEdit } from "@domain/edits";
 import type { CropEdit, ToneEdit, ColorEdit, CurveEdit } from "@domain/edits";
-import type { SharpenSettings, GrainSettings, BloomSettings } from "@domain/edits";
+import type { AnalogSettings, ClaritySettings, SharpenSettings, GrainSettings, BloomSettings } from "@domain/edits";
 import type { PostProcessSettings } from "@services/post-process/post-process-store";
 import type { ToolScope } from "./tool";
 
@@ -15,6 +15,14 @@ export interface EditorState {
   setPhotoSharpen(path: string, value: SharpenSettings | null): void;
   getPhotoGrain(path: string | null): GrainSettings | null;
   setPhotoGrain(path: string, value: GrainSettings | null): void;
+  getPhotoClarity(path: string | null): ClaritySettings | null;
+  setPhotoClarity(path: string, value: ClaritySettings | null): void;
+  setPostClarity(value: ClaritySettings): void;
+  resetPostClarity(): void;
+  getPhotoAnalog(path: string | null): AnalogSettings | null;
+  setPhotoAnalog(path: string, value: AnalogSettings | null): void;
+  setPostAnalog(value: AnalogSettings): void;
+  resetPostAnalog(): void;
   getPostProcess(): PostProcessSettings;
   setPostTone(value: ToneEdit): void;
   resetPostTone(): void;

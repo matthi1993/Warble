@@ -4,6 +4,9 @@ import {
   defaultCurve,
   isCurveZero,
   type CurveEdit,
+  isAnalogZero,
+  normalizeAnalog,
+  type AnalogSettings,
 } from "@domain/edits";
 import {
   composeToolDeclarations,
@@ -16,6 +19,7 @@ import type {
   ToolShaderBindingContext,
 } from "./shader-types";
 import { GRAIN_TEXTURE_SIZE } from "../tools/grain/grain.shader";
+import { AnalogRenderPass } from "./analog-render-pass";
 
 export type EditorSource = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
@@ -32,6 +36,7 @@ export class EditorRenderPipeline {
   private uploadedPostCurve: CurveEdit | null = null;
   private uniformLocations = new Map<string, WebGLUniformLocation | null>();
   private failed = false;
+  private analogPass: AnalogRenderPass | null = null;
 
   render(
     source: EditorSource,
@@ -52,6 +57,16 @@ export class EditorRenderPipeline {
     const height = source.height;
     const scaleX = sourceRect.sw / width;
     const scaleY = sourceRect.sh / height;
+    const analogLayers = [values.photo.analog, values.post.analog]
+      .filter((value): value is AnalogSettings => !!value)
+      .map(normalizeAnalog)
+      .filter(value => !isAnalogZero(value));
+    if (analogLayers.length) {
+      this.analogPass ??= new AnalogRenderPass(gl);
+      if (!this.analogPass.begin(outputWidth, outputHeight, analogLayers.length)) return null;
+    } else {
+      this.analogPass?.releaseTargets();
+    }
 
     gl.viewport(0, 0, outputWidth, outputHeight);
     gl.useProgram(this.program);
@@ -81,6 +96,14 @@ export class EditorRenderPipeline {
     this.bindTexture(2, this.postCurveTexture);
     this.bindTexture(3, this.grainTexture);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    if (analogLayers.length) {
+      const monochrome = [values.photo.color, values.post.color]
+        .some((value) => (value as { blackAndWhite?: boolean } | null)?.blackAndWhite === true);
+      this.analogPass!.finish(analogLayers, {
+        offsetX: sourceRect.sx / width, offsetY: sourceRect.sy / height,
+        scaleX, scaleY, sourceWidth: width, sourceHeight: height, monochrome,
+      });
+    }
     return this.canvas;
   }
 
@@ -90,6 +113,7 @@ export class EditorRenderPipeline {
   }
 
   invalidate(): void {
+    this.analogPass?.releaseTargets();
     if (this.gl) {
       for (const texture of this.sourceTextures.values()) this.gl.deleteTexture(texture);
     }
@@ -99,6 +123,8 @@ export class EditorRenderPipeline {
   dispose(): void {
     const gl = this.gl;
     if (!gl) return;
+    this.analogPass?.dispose();
+    this.analogPass = null;
     if (this.program) gl.deleteProgram(this.program);
     if (this.vao) gl.deleteVertexArray(this.vao);
     for (const texture of [

@@ -206,11 +206,7 @@ export class PfImageCanvas extends LitElement {
   @property({ type: String, reflect: true })
   cursor: "" | "move" | "ns" | "ew" | "nwse" | "nesw" | "horizon" = "";
 
-  /**
-   * When `true`, persisted crop and tonal adjustments are bypassed at
-   * draw time so the user can momentarily see the unedited original.
-   * Pan/zoom still work; only the edits are suppressed.
-   */
+  /** Compare image effects while keeping the current framing. */
   @property({ type: Boolean, reflect: true })
   previewOriginal = false;
 
@@ -629,14 +625,7 @@ export class PfImageCanvas extends LitElement {
       this.draw();
     }
     if (changed.has("previewOriginal")) {
-      // Toggling the preview changes the cropped source rect, so refit
-      // before redrawing or the image jumps off-centre.
-      this.userInteracted = false;
-      this.forceFitOnNextRecompute = true;
-      this.scale = 1;
-      this.offsetX = 0;
-      this.offsetY = 0;
-      requestAnimationFrame(() => this.onResize());
+      this.scheduleDraw();
     }
     if (changed.has("editing") && !this.editing) this.endEditInteraction();
     if (changed.has("editing") && this.editing) {
@@ -1015,7 +1004,6 @@ export class PfImageCanvas extends LitElement {
    * canvas keeps showing the straightened/rotated image after the
    * crop card is dismissed. */
   private normalizedRotation(): number {
-    if (this.previewOriginal) return 0;
     if (!this.cropEnabled()) return 0;
     let r: number;
     if (this.cropMode) {
@@ -1074,7 +1062,6 @@ export class PfImageCanvas extends LitElement {
    */
   private effectiveCrop(): CropEdit | null {
     if (this.cropMode) return null;
-    if (this.previewOriginal) return null;
     if (!this.cropEnabled()) return null;
     return this.savedCrop;
   }
@@ -1232,12 +1219,6 @@ export class PfImageCanvas extends LitElement {
       ctx.clip();
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = this.smoothingQuality;
-      // Tone is applied in crop mode too so the user sees what their
-      // adjustments do while re-framing. `previewOriginal` (the
-      // before/after toggle) still bypasses tone + crop on purpose.
-      // The WebGL path also handles per-photo curve + color and
-      // global post-process (color + curve), so we route through it
-      // whenever ANY of those is non-identity.
       const pp = this.postProcess;
       // Master post-process switch. When disabled the user still sees
       // their per-photo tone + colour + curve edits (those are the
