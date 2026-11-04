@@ -22,6 +22,7 @@ export interface ViewState {
   frameColor: BgColor;
   frameRadius: FrameRadius;
   sizing: SizingMode;
+  autoRotate: boolean;
   smoothing: SmoothingQuality;
 }
 
@@ -32,6 +33,7 @@ export const DEFAULT_VIEW_STATE: ViewState = {
   frameColor: "white",
   frameRadius: 0,
   sizing: "fit",
+  autoRotate: false,
   smoothing: "high",
 };
 
@@ -43,6 +45,7 @@ interface PersistedViewState {
   frameColor?: string | null;
   frameRadius?: number | null;
   sizing?: string | null;
+  autoRotate?: boolean | null;
   smoothing?: string | null;
 }
 
@@ -76,9 +79,8 @@ export async function loadViewState(): Promise<Partial<ViewState>> {
         ?? (persisted.fit === "tight" ? 12 : persisted.fit === "proof" ? 48 : 0),
       frameColor: coerceBg(persisted.frameColor) ?? DEFAULT_VIEW_STATE.frameColor,
       frameRadius: coerceFrameRadius(persisted.frameRadius) ?? DEFAULT_VIEW_STATE.frameRadius,
-      ...(coerceSizing(persisted.sizing)
-        ? { sizing: coerceSizing(persisted.sizing)! }
-        : {}),
+      sizing: coerceSizing(persisted.sizing) ?? DEFAULT_VIEW_STATE.sizing,
+      autoRotate: persisted.autoRotate ?? persisted.sizing === "auto",
       ...(coerceSmoothing(persisted.smoothing)
         ? { smoothing: coerceSmoothing(persisted.smoothing)! }
         : {}),

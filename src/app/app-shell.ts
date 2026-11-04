@@ -1,13 +1,18 @@
+import "../ui/controls/pf-view-mode-switch";
 import { LitElement, css, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 import type { Folder } from "@domain/folder";
 import type { Photo, PhotoFilterInfo } from "@domain/photo";
 import { buildFolderForest } from "./folder-tree";
-import { buildDateTree, dateSelectionLabel, matchesDateSelection, type DateTreeNode } from "./date-tree";
+import { DateTreeIndex, dateSelectionLabel, matchesDateSelection, type DateTreeNode } from "./date-tree";
+import type { Album, SidebarAlbums } from "./sidebar-albums";
+import "./sidebar-folders";
+import "./sidebar-days";
+import "./sidebar-albums";
 import { loadVariantOverrides, reloadVariantOverrides } from "@services/library/variant-store";
 import { RATING_LABEL_KEYS } from "@domain/rating";
 import { flushAllPhotoEdits, reloadPhotoEdits } from "@services/edits/edits-store";
@@ -17,7 +22,7 @@ import {
   removePhotoEffectsUnderRoot,
 } from "@services/effects/effects-store";
 import {
-  applyRatingShortcut,
+  applyRatingShortcuts,
   flushPhotoRatings,
   getPhotoRating,
   loadPhotoRatings,
@@ -58,7 +63,7 @@ interface FolderSelection {
 
 interface FolderScanProgress {
   phase: "queued" | "scanning" | "indexing" | "done" | "cancelled" | "error";
-  kind: "folderTree" | "folderImages";
+  kind: "folderTree" | "folderImages" | "folderCheck";
   rootId: string;
   folderKey: string;
   jobId: number;
@@ -85,6 +90,8 @@ interface FolderUpdate {
 
 const APP_ICON_URL = new URL("../../app-icon.png", import.meta.url).href;
 
+const filenameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
   return [...photos].sort((a, b) => {
     const aDate = a.filterInfo?.dateTaken ?? null;
@@ -95,10 +102,15 @@ function sortPhotosOldestFirst(photos: Photo[]): Photo[] {
       const dateOrder = aDate.localeCompare(bDate);
       if (dateOrder !== 0) return dateOrder;
     }
-    const filenameOrder = a.filename.localeCompare(b.filename, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
+    const aCaptureTime = a.filterInfo?.captureTime ?? null;
+    const bCaptureTime = b.filterInfo?.captureTime ?? null;
+    if (aCaptureTime !== bCaptureTime) {
+      if (aCaptureTime === null) return 1;
+      if (bCaptureTime === null) return -1;
+      const timeOrder = aCaptureTime.localeCompare(bCaptureTime);
+      if (timeOrder !== 0) return timeOrder;
+    }
+    const filenameOrder = filenameCollator.compare(a.filename, b.filename);
     return filenameOrder !== 0 ? filenameOrder : a.path.localeCompare(b.path);
   });
 }
@@ -138,11 +150,11 @@ export class WarbleApp extends LitElement {
    :host(.sidebar-collapsed) aside.sidebar {
      display: none;
    }
-   :host(.fs-fullview) {
+   :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
      position: relative;
-     grid-template-rows: minmax(0, 1fr);
+     grid-template-rows: minmax(0, 1fr) auto;
      grid-template-columns: minmax(0, 1fr);
-     grid-template-areas: "fullview";
+     grid-template-areas: "fullview" "footer";
      padding: 0;
      --pf-fullview-left-inset: 296px;
    }
@@ -171,7 +183,7 @@ export class WarbleApp extends LitElement {
    :host(.fs-fullview) > footer.app-footer {
      display: none;
    }
-   :host(.fs-fullview) pf-full-view {
+   :host(.fs-fullview) > pf-full-view {
     grid-area: fullview;
     grid-row: 1;
     grid-column: 1;
@@ -202,14 +214,11 @@ export class WarbleApp extends LitElement {
     }
 
     .sidebar-header {
-      padding: var(--pf-space-2) var(--pf-space-2) var(--pf-space-4);
+      padding: var(--pf-space-2) var(--pf-space-2) 0;
       display: flex;
       flex-direction: column;
       gap: var(--pf-space-2);
-    }
-    .sidebar-header pf-button {
-      flex: 1 1 auto;
-      min-width: 0;
+      flex: 0 0 auto;
     }
     .sidebar-header .header-actions {
       display: inline-flex;
@@ -239,10 +248,12 @@ export class WarbleApp extends LitElement {
       border-radius: 7px;
     }
     .sidebar-navigation {
-      padding-bottom: var(--pf-space-3);
-      border-bottom: 1px solid var(--pf-border);
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: var(--pf-space-2) var(--pf-space-2) var(--pf-space-4);
     }
-    .sidebar-navigation button {
+    .sidebar-navigation .nav-button {
       display: flex;
       align-items: center;
       gap: var(--pf-space-2);
@@ -257,53 +268,27 @@ export class WarbleApp extends LitElement {
       font: inherit;
       font-size: var(--pf-text-sm);
       cursor: pointer;
+      transition: background var(--pf-transition), color var(--pf-transition);
     }
-    .sidebar-navigation button:hover { background: var(--pf-surface-hover); }
-    .sidebar-navigation button.active { background: var(--pf-accent-soft); color: var(--pf-accent-hover); }
+    .sidebar-navigation .nav-button:hover { background: var(--pf-surface-hover); }
+    .sidebar-navigation .nav-button.active { background: var(--pf-accent-soft); color: var(--pf-accent-hover); }
+    .sidebar-navigation .nav-button:focus-visible {
+      outline: 2px solid var(--pf-accent);
+      outline-offset: -2px;
+    }
+    .sidebar-navigation .nav-button > pf-icon { width: 17px; height: 17px; flex: 0 0 auto; }
+    .sidebar-navigation .nav-button > .nav-chevron { width: 14px; height: 14px; }
+    .sidebar-navigation .nav-label { flex: 1; }
     .sidebar-navigation .nav-count { margin-left: auto; color: var(--pf-text-muted); font-size: var(--pf-text-xs); }
-    .date-tree-row {
-      display: flex;
-      align-items: center;
-      min-height: 30px;
-      border-radius: var(--pf-radius-md);
-      font-size: var(--pf-text-sm);
-    }
-    .date-tree-row:hover { background: var(--pf-surface-hover); }
-    .date-tree-row.selected { background: var(--pf-accent-soft); color: var(--pf-accent-hover); box-shadow: inset 2px 0 var(--pf-accent); }
-    .date-tree-row button { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; }
-    .date-tree-toggle { width: 24px; height: 30px; padding: 0; display: grid; place-items: center; }
-    .date-tree-toggle pf-icon { width: 14px; height: 14px; }
-    .date-tree-toggle[aria-expanded="false"] pf-icon { transform: rotate(-90deg); }
-    .date-tree-label { flex: 1; min-width: 0; padding: var(--pf-space-1) var(--pf-space-2); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .date-tree-count { color: var(--pf-text-muted); font-size: var(--pf-text-xs); padding-right: var(--pf-space-2); }
-    .date-tree-children { padding-left: var(--pf-space-3); margin-top: 2px; }
-    .date-tree-row.root .date-tree-label { font-weight: 600; }
-    .sidebar-spacer { flex: 1; }
-    .folder-actions {
-      flex: 0 0 auto;
-      padding: var(--pf-space-3);
-    }
-    .add-folders-button {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 100%;
-      gap: var(--pf-space-2);
-      padding: var(--pf-space-2) var(--pf-space-3);
-      border: 1px dashed var(--pf-border-strong);
-      border-radius: var(--pf-radius-md);
-      background: transparent;
+    .nav-chevron {
+      width: 14px;
+      height: 14px;
+      margin-left: auto;
       color: var(--pf-text-muted);
-      font: inherit;
-      font-size: var(--pf-text-sm);
-      cursor: pointer;
-      transition: background var(--pf-transition), border-color var(--pf-transition), color var(--pf-transition);
+      transform: rotate(-90deg);
+      transition: transform var(--pf-transition);
     }
-    .add-folders-button:hover {
-      border-color: var(--pf-accent);
-      background: var(--pf-accent-soft);
-      color: var(--pf-accent-hover);
-    }
+    .nav-button[aria-expanded="true"] .nav-chevron { transform: rotate(0); }
     .sidebar-footer {
       flex: 0 0 auto;
       display: flex;
@@ -356,6 +341,19 @@ export class WarbleApp extends LitElement {
       backdrop-filter: blur(2px);
       cursor: wait;
     }
+    .photo-drag-preview {
+      position: fixed;
+      z-index: 1500;
+      pointer-events: none;
+      transform: translate(12px, 12px);
+      padding: 8px 12px;
+      border-radius: var(--pf-radius-sm);
+      background: var(--pf-surface);
+      color: var(--pf-text);
+      box-shadow: var(--pf-shadow-md);
+      border: 1px solid #23a555;
+      font-size: var(--pf-text-sm);
+    }
     .app-busy-status {
       display: flex;
       flex-direction: column;
@@ -384,18 +382,54 @@ export class WarbleApp extends LitElement {
     @media (prefers-reduced-motion: reduce) {
       .app-busy-spinner { animation-duration: 1.5s; }
     }
-    .tree {
-      flex: 1;
-      overflow-y: auto;
-      padding: var(--pf-space-3) var(--pf-space-2);
-    }
     .sidebar-settings { flex: 0 0 auto; }
     .sidebar-settings pf-button { width: 100%; }
-    .empty {
-      color: var(--pf-text-subtle);
-      font-size: var(--pf-text-sm);
-      padding: var(--pf-space-2);
+    .album-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10001;
+      display: grid;
+      place-items: center;
+      padding: var(--pf-space-3);
+      background: rgba(0, 0, 0, 0.55);
     }
+    .album-dialog {
+      display: flex;
+      flex-direction: column;
+      gap: var(--pf-space-3);
+      width: min(100%, 400px);
+      box-sizing: border-box;
+      padding: var(--pf-space-4);
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-lg);
+      background: var(--pf-surface);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+    }
+    .album-dialog h2 { margin: 0; font-size: var(--pf-text-lg); }
+    .album-dialog label { display: flex; flex-direction: column; gap: var(--pf-space-1); font-size: var(--pf-text-sm); }
+    .album-dialog input, .album-dialog textarea {
+      box-sizing: border-box;
+      width: 100%;
+      padding: var(--pf-space-2);
+      border: 1px solid var(--pf-border-strong);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      font: inherit;
+    }
+    .album-dialog textarea { min-height: 85px; resize: vertical; }
+    .album-dialog-actions { display: flex; justify-content: flex-end; gap: var(--pf-space-2); }
+    .album-dialog-actions button {
+      padding: var(--pf-space-2) var(--pf-space-3);
+      border: 1px solid var(--pf-border-strong);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface-2);
+      color: var(--pf-text);
+      font: inherit;
+      cursor: pointer;
+    }
+    .album-dialog-actions button[type="submit"] { background: var(--pf-accent); color: white; border-color: var(--pf-accent); }
+    .album-error { margin: 0; color: var(--pf-danger, #e86a6a); font-size: var(--pf-text-sm); }
 
     main.content {
       grid-area: main;
@@ -510,12 +544,14 @@ export class WarbleApp extends LitElement {
 
     footer.app-footer {
       grid-area: footer;
+      position: relative;
+      z-index: 50;
       display: flex;
       align-items: center;
       gap: var(--pf-space-3);
       padding-top: 0;
       padding-right: var(--pf-space-4);
-      padding-bottom: 0, env(safe-area-inset-bottom));
+      padding-bottom: env(safe-area-inset-bottom);
       padding-left: var(--pf-space-4);
       border-top: 1px solid var(--pf-border);
       background: var(--pf-surface);
@@ -598,6 +634,17 @@ export class WarbleApp extends LitElement {
     .ctx-menu button.danger {
       color: var(--pf-danger);
     }
+    .ctx-menu .album-menu-list {
+      max-height: min(240px, 40vh);
+      overflow-y: auto;
+      border-top: 1px solid var(--pf-border);
+      margin-top: var(--pf-space-1);
+      padding-top: var(--pf-space-1);
+    }
+    .ctx-menu .album-menu-empty {
+      padding: var(--pf-space-2) var(--pf-space-3);
+      color: var(--pf-text-muted);
+    }
     @media (pointer: coarse) {
       :host {
         grid-template-columns: 44px 260px minmax(0, 1fr) 304px;
@@ -605,7 +652,10 @@ export class WarbleApp extends LitElement {
       :host(.sidebar-collapsed) {
         grid-template-columns: 44px 0 minmax(0, 1fr) 304px;
       }
-      :host(.fs-fullview) { --pf-fullview-left-inset: 304px; }
+      :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
+        grid-template-columns: minmax(0, 1fr);
+        --pf-fullview-left-inset: 304px;
+      }
       :host(.fs-fullview.sidebar-collapsed) { --pf-fullview-left-inset: 44px; }
       :host(.fs-fullview) > .sidebar-rail { width: 44px; }
       :host(.fs-fullview) > aside.sidebar { left: 44px; }
@@ -622,9 +672,9 @@ export class WarbleApp extends LitElement {
         grid-template-areas: "rail sidebar main" "footer footer footer";
       }
       :host(.sidebar-collapsed) { grid-template-columns: 36px 0 minmax(0, 1fr); }
-      :host(.fs-fullview) {
+      :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-areas: "fullview";
+        grid-template-areas: "fullview" "footer";
       }
       aside.detail { display: none; }
       .detail-toggle { display: inline-flex; }
@@ -650,7 +700,9 @@ export class WarbleApp extends LitElement {
     @media (pointer: coarse) and (min-width: 701px) and (max-width: 1080px) {
       :host { grid-template-columns: 44px 260px minmax(0, 1fr); }
       :host(.sidebar-collapsed) { grid-template-columns: 44px 0 minmax(0, 1fr); }
-      :host(.fs-fullview) { grid-template-columns: minmax(0, 1fr); }
+      :host(.fs-fullview), :host(.fs-fullview.sidebar-collapsed) {
+        grid-template-columns: minmax(0, 1fr);
+      }
     }
     @media (max-width: 700px) {
       :host, :host(.sidebar-collapsed) {
@@ -692,8 +744,8 @@ export class WarbleApp extends LitElement {
       pf-full-view { grid-column: 1; }
       footer.app-footer { padding-inline: var(--pf-space-3); }
       :host(.fs-fullview) {
-        grid-template-rows: minmax(0, 1fr);
-        grid-template-areas: "fullview";
+        grid-template-rows: minmax(0, 1fr) auto;
+        grid-template-areas: "fullview" "footer";
       }
       :host(.fs-fullview) > .mobile-backdrop { display: none; }
       :host(.fs-fullview) > .detail-backdrop { display: none; }
@@ -722,12 +774,50 @@ export class WarbleApp extends LitElement {
   private daysSelected = false;
 
   @state()
-  private selectedDateKey: string | null = null;
+  private albumsSelected = false;
 
   @state()
-  private collapsedDateNodes = new Set<string>();
+  private expandedSidebarSections = new Set<"folders" | "days" | "albums">(["folders"]);
 
-  private lastFolderPath: string | null = null;
+  private toggleSidebarSection(section: "folders" | "days" | "albums"): void {
+    const expanded = new Set(this.expandedSidebarSections);
+    if (expanded.has(section)) expanded.delete(section);
+    else expanded.add(section);
+    this.expandedSidebarSections = expanded;
+  }
+
+  private expandSidebarSection(section: "folders" | "days" | "albums"): void {
+    this.expandedSidebarSections = new Set([...this.expandedSidebarSections, section]);
+  }
+
+  @state()
+  private albums: Album[] = [];
+
+  @state()
+  private selectedAlbumId: string | null = null;
+
+  @state()
+  private albumDialog: Album | "new" | null = null;
+
+  @state()
+  private albumError = "";
+
+  @state()
+  private albumContextMenu: { id: string; x: number; y: number } | null = null;
+
+  @state()
+  private albumDropMode = false;
+
+  @state()
+  private photoDragLabel: string | null = null;
+
+  private photoDrag: { pointerId: number; paths: string[] } | null = null;
+  private photoDragOpenedSidebar = false;
+
+  private albumPhotoRequest = 0;
+
+  @state()
+  private selectedDateKey: string | null = null;
 
   @state()
   private libraryPhotos: Photo[] = [];
@@ -736,16 +826,41 @@ export class WarbleApp extends LitElement {
   private restoringCachedDates = false;
 
   private dateTreeSource: Photo[] | null = null;
-  private dateTreeLoading = false;
-  private dateTree: DateTreeNode[] = [];
+  private readonly dateTreeIndex = new DateTreeIndex();
+  private datePhotosSource: Photo[] | null = null;
+  private sortedDatePhotos: Photo[] = [];
+  private readonly dateSelections = new Map<string | null, Photo[]>();
+
+  private getDatePhotos(key: string | null): Photo[] {
+    if (this.datePhotosSource !== this.libraryPhotos) {
+      this.datePhotosSource = this.libraryPhotos;
+      this.sortedDatePhotos = sortPhotosOldestFirst(this.photoPipeline.enrich(this.libraryPhotos));
+      this.dateSelections.clear();
+    }
+    let photos = this.dateSelections.get(key);
+    if (!photos) {
+      photos = key === null ? this.sortedDatePhotos
+        : this.sortedDatePhotos.filter((photo) => matchesDateSelection(photo, key));
+      this.dateSelections.set(key, photos);
+    }
+    return photos;
+  }
+
+  private invalidateDatePhotos(): void {
+    this.datePhotosSource = null;
+    this.dateSelections.clear();
+  }
 
   private get dateNodes(): DateTreeNode[] {
-    if (this.dateTreeSource !== this.libraryPhotos || this.dateTreeLoading !== this.filterMetadataLoading) {
+    this.syncDateTreeIndex();
+    return this.dateTreeIndex.getTree();
+  }
+
+  private syncDateTreeIndex(): void {
+    if (this.dateTreeSource !== this.libraryPhotos) {
       this.dateTreeSource = this.libraryPhotos;
-      this.dateTreeLoading = this.filterMetadataLoading;
-      this.dateTree = buildDateTree(this.photoPipeline.enrich(this.libraryPhotos), this.dateTreeLoading);
+      this.dateTreeIndex.replacePhotos(this.photoPipeline.enrich(this.libraryPhotos));
     }
-    return this.dateTree;
   }
 
   @state()
@@ -765,6 +880,9 @@ export class WarbleApp extends LitElement {
 
   @state()
   private selectedPhoto: Photo | null = null;
+
+  @state()
+  private gridSelectionPaths: string[] = [];
 
   @state()
   private fullViewIndex: number | null = null;
@@ -803,9 +921,13 @@ export class WarbleApp extends LitElement {
   private contextMenu: {
     path: string;
     filename: string;
+    paths: string[];
     x: number;
     y: number;
   } | null = null;
+
+  @state()
+  private contextAlbumPickerOpen = false;
 
   @state()
   private metadataPaths: string[] = [];
@@ -877,6 +999,7 @@ export class WarbleApp extends LitElement {
   }
 
   private selectAllPhotos = () => {
+    this.albumsSelected = false;
     this.allPhotosSelected = true;
     this.favoritesSelected = false;
     this.daysSelected = false;
@@ -891,6 +1014,7 @@ export class WarbleApp extends LitElement {
   };
 
   private selectFavorites = () => {
+    this.albumsSelected = false;
     this.allPhotosSelected = false;
     this.favoritesSelected = true;
     this.daysSelected = false;
@@ -905,86 +1029,138 @@ export class WarbleApp extends LitElement {
   };
 
   private selectFolders = () => {
-    if (this.selectedFolderId && !this.daysSelected && !this.allPhotosSelected && !this.favoritesSelected) return;
-    this.daysSelected = false;
-    this.allPhotosSelected = false;
-    this.favoritesSelected = false;
-    const previousFolder = this.lastFolderPath ? findFolderByPath(this.folders, this.lastFolderPath) : null;
-    const folder = (previousFolder?.available ? previousFolder : null)
-      || this.folders.find((root) => root.available);
-    if (folder?.available) {
-      void this.selectFolder(folder.id, folder.path);
-    } else {
-      this.selectedFolderId = null;
-      this.selectedFolderName = null;
-      this.selectedPhoto = null;
-      this.fullViewIndex = null;
-      this.setPhotos([]);
-    }
-    this.mobileSidebarOpen = false;
+    this.toggleSidebarSection("folders");
   };
 
   private selectDays = () => {
-    if (this.daysSelected) return;
-    this.stopPhotoBackgroundWork();
-    this.pendingRestoreFolderPath = null;
+    this.toggleSidebarSection("days");
+  };
+
+  private selectAlbums = () => {
+    this.toggleSidebarSection("albums");
+  };
+
+  private async loadAlbums(): Promise<void> {
+    try {
+      this.albums = await invoke<Album[]>("list_albums");
+    } catch (error) {
+      console.error("Failed to load albums", error);
+    }
+  }
+
+  private selectAlbum = (id: string) => {
+    this.expandSidebarSection("albums");
+    this.albumsSelected = true;
+    this.daysSelected = false;
+    this.allPhotosSelected = false;
+    this.favoritesSelected = false;
+    this.selectedFolderId = null;
+    this.selectedFolderName = null;
+    this.selectedAlbumId = id;
+    this.setPhotos([], false);
+    this.selectedPhoto = null;
+    this.fullViewIndex = null;
+    this.detailOpen = false;
+    this.mobileSidebarOpen = false;
+    void this.refreshAlbumPhotos();
+  };
+
+  private async refreshAlbumPhotos(): Promise<void> {
+    const id = this.selectedAlbumId;
+    if (!id || !this.albumsSelected) return;
+    const request = ++this.albumPhotoRequest;
+    try {
+      const photos = await invoke<Photo[]>("get_album_photos", { id });
+      if (request !== this.albumPhotoRequest || !this.albumsSelected || this.selectedAlbumId !== id) return;
+      this.setPhotos(photos);
+      if (this.selectedPhoto) this.selectedPhoto = this.photos.find((photo) => photo.path === this.selectedPhoto?.path) ?? null;
+    } catch (error) {
+      console.error("Failed to load album photos", error);
+    }
+  }
+
+  private openAlbumDialog(album: Album | "new"): void {
+    this.albumContextMenu = null;
+    this.albumError = "";
+    this.albumDialog = album;
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(".album-dialog input")?.focus());
+  }
+
+  private async saveAlbum(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const name = String(data.get("name") ?? "").trim();
+    const description = String(data.get("description") ?? "").trim();
+    if (!name) { this.albumError = "Enter an album name."; return; }
+    try {
+      const album = this.albumDialog;
+      if (album === "new") {
+        const id = await invoke<string>("create_album", { name, description });
+        await this.loadAlbums();
+        this.selectAlbum(id);
+      } else if (album) {
+        await invoke("update_album", { id: album.id, name, description });
+        await this.loadAlbums();
+      }
+      this.albumDialog = null;
+    } catch (error) {
+      this.albumError = String(error);
+    }
+  }
+
+  private async deleteAlbum(id: string): Promise<void> {
+    this.albumContextMenu = null;
+    const album = this.albums.find((item) => item.id === id);
+    if (!album || !await confirm(`Delete album “${album.name}”? Photos will not be deleted.`, { title: "Delete album", kind: "warning" })) return;
+    try {
+      await invoke("delete_album", { id });
+      if (this.selectedAlbumId === id) {
+        this.selectedAlbumId = null;
+        this.selectedPhoto = null;
+        this.fullViewIndex = null;
+        this.setPhotos([], false);
+      }
+      await this.loadAlbums();
+    } catch (error) {
+      console.error("Failed to delete album", error);
+      void message(String(error), { title: "Delete album failed", kind: "error" });
+    }
+  }
+
+  private selectDate = (key: string) => {
+    if (this.daysSelected && this.selectedDateKey === key) return;
+    this.expandSidebarSection("days");
+    this.albumsSelected = false;
     this.daysSelected = true;
     this.allPhotosSelected = false;
     this.favoritesSelected = false;
     this.selectedFolderId = null;
     this.selectedFolderName = null;
-    this.selectedDateKey = null;
-    this.selectedPhoto = null;
-    this.fullViewIndex = null;
-    this.mobileSidebarOpen = false;
-    this.detailOpen = false;
-    this.showLibraryPhotos();
-    if (!this.restoringCachedDates) this.startPhotoBackgroundWork();
-    if (!this.libraryPhotos.length && this.imports.length > 0) void this.refreshAllPhotos();
-  };
-
-  private selectDate = (key: string) => {
-    if (this.selectedDateKey === key) return;
+    this.pendingRestoreFolderPath = null;
     this.selectedDateKey = key;
     this.selectedPhoto = null;
     this.fullViewIndex = null;
     this.mobileSidebarOpen = false;
     this.detailOpen = false;
     this.showLibraryPhotos(false);
+    if (!this.libraryPhotos.length && this.imports.length) void this.refreshAllPhotos();
   };
-
-  private toggleDateNode = (key: string) => {
-    const collapsed = new Set(this.collapsedDateNodes);
-    if (collapsed.has(key)) collapsed.delete(key);
-    else collapsed.add(key);
-    this.collapsedDateNodes = collapsed;
-  };
-
-  private renderDateNode(node: DateTreeNode, depth = 0): ReturnType<typeof html> {
-    const expanded = !this.collapsedDateNodes.has(node.key);
-    return html`
-      <div class=${`date-tree-row ${this.selectedDateKey === node.key ? "selected" : ""} ${depth === 0 ? "root" : ""}`}>
-        ${node.children.length ? html`<button class="date-tree-toggle" type="button" aria-label=${`${expanded ? "Collapse" : "Expand"} ${node.label}`}
-          aria-expanded=${expanded} @click=${() => this.toggleDateNode(node.key)}><pf-icon name="chevron-down"></pf-icon></button>`
-          : html`<span class="date-tree-toggle"></span>`}
-        <button class="date-tree-label" type="button" aria-current=${this.selectedDateKey === node.key ? "page" : "false"}
-          @click=${() => this.selectDate(node.key)}>${node.label}</button>
-        <span class="date-tree-count">${node.count}</span>
-      </div>
-      ${expanded && node.children.length ? html`<div class="date-tree-children">${node.children.map((child) => this.renderDateNode(child, depth + 1))}</div>` : null}
-    `;
-  }
 
   private showLibraryPhotos(restartMetadata = true): void {
     if (!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected) return;
     const photos = this.favoritesSelected
       ? this.libraryPhotos.filter((photo) => getPhotoRating(photo.path).rating >= 1)
       : this.daysSelected
-        ? this.photoPipeline.enrich(this.libraryPhotos).filter((photo) => matchesDateSelection(photo, this.selectedDateKey))
+        ? this.getDatePhotos(this.selectedDateKey)
         : this.libraryPhotos;
     const selectedPath = this.selectedPhoto?.path;
     const previousIndex = this.fullViewIndex;
-    this.setPhotos(photos, restartMetadata && !this.daysSelected);
+    if (this.daysSelected) {
+      this.photos = photos;
+    } else {
+      this.setPhotos(photos, restartMetadata && !this.daysSelected);
+    }
     if (!selectedPath) return;
     const selectedIndex = this.photos.findIndex((photo) => photo.path === selectedPath);
     if (selectedIndex >= 0) {
@@ -1005,35 +1181,53 @@ export class WarbleApp extends LitElement {
     try {
       const photos = await invoke<Photo[]>("get_all_photos");
       if (request !== this.allPhotosRequest) return;
+      void this.loadAlbums();
       this.restoringCachedDates = true;
+      this.filterMetadataLoading = true;
       this.libraryPhotos = photos;
-      if (!this.daysSelected) this.showLibraryPhotos(false);
+      this.showLibraryPhotos(false);
+      if (this.albumsSelected) void this.refreshAlbumPhotos();
       try {
-        const cached = await invoke<Array<PhotoFilterInfo & { path: string }>>(
-          "get_cached_photo_filter_metadata",
-          { photoPaths: photos.map((photo) => photo.path) },
-        );
-        if (request !== this.allPhotosRequest) return;
-        this.photoPipeline.restore(cached);
-        this.libraryPhotos = this.photoPipeline.enrich(photos);
-        this.showLibraryPhotos(false);
-        if (this.selectedFolderId) this.applyPhotoMetadata();
+        const paths = this.photoPipeline.missingMetadataPaths(photos);
+        for (let start = 0; start < paths.length; start += 256) {
+          const cached = await invoke<Array<PhotoFilterInfo & { path: string }>>(
+            "get_cached_photo_filter_metadata",
+            { photoPaths: paths.slice(start, start + 256) },
+          );
+          if (request !== this.allPhotosRequest) return;
+          this.photoPipeline.seed(cached);
+          this.invalidateDatePhotos();
+          this.syncDateTreeIndex();
+          this.dateTreeIndex.updateMetadata(cached);
+        }
       } catch (error) {
         console.warn("Failed to restore cached photo dates", error);
         if (request === this.allPhotosRequest) this.showLibraryPhotos(false);
       }
       if (request === this.allPhotosRequest) {
         this.restoringCachedDates = false;
+        this.filterMetadataLoading = false;
+        this.invalidateDatePhotos();
+        if (this.daysSelected) this.applyDateMetadata();
+        else if (this.selectedFolderId) this.applyPhotoMetadata();
+        else this.showLibraryPhotos(false);
         this.startPhotoBackgroundWork();
       }
     } catch (error) {
-      if (request === this.allPhotosRequest) this.restoringCachedDates = false;
+      if (request === this.allPhotosRequest) {
+        this.restoringCachedDates = false;
+        this.filterMetadataLoading = false;
+      }
       console.error("Failed to load all photos", error);
     }
   }
 
   async connectedCallback() {
    super.connectedCallback();
+    window.addEventListener("pointermove", this.onPhotoDragMove, { capture: true });
+    window.addEventListener("pointerup", this.onPhotoDragEnd, { capture: true });
+    window.addEventListener("pointercancel", this.onPhotoDragCancel, { capture: true });
+    void this.loadAlbums();
    window.addEventListener("keydown", this.onGlobalKey);
    this.unsubscribeAppBusy = subscribeAppBusy((label) => {
      this.busyLabel = label;
@@ -1167,12 +1361,22 @@ export class WarbleApp extends LitElement {
   }
 
   private startPhotoBackgroundWork(): void {
-    if (this.fullViewIndex !== null) return;
     this.photoPipeline.start(
-      this.libraryPhotos.length > 0 ? this.libraryPhotos : this.photos,
-      () => this.daysSelected ? this.applyDateMetadata() : this.applyPhotoMetadata(),
+      [...this.photos, ...this.libraryPhotos],
+      (results) => {
+        this.syncDateTreeIndex();
+        this.dateTreeIndex.updateMetadata(results);
+        this.invalidateDatePhotos();
+      },
       () => this.photos.map((photo) => photo.path),
-      (loading) => { this.filterMetadataLoading = loading; },
+      (loading) => {
+        this.filterMetadataLoading = loading;
+        this.syncDateTreeIndex();
+        if (!loading) {
+          if (this.daysSelected) this.applyDateMetadata();
+          else this.applyPhotoMetadata();
+        }
+      },
     );
   }
 
@@ -1181,8 +1385,9 @@ export class WarbleApp extends LitElement {
   }
 
   private applyPhotoMetadata(): void {
-    if (this.libraryPhotos.length > 0) this.libraryPhotos = this.photoPipeline.enrich(this.libraryPhotos);
-    const enriched = sortPhotosOldestFirst(this.photoPipeline.enrich(this.photos));
+    const photos = this.photoPipeline.enrich(this.photos);
+    if (photos.every((photo, index) => photo === this.photos[index])) return;
+    const enriched = sortPhotosOldestFirst(photos);
     this.photos = enriched;
     const selectedPath = this.selectedPhoto?.path;
     if (selectedPath) {
@@ -1195,7 +1400,6 @@ export class WarbleApp extends LitElement {
   }
 
   private applyDateMetadata(): void {
-    this.libraryPhotos = this.photoPipeline.enrich(this.libraryPhotos);
     this.showLibraryPhotos(false);
   }
 
@@ -1217,6 +1421,9 @@ export class WarbleApp extends LitElement {
    for (const task of this.folderScanTasks.values()) task.finish("cancelled");
    this.folderScanTasks.clear();
    window.removeEventListener("keydown", this.onGlobalKey);
+  window.removeEventListener("pointermove", this.onPhotoDragMove, true);
+  window.removeEventListener("pointerup", this.onPhotoDragEnd, true);
+  window.removeEventListener("pointercancel", this.onPhotoDragCancel, true);
     this.unsubscribeCacheCleared?.();
     this.unsubscribeCacheCleared = null;
     this.unsubscribeAppBusy?.();
@@ -1247,15 +1454,22 @@ export class WarbleApp extends LitElement {
 
   /**
    * App-level keyboard shortcuts. Routes a small set of "always on" keys
-   * (`f`, `g`, `Escape`) regardless of which view is active, then falls
+    * (`f`, `g`, `p`, `Escape`) regardless of which view is active, then falls
    * through to grid-only keys when the full view is closed. The full
    * view installs its own capture-phase listener for navigation/fit/bg
    * keys; we run after it on the bubble phase, so this code never
-   * fights with the full view over arrow/p/b/0/1/2.
+    * fights with the full view over navigation and editing shortcuts.
    */
 
   private onGlobalKey = (e: KeyboardEvent) => {
     if (this.metadataPaths.length) return;
+    if (this.albumDialog) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.albumDialog = null;
+      }
+      return;
+    }
     // Events crossing nested shadow roots retarget `e.target` to the host.
     // Use the original composed-path node so text fields (notably the preset
     // name input) always own their keystrokes instead of triggering shortcuts.
@@ -1270,6 +1484,19 @@ export class WarbleApp extends LitElement {
     }
 
     if (e.code === "Space" && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const viewer = this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null;
+      if (viewer?.toggleVideoPlayback()) {
+        e.preventDefault();
+        return;
+      }
+      if (!viewer && this.detailOpen) {
+        const panel = this.renderRoot.querySelector("pf-detail-panel") as import("./detail-panel").PfDetailPanel | null;
+        if (panel?.toggleVideoPlayback()) e.preventDefault();
+      }
+      return;
+    }
+
+    if (e.key.toLowerCase() === "p" && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const viewer = this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null;
       if (viewer?.presentationActive) {
         e.preventDefault();
@@ -1322,6 +1549,11 @@ export class WarbleApp extends LitElement {
         this.folderContextMenu = null;
         return;
       }
+      if (this.albumContextMenu) {
+        e.preventDefault();
+        this.albumContextMenu = null;
+        return;
+      }
       if (this.immersiveView) {
         e.preventDefault();
         e.stopPropagation();
@@ -1350,13 +1582,9 @@ export class WarbleApp extends LitElement {
         this.onFullViewClose();
         return;
       }
-      const idx = this.selectedPhoto
-        ? this.photos.findIndex((p) => p.path === this.selectedPhoto!.path)
-        : 0;
-      if (idx >= 0 && idx < this.photos.length) {
+      if (this.photos.length) {
         e.preventDefault();
-        this.selectedPhoto = this.photos[idx];
-        this.fullViewIndex = idx;
+        this.openFullImage();
       }
       return;
     }
@@ -1373,15 +1601,14 @@ export class WarbleApp extends LitElement {
       return;
     }
 
-    // Star ratings (1–5) and color labels (6–9, 0). Apply to the
-    // currently-selected grid photo, falling back to the first card
-    // if nothing is selected yet.
     if (!e.metaKey && !e.ctrlKey && !e.altKey && RATING_LABEL_KEYS.has(e.key)) {
       const target =
         this.selectedPhoto ?? (this.photos.length > 0 ? this.photos[0] : null);
       if (target) {
         e.preventDefault();
-        applyRatingShortcut(target.path, e.key);
+        const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
+        const paths = grid?.getSelectionPaths() ?? [];
+        applyRatingShortcuts(paths.length ? paths : [target.path], e.key);
       }
       return;
     }
@@ -1450,8 +1677,19 @@ export class WarbleApp extends LitElement {
   };
 
   private onToggleImmersiveView = () => {
+    if (!this.immersiveView) {
+      this.collapseFolders();
+      this.sidebarCollapsed = true;
+      this.mobileSidebarOpen = false;
+    }
     this.immersiveView = !this.immersiveView;
   };
+
+  private collapseFolders(): void {
+    const expanded = new Set(this.expandedSidebarSections);
+    expanded.delete("folders");
+    this.expandedSidebarSections = expanded;
+  }
 
   private async importFolder() {
     const endBusy = beginAppBusy("Adding folders…");
@@ -1555,11 +1793,13 @@ export class WarbleApp extends LitElement {
   }
 
   private onFolderScanProgress(progress: FolderScanProgress): void {
+    const label = progress.kind === "folderCheck" ? "Check for folder changes"
+      : progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images";
     let task = this.folderScanTasks.get(progress.jobId);
     if (progress.phase === "queued") {
       task = beginTask({
         kind: "folder",
-        label: progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images",
+        label,
         priority: "background",
         status: "queued",
         target: progress.folderKey,
@@ -1571,7 +1811,7 @@ export class WarbleApp extends LitElement {
       if (!task) {
         task = beginTask({
           kind: "folder",
-          label: progress.kind === "folderTree" ? "Scan folder structure" : "Index folder images",
+          label,
           priority: "background",
           target: progress.folderKey,
         });
@@ -1579,9 +1819,7 @@ export class WarbleApp extends LitElement {
       }
       task.update({
         status: "running",
-        label: progress.kind === "folderTree"
-          ? "Scan folder structure"
-          : "Index folder images",
+        label,
       });
       return;
     }
@@ -1669,6 +1907,12 @@ export class WarbleApp extends LitElement {
 
   private async onPhotoIndexSynced(update: PhotoIndexUpdate): Promise<void> {
     void this.refreshFolderPhotoCounts();
+    if (update.metadataChanged) {
+      const affectsFolder = (photo: Photo): boolean => photo.path.startsWith(`${update.folderKey}/`);
+      this.photoPipeline.invalidate(this.libraryPhotos.filter(affectsFolder).map((photo) => photo.path));
+      this.photos = this.photos.map((photo) => affectsFolder(photo) ? { ...photo, filterInfo: undefined } : photo);
+      this.invalidateDatePhotos();
+    }
     if (update.changedImages.length > 0) {
       this.photoPipeline.invalidate(update.changedImages);
       const changed = new Set(update.changedImages);
@@ -1740,7 +1984,7 @@ export class WarbleApp extends LitElement {
   }
 
   private clearFolderSelection = () => {
-    if (this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected) return;
+    if (this.selectedFolderId === null) return;
     this.allPhotosSelected = false;
     this.favoritesSelected = false;
     this.daysSelected = false;
@@ -1754,19 +1998,12 @@ export class WarbleApp extends LitElement {
     );
   };
 
-  private onFolderTreeClick = (event: MouseEvent) => {
-    const clickedFolder = event.composedPath().some(
-      (node) => node instanceof HTMLElement && node.tagName === "PF-FOLDER-TREE-ITEM"
-    );
-    if (!clickedFolder) this.clearFolderSelection();
-  };
-
   private async selectFolder(id: string, path: string) {
+    if (!this.immersiveView) this.expandSidebarSection("folders");
+    this.albumsSelected = false;
     this.allPhotosSelected = false;
     this.favoritesSelected = false;
     this.daysSelected = false;
-    this.lastFolderPath = path;
-    this.stopPhotoBackgroundWork();
     this.pendingRestoreFolderPath = null;
     this.selectedFolderId = id;
     const name = findFolderByPath(this.imports, path)?.name ?? path.split("/").filter(Boolean).pop() ?? path;
@@ -1778,7 +2015,7 @@ export class WarbleApp extends LitElement {
     });
     // The user may have selected another folder—or blank sidebar space—while
     // the provider was still loading this one. Never restore a stale result.
-    if (this.selectedFolderId !== id || this.daysSelected || this.allPhotosSelected || this.favoritesSelected) return;
+    if (this.selectedFolderId !== id || this.albumsSelected || this.daysSelected || this.allPhotosSelected || this.favoritesSelected) return;
     this.setPhotos(photos);
     // If the full view is open, jump to the first photo of the new
     // folder so the user sees something immediately (not a blank
@@ -1801,7 +2038,7 @@ export class WarbleApp extends LitElement {
   }
 
   private onPhotoSelected(
-    e: CustomEvent<{ path: string; filename: string }>
+    e: CustomEvent<{ path: string | null; filename: string }>
   ) {
     this.selectedPhoto = this.photos.find((photo) => photo.path === e.detail.path) ?? null;
   }
@@ -1813,6 +2050,7 @@ export class WarbleApp extends LitElement {
     if (idx >= 0) {
       this.detailOpen = false;
       this.selectedPhoto = this.photos[idx];
+      this.immersiveView = false;
       this.fullViewIndex = idx;
     }
   }
@@ -1837,13 +2075,16 @@ export class WarbleApp extends LitElement {
     previousIndex: number;
   }): Promise<void> {
     const { kind, photoPath, memberPaths, previousIndex } = detail;
-    if (!this.selectedFolderId && !this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected) return;
+    if (!this.selectedFolderId && !this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected && !this.albumsSelected) return;
     try {
       await invoke("refresh_photo_parent", {
         photoPath,
       });
       void this.refreshFolderPhotoCounts();
-      if (this.allPhotosSelected || this.favoritesSelected || this.daysSelected) {
+      if (this.albumsSelected) {
+        await this.refreshAlbumPhotos();
+        void this.refreshAllPhotos();
+      } else if (this.allPhotosSelected || this.favoritesSelected || this.daysSelected) {
         await this.refreshAllPhotos();
       } else {
         this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
@@ -1881,15 +2122,16 @@ export class WarbleApp extends LitElement {
   private onPhotoContextMenu(
     e: CustomEvent<{ path: string; filename: string; x: number; y: number }>
   ) {
-    this.contextMenu = { ...e.detail };
+    const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
+    const selection = grid?.getSelectionPaths() ?? [];
+    this.contextMenu = { ...e.detail, paths: selection.includes(e.detail.path) ? selection : [e.detail.path] };
+    this.contextAlbumPickerOpen = false;
   }
 
   private editContextMetadata = (): void => {
     const menu = this.contextMenu;
     if (!menu) return;
-    const grid = this.renderRoot.querySelector("pf-photo-grid") as import("./photo-grid").PfPhotoGrid | null;
-    this.metadataPaths = grid?.getSelectionPaths() ?? [menu.path];
-    if (!this.metadataPaths.length) this.metadataPaths = [menu.path];
+    this.metadataPaths = menu.paths;
     this.contextMenu = null;
   };
 
@@ -1901,8 +2143,11 @@ export class WarbleApp extends LitElement {
     if (dateTaken === undefined) return;
     const changed = new Set(paths);
     const day = dateTaken?.slice(0, 10) ?? null;
+    const captureTime = dateTaken && dateTaken.length > 10
+      ? dateTaken.replace("T", " ").slice(0, 19)
+      : null;
     const update = (photo: Photo): Photo => changed.has(photo.path)
-      ? { ...photo, filterInfo: { ...photo.filterInfo, dateTaken: day } }
+      ? { ...photo, filterInfo: { ...photo.filterInfo, dateTaken: day, captureTime } }
       : photo;
     this.photoPipeline.invalidate(paths);
     this.photos = sortPhotosOldestFirst(this.photos.map(update));
@@ -1914,7 +2159,8 @@ export class WarbleApp extends LitElement {
   };
 
   private dismissContextMenu = () => {
-    if (this.contextMenu) this.contextMenu = null;
+    this.contextMenu = null;
+    this.contextAlbumPickerOpen = false;
   };
 
   private onFolderContextMenu(
@@ -2007,6 +2253,9 @@ export class WarbleApp extends LitElement {
   private onSlideshowStart = async () => {
     if (!isIPad() && !this.windowFullscreen) await this.setWindowFullscreen(true);
     if (!isIPad() && !this.windowFullscreen) return;
+    this.collapseFolders();
+    this.sidebarCollapsed = true;
+    this.mobileSidebarOpen = false;
     this.immersiveView = true;
     (this.renderRoot.querySelector("pf-full-view") as import("./full-view").PfFullView | null)?.startPresentation();
   };
@@ -2035,7 +2284,6 @@ export class WarbleApp extends LitElement {
   private toggleIncludeSubfolders = async () => {
     this.includeSubfolders = !this.includeSubfolders;
     if (this.selectedFolderId) {
-      this.stopPhotoBackgroundWork();
       this.requestFolderImageIndex(this.selectedFolderId, this.includeSubfolders);
       try {
         this.setPhotos(await invoke<Photo[]>("get_photos_in_folder", {
@@ -2080,9 +2328,7 @@ export class WarbleApp extends LitElement {
       const previous = changed.get("fullViewIndex");
       const wasOpen = previous !== undefined && previous !== null;
       const isOpen = this.fullViewIndex !== null;
-      if (!wasOpen && isOpen) {
-        this.stopPhotoBackgroundWork();
-      } else if (wasOpen && !isOpen && (this.selectedFolderId || this.daysSelected)) {
+      if (wasOpen && !isOpen) {
         this.startPhotoBackgroundWork();
       }
     }
@@ -2128,7 +2374,7 @@ export class WarbleApp extends LitElement {
       console.error("Failed to load restored folders", err);
       return;
     }
-    if (this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected) {
+    if (this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected && !this.albumsSelected) {
       const first = this.imports.find((folder) => folder.available);
       if (first) await this.selectFolder(first.id, first.path);
     }
@@ -2160,64 +2406,56 @@ export class WarbleApp extends LitElement {
               <pf-theme-toggle></pf-theme-toggle>
             </span>
           </div>
-          <nav class="sidebar-navigation" aria-label="Library views">
-            <button type="button" class=${this.allPhotosSelected ? "active" : ""} aria-current=${this.allPhotosSelected ? "page" : "false"} @click=${this.selectAllPhotos}>
+        </div>
+        <nav class="sidebar-navigation" aria-label="Library views">
+            <button type="button" class=${`nav-button ${this.allPhotosSelected ? "active" : ""}`} aria-current=${this.allPhotosSelected ? "page" : "false"} @click=${this.selectAllPhotos}>
               <pf-icon name="image"></pf-icon>
-              <span>All Photos</span>
+              <span class="nav-label">All Photos</span>
               <span class="nav-count">${allCount?.toLocaleString() ?? "…"}</span>
             </button>
-            <button type="button" class=${this.favoritesSelected ? "active" : ""} aria-current=${this.favoritesSelected ? "page" : "false"} @click=${this.selectFavorites}>
+            <button type="button" class=${`nav-button ${this.favoritesSelected ? "active" : ""}`} aria-current=${this.favoritesSelected ? "page" : "false"} @click=${this.selectFavorites}>
               <pf-icon name="star"></pf-icon>
-              <span>Favorites</span>
+              <span class="nav-label">Favorites</span>
               <span class="nav-count">${favoriteCount?.toLocaleString() ?? "…"}</span>
             </button>
-            <button type="button" class=${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected ? "active" : ""}
-              aria-current=${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected ? "page" : "false"} @click=${this.selectFolders}>
+            <button type="button" class=${`nav-button ${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected && !this.albumsSelected && !this.albumDropMode ? "active" : ""}`}
+              aria-current=${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected && !this.albumsSelected ? "page" : "false"}
+              aria-expanded=${this.expandedSidebarSections.has("folders")} aria-controls="sidebar-folders" @click=${this.selectFolders}>
               <pf-icon name="folder"></pf-icon>
-              <span>Folders</span>
+              <span class="nav-label">Folders</span>
+              <pf-icon class="nav-chevron" name="chevron-down"></pf-icon>
             </button>
-            <button type="button" class=${this.daysSelected ? "active" : ""} aria-current=${this.daysSelected ? "page" : "false"} @click=${this.selectDays}>
+            <pf-sidebar-folders id="sidebar-folders" ?hidden=${!this.expandedSidebarSections.has("folders")}
+              .folders=${this.folders} .photoCounts=${this.folderPhotoCounts} .selectedId=${this.selectedFolderId}
+              @folder-clear=${this.clearFolderSelection}
+              @add-folders=${() => this.importFolder()}
+              @folder-select=${this.onFolderSelect}
+              @root-reconnect=${this.reconnectRoot}
+              @folder-context-menu=${this.onFolderContextMenu}></pf-sidebar-folders>
+            <button type="button" class=${`nav-button ${this.daysSelected ? "active" : ""}`} aria-current=${this.daysSelected ? "page" : "false"}
+              aria-expanded=${this.expandedSidebarSections.has("days")} aria-controls="sidebar-days" @click=${this.selectDays}>
               <pf-icon name="calendar"></pf-icon>
-              <span>Days</span>
+              <span class="nav-label">Days</span>
+              <pf-icon class="nav-chevron" name="chevron-down"></pf-icon>
             </button>
-          </nav>
-        </div>
-        ${this.daysSelected ? html`<div class="tree" aria-label="Photos by capture date">
-          ${this.restoringCachedDates ? html`<div class="empty">Loading saved photo dates…</div>` : null}
-          ${this.restoringCachedDates ? null : html`
-          ${this.filterMetadataLoading ? html`<div class="empty">Reading photo dates…</div>` : null}
-          ${this.dateNodes.map((node) => this.renderDateNode(node))}
-          ${!this.filterMetadataLoading && !this.libraryPhotos.length ? html`<div class="empty">No photos indexed yet.</div>` : null}`}
-        </div>` : !this.allPhotosSelected && !this.favoritesSelected ? html`<div
-          class="tree"
-          @click=${this.onFolderTreeClick}
-          @folder-select=${this.onFolderSelect}
-          @root-reconnect=${this.reconnectRoot}
-          @folder-context-menu=${this.onFolderContextMenu}
-        >
-          ${this.folders.length === 0
-            ? html`<div class="empty">No folders imported yet.</div>`
-            : this.folders.map(
-                (f) => html`
-                  <pf-folder-tree-item
-                    .folder=${f}
-                    .photoCounts=${this.folderPhotoCounts}
-                    is-root
-                    selected-id=${this.selectedFolderId ?? ""}
-                  ></pf-folder-tree-item>
-                `
-              )}
-        </div>` : html`<div class="sidebar-spacer"></div>`}
-        ${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected ? html`<div class="folder-actions">
-          <button
-            type="button"
-            class="add-folders-button"
-            @click=${() => this.importFolder()}
-          >
-            <pf-icon name="folder-plus"></pf-icon>
-            Add folders
-          </button>
-        </div>` : null}
+            <pf-sidebar-days id="sidebar-days" aria-label="Photos by capture date" ?hidden=${!this.expandedSidebarSections.has("days")}
+              .nodes=${this.expandedSidebarSections.has("days") ? this.dateNodes : []}
+              .selectedKey=${this.selectedDateKey} .loading=${this.filterMetadataLoading}
+              .restoringCachedDates=${this.restoringCachedDates} .hasPhotos=${this.libraryPhotos.length > 0}
+              @date-select=${(event: CustomEvent<{ key: string }>) => this.selectDate(event.detail.key)}></pf-sidebar-days>
+            <button type="button" class=${`nav-button ${this.albumsSelected || this.albumDropMode ? "active" : ""}`} aria-current=${this.albumsSelected ? "page" : "false"}
+              aria-expanded=${this.expandedSidebarSections.has("albums") || this.albumDropMode} aria-controls="sidebar-albums" @click=${this.selectAlbums}>
+              <pf-icon name="image"></pf-icon>
+              <span class="nav-label">Albums</span>
+              <pf-icon class="nav-chevron" name="chevron-down"></pf-icon>
+            </button>
+            <pf-sidebar-albums id="sidebar-albums" aria-label="Albums"
+              ?hidden=${!this.expandedSidebarSections.has("albums") && !this.albumDropMode}
+              .albums=${this.albums} .selectedId=${this.selectedAlbumId} .active=${this.albumsSelected}
+              @album-select=${(event: CustomEvent<{ id: string }>) => this.selectAlbum(event.detail.id)}
+              @album-context-menu=${(event: CustomEvent<{ id: string; x: number; y: number }>) => { this.albumContextMenu = event.detail; }}
+              @album-create=${() => this.openAlbumDialog("new")}></pf-sidebar-albums>
+        </nav>
         <div class="sidebar-footer">
           <div class="sidebar-settings">
             <pf-button @click=${this.openSettings}>
@@ -2247,7 +2485,11 @@ export class WarbleApp extends LitElement {
       <main
         class="content"
         @photo-selected=${this.onPhotoSelected}
+        @photo-selection-change=${(event: CustomEvent<{ paths: string[] }>) => {
+          this.gridSelectionPaths = event.detail.paths;
+        }}
         @photo-open=${this.onPhotoOpen}
+        @photo-grid-pointer-drag-start=${this.onGridPointerDragStart}
         @photo-context-menu=${this.onPhotoContextMenu}
         @toggle-include-subfolders=${this.toggleIncludeSubfolders}
       >
@@ -2257,11 +2499,11 @@ export class WarbleApp extends LitElement {
           </button>
           <pf-icon name="folder"></pf-icon>
           <span>Library</span>
-          ${this.selectedFolderName || this.allPhotosSelected || this.favoritesSelected || this.daysSelected ? html`<span class="breadcrumb-separator">›</span><span class="breadcrumb-current">${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.daysSelected ? "Days" : this.selectedFolderName}</span>` : null}
+          ${this.selectedFolderName || this.allPhotosSelected || this.favoritesSelected || this.daysSelected || this.albumsSelected ? html`<span class="breadcrumb-separator">›</span><span class="breadcrumb-current">${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.daysSelected ? "Days" : this.albumsSelected ? this.albums.find((album) => album.id === this.selectedAlbumId)?.name ?? "Albums" : this.selectedFolderName}</span>` : null}
           <span class="topbar-spacer"></span>
           ${this.selectedPhoto ? html`<button class="detail-toggle" type="button" aria-label="Photo details" aria-expanded=${this.detailOpen} @click=${() => { this.mobileSidebarOpen = false; this.detailOpen = !this.detailOpen; }}><pf-icon name="info"></pf-icon> Info</button>` : null}
         </nav>
-        ${this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected
+        ${this.selectedFolderId === null && !this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected && !this.albumsSelected
           ? html`<div class="welcome">
               <div class="welcome-inner">
                 <img src=${APP_ICON_URL} alt="Warble" />
@@ -2269,20 +2511,22 @@ export class WarbleApp extends LitElement {
                 <p>Add a folder to get started.</p>
               </div>
             </div>`
-          : this.photos.length === 0
+            : this.albumsSelected && !this.selectedAlbumId
+            ? html`<div class="welcome"><div class="welcome-inner"><h1>Albums</h1><p>Select an album or create one to get started.</p></div></div>`
+            : this.photos.length === 0
           ? html`<div class="empty-content-header">
-              <h1>${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.daysSelected ? dateSelectionLabel(this.selectedDateKey) : this.selectedFolderName ?? ""}</h1>
-              ${this.allPhotosSelected || this.favoritesSelected || this.daysSelected ? null : html`<label class="include-subfolders-toggle" title="Show photos from all nested subfolders of the selected folder">
+              <h1>${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.daysSelected ? dateSelectionLabel(this.selectedDateKey) : this.albumsSelected ? this.albums.find((album) => album.id === this.selectedAlbumId)?.name ?? "Albums" : this.selectedFolderName ?? ""}</h1>
+              ${this.allPhotosSelected || this.favoritesSelected || this.daysSelected || this.albumsSelected ? null : html`<label class="include-subfolders-toggle" title="Show photos from all nested subfolders of the selected folder">
                 <input type="checkbox" .checked=${this.includeSubfolders} @change=${this.toggleIncludeSubfolders} />
                 Include subfolders
               </label>`}
             </div>
-              <p>${this.favoritesSelected ? "No photos with at least one star yet." : this.allPhotosSelected ? "No photos indexed yet." : this.daysSelected ? "No photos for this date." : "No photos in this folder."}</p>`
+              <p>${this.favoritesSelected ? "No photos with at least one star yet." : this.allPhotosSelected ? "No photos indexed yet." : this.daysSelected ? "No photos for this date." : this.albumsSelected ? "No photos in this album. Drag photos here to add them." : "No photos in this folder."}</p>`
           : html`<pf-photo-grid
               .photos=${this.photos}
               .selectedPath=${this.selectedPhoto?.path ?? null}
-              .folderName=${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.daysSelected ? dateSelectionLabel(this.selectedDateKey) : this.selectedFolderName ?? ""}
-              .showSubfolderToggle=${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected}
+              .folderName=${this.favoritesSelected ? "Favorites" : this.allPhotosSelected ? "All Photos" : this.daysSelected ? dateSelectionLabel(this.selectedDateKey) : this.albumsSelected ? this.albums.find((album) => album.id === this.selectedAlbumId)?.name ?? "Albums" : this.selectedFolderName ?? ""}
+              .showSubfolderToggle=${!this.allPhotosSelected && !this.favoritesSelected && !this.daysSelected && !this.albumsSelected}
               .includeSubfolders=${this.includeSubfolders}
               .filterMetadataLoading=${this.filterMetadataLoading}
               ?full-view-open=${this.fullViewIndex !== null}
@@ -2296,6 +2540,7 @@ export class WarbleApp extends LitElement {
       >
         <pf-detail-panel
           .photo=${this.selectedPhoto}
+          .selectionPaths=${this.fullViewIndex === null ? this.gridSelectionPaths : []}
           ?fullViewOpen=${this.fullViewIndex !== null}
           ?windowFullscreen=${this.windowFullscreen}
         ></pf-detail-panel>
@@ -2309,7 +2554,6 @@ export class WarbleApp extends LitElement {
             ?windowFullscreen=${this.windowFullscreen}
             .editPanelOpenWindowed=${this.editPanelOpen}
             @full-view-navigate=${this.onFullViewNavigate}
-            @full-view-close=${this.onFullViewClose}
             @slideshow-start=${this.onSlideshowStart}
             @photo-catalog-changed=${this.onPhotoCatalogChanged}
             @edit-panel-open-changed=${this.onEditPanelOpenChanged}
@@ -2322,6 +2566,9 @@ export class WarbleApp extends LitElement {
       ${this.renderFooter()}
       ${this.renderContextMenu()}
       ${this.renderFolderContextMenu()}
+      ${this.renderAlbumContextMenu()}
+      ${this.renderAlbumDialog()}
+      ${this.photoDragLabel ? html`<div class="photo-drag-preview">${this.photoDragLabel}</div>` : null}
       ${this.metadataPaths.length ? html`<pf-metadata-editor
         .paths=${this.metadataPaths}
         @close=${() => { this.metadataPaths = []; }}
@@ -2356,8 +2603,20 @@ export class WarbleApp extends LitElement {
       <div
         class="ctx-menu"
         role="menu"
-        style="left: ${cm.x}px; top: ${cm.y}px;"
+        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 240))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - (this.contextAlbumPickerOpen ? Math.min(400, 195 + this.albums.length * 38) : 112)))}px;"
       >
+        <button role="menuitem" aria-expanded=${this.contextAlbumPickerOpen}
+          @click=${() => (this.contextAlbumPickerOpen = !this.contextAlbumPickerOpen)}>
+          Add ${cm.paths.length > 1 ? `${cm.paths.length} photos` : "photo"} to album…
+        </button>
+        ${this.contextAlbumPickerOpen ? html`<div class="album-menu-list" role="group" aria-label="Choose an album">
+          ${this.albums.length ? this.albums.map((album) => html`
+            <button role="menuitem" @click=${() => {
+              this.dismissContextMenu();
+              void this.addPhotosToAlbum(album.id, cm.paths);
+            }}>${album.name}</button>
+          `) : html`<div class="album-menu-empty">Create an album in the sidebar first.</div>`}
+        </div>` : null}
         <button role="menuitem" @click=${this.editContextMetadata}>Edit metadata…</button>
         <button
           role="menuitem"
@@ -2385,28 +2644,18 @@ export class WarbleApp extends LitElement {
         class="ctx-menu"
         role="menu"
         aria-label=${`Actions for ${cm.name}`}
-        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 230))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - (cm.isRoot ? 118 : 62)))}px;"
+        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 230))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - (cm.isRoot ? 164 : 110)))}px;"
       >
-        ${cm.available
-          ? html`<button
-              role="menuitem"
-              @click=${() => this.syncFolder(cm.path, cm.name)}
-            >
-              Sync Folder
-            </button>`
-          : html`<button
-              role="menuitem"
-              @click=${() => {
-                this.folderContextMenu = null;
-                void this.reconnectRoot(
-                  new CustomEvent("root-reconnect", {
-                    detail: { rootId: cm.folderId },
-                  }),
-                );
-              }}
-            >
-              Reconnect Folder
-            </button>`}
+        <button role="menuitem" @click=${() => this.syncFolder(cm.path, cm.name)}>Sync Folder</button>
+        ${!cm.available ? html`<button
+          role="menuitem"
+          @click=${() => {
+            this.folderContextMenu = null;
+            void this.reconnectRoot(new CustomEvent("root-reconnect", {
+              detail: { rootId: cm.folderId.split("/")[0] },
+            }));
+          }}
+        >Reconnect Folder…</button>` : null}
         ${cm.isRoot
           ? html`<button
               class="danger"
@@ -2416,6 +2665,123 @@ export class WarbleApp extends LitElement {
               Remove from Library
             </button>`
           : null}
+      </div>
+    `;
+  }
+
+  private openFullImage = (): void => {
+    const index = this.selectedPhoto ? this.photos.findIndex((photo) => photo.path === this.selectedPhoto!.path) : 0;
+    if (index < 0 || index >= this.photos.length) return;
+    this.detailOpen = false;
+    this.immersiveView = false;
+    this.selectedPhoto = this.photos[index];
+    this.fullViewIndex = index;
+  };
+
+  private onGridPointerDragStart = (event: CustomEvent<{ paths: string[]; pointerId: number; x: number; y: number }>): void => {
+    const { paths, pointerId, x, y } = event.detail;
+    this.photoDrag = { paths, pointerId };
+    this.photoDragLabel = paths.length === 1 ? paths[0].split("/").pop() ?? "Photo" : `${paths.length} photos`;
+    this.albumDropMode = true;
+    this.sidebarCollapsed = false;
+    this.photoDragOpenedSidebar = window.matchMedia("(max-width: 700px)").matches && !this.mobileSidebarOpen;
+    if (this.photoDragOpenedSidebar) this.mobileSidebarOpen = true;
+    void this.updateComplete.then(() => this.positionPhotoDrag(x, y));
+  };
+
+  private albumDropTarget(): SidebarAlbums | null {
+    return this.renderRoot.querySelector("pf-sidebar-albums");
+  }
+
+  private positionPhotoDrag(x: number, y: number): void {
+    const preview = this.renderRoot.querySelector<HTMLElement>(".photo-drag-preview");
+    if (preview) {
+      preview.style.left = `${x}px`;
+      preview.style.top = `${y}px`;
+    }
+    const target = this.albumDropTarget();
+    target?.highlightAlbum(target.albumAt(x, y));
+  }
+
+  private onPhotoDragMove = (event: PointerEvent): void => {
+    if (event.pointerId !== this.photoDrag?.pointerId) return;
+    event.preventDefault();
+    this.positionPhotoDrag(event.clientX, event.clientY);
+  };
+
+  private onPhotoDragEnd = (event: PointerEvent): void => {
+    const drag = this.photoDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const album = this.albumDropTarget()?.albumAt(event.clientX, event.clientY);
+    this.clearPhotoDrag();
+    if (album) void this.onAlbumDrop(album, drag.paths);
+  };
+
+  private onPhotoDragCancel = (event: PointerEvent): void => {
+    if (event.pointerId === this.photoDrag?.pointerId) this.clearPhotoDrag();
+  };
+
+  private clearPhotoDrag(): void {
+    this.albumDropTarget()?.highlightAlbum(null);
+    this.photoDrag = null;
+    this.photoDragLabel = null;
+    this.albumDropMode = false;
+    if (this.photoDragOpenedSidebar) this.mobileSidebarOpen = false;
+    this.photoDragOpenedSidebar = false;
+  }
+
+  private async onAlbumDrop(id: string, paths: string[]): Promise<void> {
+    await this.addPhotosToAlbum(id, paths);
+  }
+
+  private async addPhotosToAlbum(id: string, paths: string[]): Promise<void> {
+    try {
+      await invoke("add_photos_to_album", { id, photoPaths: paths });
+      await this.loadAlbums();
+      this.albumDropMode = false;
+      if (this.albumsSelected && this.selectedAlbumId === id) {
+        await this.refreshAlbumPhotos();
+      }
+    } catch (error) {
+      console.error("Failed to add photos to album", error);
+      void message(String(error), { title: "Add to album failed", kind: "error" });
+    }
+  }
+
+  private renderAlbumContextMenu() {
+    const cm = this.albumContextMenu;
+    if (!cm) return null;
+    const album = this.albums.find((item) => item.id === cm.id);
+    if (!album) return null;
+    return html`
+      <div class="ctx-menu-backdrop" @click=${() => (this.albumContextMenu = null)}
+        @contextmenu=${(event: MouseEvent) => { event.preventDefault(); this.albumContextMenu = null; }}></div>
+      <div class="ctx-menu" role="menu" aria-label=${`Actions for ${album.name}`}
+        style="left: ${Math.max(0, Math.min(cm.x, window.innerWidth - 230))}px; top: ${Math.max(0, Math.min(cm.y, window.innerHeight - 100))}px;">
+        <button role="menuitem" @click=${() => this.openAlbumDialog(album)}>Edit album…</button>
+        <button class="danger" role="menuitem" @click=${() => void this.deleteAlbum(album.id)}>Delete album</button>
+      </div>
+    `;
+  }
+
+  private renderAlbumDialog() {
+    const album = this.albumDialog;
+    if (!album) return null;
+    return html`
+      <div class="album-dialog-backdrop" @click=${(event: MouseEvent) => {
+        if (event.target === event.currentTarget) this.albumDialog = null;
+      }}>
+        <form class="album-dialog" role="dialog" aria-modal="true" aria-label=${album === "new" ? "Create album" : "Edit album"}
+          @submit=${this.saveAlbum}>
+          <h2>${album === "new" ? "Create album" : "Edit album"}</h2>
+          <label>Name <input name="name" required maxlength="200" .value=${album === "new" ? "" : album.name} autofocus /></label>
+          <label>Description <textarea name="description" .value=${album === "new" ? "" : album.description}></textarea></label>
+          ${this.albumError ? html`<p class="album-error" role="alert">${this.albumError}</p>` : null}
+          <div class="album-dialog-actions">
+            <button type="button" @click=${() => (this.albumDialog = null)}>Cancel</button>
+            <button type="submit">${album === "new" ? "Create album" : "Save changes"}</button>
+          </div>
+        </form>
       </div>
     `;
   }
@@ -2447,6 +2813,12 @@ export class WarbleApp extends LitElement {
           ></pf-task-details>
         </span>
         <span class="footer-spacer"></span>
+        <pf-view-mode-switch .mode=${this.fullViewIndex === null ? "grid" : "image"}
+          .imageDisabled=${!this.photos.length}
+          @view-mode-change=${(event: CustomEvent<{ mode: "grid" | "image" }>) => {
+            if (event.detail.mode === "grid") this.onFullViewClose();
+            else this.openFullImage();
+          }}></pf-view-mode-switch>
       </footer>
     `;
   }

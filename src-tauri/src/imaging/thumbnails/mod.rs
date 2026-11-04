@@ -74,14 +74,7 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec
     let p = Path::new(path);
     let cache = DISK_CACHE.get();
 
-    let cache_key = cache.map(|_| {
-        CacheKeyBuilder::new()
-            .with_source_file(p)
-            .with(TARGET_WIDTH)
-            .with(JPEG_QUALITY)
-            .with(PIPELINE_VERSION)
-            .build()
-    });
+    let cache_key = cache.map(|_| cache_key(p));
 
     if let (Some(c), Some(k)) = (cache, cache_key) {
         if let Some(bytes) = c.get(&k) {
@@ -91,7 +84,16 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec
 
     cancel.check()?;
     let ext = lowercase_extension(p);
-    let jpeg_bytes = if raw_preview::is_raw_extension(&ext) {
+    let jpeg_bytes = if matches!(ext.as_str(), "heic" | "heif") {
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            let bytes = super::apple_heif::to_jpeg(p, TARGET_WIDTH * 2)?;
+            cancel.check()?;
+            render_from_jpeg_bytes(&bytes, IDENTITY)?
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        return Err("HEIF decoding requires Apple ImageIO".into());
+    } else if raw_preview::is_raw_extension(&ext) {
         render_from_raw(p, library_key, cancel)?
     } else if JPEG_EXTENSIONS.iter().any(|e| *e == ext) {
         render_from_jpeg_file(p, library_key, cancel)?
@@ -103,6 +105,19 @@ pub fn render(path: &str, library_key: &str, cancel: &CancelToken) -> Result<Vec
         c.put(&k, &jpeg_bytes);
     }
     Ok(jpeg_bytes)
+}
+
+fn cache_key(path: &Path) -> crate::caching::CacheKey {
+    CacheKeyBuilder::new()
+        .with_source_file(path)
+        .with(TARGET_WIDTH)
+        .with(JPEG_QUALITY)
+        .with(PIPELINE_VERSION)
+        .build()
+}
+
+pub fn cached(path: &str) -> Option<Vec<u8>> {
+    DISK_CACHE.get()?.get(&cache_key(Path::new(path)))
 }
 
 fn render_from_jpeg_file(
@@ -130,11 +145,7 @@ fn render_from_raw(
     cancel.check()?;
     // Keep the original EXIF available for the info panel. The preview
     // has already been oriented and carries no metadata.
-    if exif_cache::get(library_key, path).is_none() {
-        if let Some((orient, metadata)) = exif::read_full_metadata(path) {
-            exif_cache::warm_with(library_key, path, orient, &metadata);
-        }
-    }
+    let _ = exif_cache::get_or_compute(library_key, path);
 
     if let Ok(out) = render_from_jpeg_bytes(&preview.jpeg_bytes, preview.orientation) {
         return Ok(out);

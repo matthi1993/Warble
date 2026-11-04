@@ -30,6 +30,12 @@ export const fullViewStyles = css`
   }
   :host([immersive]) .toolbar-wrap { top: 0; }
   :host([immersive]) .bottombar-wrap { bottom: 0; }
+  :host([immersive]) .toolbar,
+  :host([immersive]) .bottombar {
+    background: color-mix(in srgb, var(--pf-surface) 86%, transparent);
+    backdrop-filter: blur(16px) saturate(1.15);
+    -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  }
   :host([immersive][controls-hidden]) .toolbar-wrap,
   :host([immersive][controls-hidden]) .bottombar-wrap {
     opacity: 0;
@@ -226,9 +232,21 @@ export const fullViewStyles = css`
     position: absolute;
     inset: 0;
   }
-  pf-image-canvas {
+  pf-image-canvas, pf-video-view {
     position: absolute;
     inset: 0;
+  }
+  .live-toggle {
+    position: absolute;
+    z-index: 4;
+    left: 16px;
+    top: 16px;
+    border: 1px solid var(--pf-border-strong);
+    border-radius: var(--pf-radius-md);
+    padding: 8px 12px;
+    background: var(--pf-surface-2);
+    color: var(--pf-text);
+    cursor: pointer;
   }
   .slideshow-overlay {
     position: absolute;
@@ -301,30 +319,6 @@ export const fullViewStyles = css`
   :host([immersive][controls-hidden]) .fv-rating-overlay {
     visibility: hidden;
   }
-  .close-btn {
-    background: var(--pf-surface-2);
-    color: var(--pf-text);
-    border: 1px solid var(--pf-border);
-    border-radius: var(--pf-radius-md);
-    width: 32px;
-    height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    padding: 0;
-  }
-  .close-btn:hover {
-    background: var(--pf-surface-hover);
-    border-color: var(--pf-accent);
-  }
-  .close-btn svg {
-    width: 18px;
-    height: 18px;
-    stroke: currentColor;
-    stroke-width: 2;
-    fill: none;
-  }
   pf-edit-side-panel {
     flex: 0 0 280px;
     max-width: 90vw;
@@ -384,7 +378,7 @@ export const fullViewStyles = css`
     border-radius: var(--pf-radius-sm, 4px);
     font-size: var(--pf-text-sm);
   }
-  .edit-tool-stack { display: flex; flex-direction: column; gap: var(--pf-space-2); }
+  .edit-tool-stack { display: grid; gap: var(--pf-space-2); }
   .edit-tool-stack.dim { opacity: 0.5; }
   .edit-footer {
     display: flex;
@@ -487,7 +481,6 @@ export const fullViewStyles = css`
       width: 48px;
       height: 48px;
     }
-    .close-btn,
     .menu-trigger,
     .menu-item,
     .footer-btn {

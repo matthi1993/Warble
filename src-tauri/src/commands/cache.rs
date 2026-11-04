@@ -94,7 +94,9 @@ pub fn set_cache_settings(
     mut settings: CacheSettings,
 ) -> Result<CacheSettings, String> {
     settings.full_image_bitmap_max_entries = settings.full_image_bitmap_max_entries.max(1);
+    settings.parallel_workers = settings.parallel_workers.clamp(1, 16);
     let snapshot = state.settings.save(&state.device_storage, settings)?;
+    crate::tasks::pool().set_worker_count(snapshot.parallel_workers);
     thumbnails::set_disk_cache_max_entries(snapshot.thumbnail_disk_max_entries);
     hd_image::set_disk_cache_max_entries(snapshot.hd_image_disk_max_entries);
     full_image::set_memory_cache_capacity(snapshot.full_image_memory_max_entries);

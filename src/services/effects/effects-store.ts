@@ -13,7 +13,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  defaultGrain, defaultSharpen, type GrainSettings, type SharpenSettings,
+  normalizeAnalog, normalizeClarity, type AnalogSettings, defaultGrain, defaultSharpen, type ClaritySettings, type GrainSettings, type SharpenSettings,
 } from "@domain/edits";
 export {
   defaultBloom, defaultGrain, defaultSharpen, isBloomZero,
@@ -27,6 +27,8 @@ export interface PhotoEffects {
    *  `SharpenSettings` (even one with `strength: 0`) is treated
    *  as a deliberate user choice and overrides the default. */
   sharpen: SharpenSettings | null;
+  clarity: ClaritySettings | null;
+  analog: AnalogSettings | null;
   /** Explicit per-photo grain override. `null` is the zero-grain default. */
   grain: GrainSettings | null;
 }
@@ -43,20 +45,22 @@ function applySerialized(raw: string): void {
     const parsed = JSON.parse(raw) as Record<
       string,
       {
-        bloom?: unknown;
-        blur?: unknown;
+        clarity?: ClaritySettings | null;
+        analog?: AnalogSettings | null;
         sharpen?: SharpenSettings | null;
         grain?: GrainSettings | null;
       }
     >;
     for (const [path, e] of Object.entries(parsed)) {
       const effect: PhotoEffects = {
+        clarity: e.clarity ? normalizeClarity(e.clarity) : null,
+        analog: e.analog ? normalizeAnalog(e.analog) : null,
         sharpen: e.sharpen
           ? { ...defaultSharpen(), ...e.sharpen }
           : null,
         grain: e.grain ? { ...defaultGrain(), ...e.grain } : null,
       };
-      if (effect.sharpen || effect.grain) effects.set(path, effect);
+      if (Object.values(effect).some(Boolean)) effects.set(path, effect);
     }
   } catch (err) {
     console.warn("effects: invalid persisted settings, resetting", err);
@@ -72,7 +76,7 @@ function loadLegacy(): void {
 function serialize(): string {
   const value: Record<string, PhotoEffects> = {};
   for (const [path, effect] of effects.entries()) {
-    if (effect.sharpen || effect.grain) value[path] = effect;
+    if (Object.values(effect).some(Boolean)) value[path] = effect;
   }
   return JSON.stringify(value);
 }
@@ -135,7 +139,7 @@ async function hydrate(migrateLegacy: boolean): Promise<void> {
 
 loadLegacy();
 
-/** Hydrate per-photo grain and sharpening from the active library. */
+/** Hydrate per-photo effects from the active library. */
 export function loadPhotoEffects(): Promise<void> {
   if (loaded) return Promise.resolve();
   if (!loadPromise) loadPromise = hydrate(true);
@@ -182,63 +186,47 @@ export function getPhotoSharpen(path: string | null): SharpenSettings | null {
   return effects.get(path)?.sharpen ?? null;
 }
 
-/** Store an explicit per-photo sharpen override. Keep `strength: 0`
- *  as an explicit value; pass `null` to use the default. */
-export function setPhotoSharpen(
-  path: string,
-  sharpen: SharpenSettings | null
-): void {
-  const cleaned = sharpen ? { ...sharpen } : null;
+function setPhotoEffect<K extends keyof PhotoEffects>(path: string, key: K, value: PhotoEffects[K]): void {
   const existing = effects.get(path);
-  if (cleaned) {
-    effects.set(path, {
-      ...(existing ?? { sharpen: null, grain: null }),
-      sharpen: cleaned,
-    });
-  } else if (existing) {
-    if (existing.sharpen == null) return;
-    const next: PhotoEffects = { ...existing, sharpen: null };
-    if (!next.sharpen && !next.grain) effects.delete(path);
-    else effects.set(path, next);
-  } else {
-    return;
-  }
+  if (!value && !existing?.[key]) return;
+  const next: PhotoEffects = { sharpen: null, grain: null, clarity: null, analog: null, ...existing, [key]: value };
+  if (Object.values(next).some(Boolean)) effects.set(path, next);
+  else effects.delete(path);
   schedulePersist();
   notify(path);
+}
+
+export function setPhotoSharpen(path: string, value: SharpenSettings | null): void {
+  setPhotoEffect(path, "sharpen", value ? { ...defaultSharpen(), ...value } : null);
 }
 
 export function getPhotoGrain(path: string | null): GrainSettings | null {
-  if (!path) return null;
-  return effects.get(path)?.grain ?? null;
+  return path ? effects.get(path)?.grain ?? null : null;
 }
 
-export function setPhotoGrain(
-  path: string,
-  grain: GrainSettings | null
-): void {
-  const cleaned = grain ? { ...defaultGrain(), ...grain } : null;
-  const existing = effects.get(path);
-  if (cleaned) {
-    effects.set(path, {
-      ...(existing ?? { sharpen: null, grain: null }),
-      grain: cleaned,
-    });
-  } else if (existing) {
-    if (existing.grain == null) return;
-    const next: PhotoEffects = { ...existing, grain: null };
-    if (!next.sharpen && !next.grain) effects.delete(path);
-    else effects.set(path, next);
-  } else {
-    return;
-  }
-  schedulePersist();
-  notify(path);
+export function setPhotoGrain(path: string, value: GrainSettings | null): void {
+  setPhotoEffect(path, "grain", value ? { ...defaultGrain(), ...value } : null);
+}
+
+export function getPhotoClarity(path: string | null): ClaritySettings | null {
+  return path ? effects.get(path)?.clarity ?? null : null;
+}
+
+export function setPhotoClarity(path: string, value: ClaritySettings | null): void {
+  setPhotoEffect(path, "clarity", value ? normalizeClarity(value) : null);
+}
+
+export function getPhotoAnalog(path: string | null): AnalogSettings | null {
+  return path ? effects.get(path)?.analog ?? null : null;
+}
+
+export function setPhotoAnalog(path: string, value: AnalogSettings | null): void {
+  setPhotoEffect(path, "analog", value ? normalizeAnalog(value) : null);
 }
 
 export function hasEffects(path: string): boolean {
-  const e = effects.get(path);
-  if (!e) return false;
-  return e.sharpen != null || e.grain != null;
+  const effect = effects.get(path);
+  return !!effect && Object.values(effect).some(Boolean);
 }
 
 /** Drop effects belonging to a media root before that root is forgotten. */

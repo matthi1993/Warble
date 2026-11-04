@@ -15,13 +15,17 @@ Start in [native imaging](../../src-tauri/src/imaging/) for image preparation an
 Three coordinators keep browsing responsive; there is no single queue for all work. One folder scan runs at a time, while image workers can run alongside it.
 
 - [Folder scans](../../src-tauri/src/library/scanner.rs) use their own worker. Tree discovery and photo discovery are queued there; a required tree scan runs before its photo scan. Newer requests can replace stale work.
-- [Image requests](../../src-tauri/src/tasks/mod.rs) use a small worker pool. Queued requests are picked by priority: **urgent** for the open photo, **normal** for visible thumbnails, then **background** for filter metadata and thumbnail warmup. A queued request can move up when its photo becomes visible.
+- [Image requests](../../src-tauri/src/tasks/mod.rs) use a small worker pool. Queued requests are picked by priority: **urgent** for the open photo, **high** for visible thumbnails, then **normal** and **background** for warmup and metadata. A queued request can move up when its photo becomes visible. Settings selects 1–16 parallel image workers and applies changes immediately. With two or more workers, one is reserved for urgent and high-priority requests; the others can also process background work. Folder checks retain their separate serial coordinator.
 - [Selected-folder processing](../../src/services/library/photo-processing-pipeline.ts) requests filter metadata in small batches, then warms a limited set of thumbnails. Visible cards can request thumbnails independently instead of waiting for warmup.
 
 Priority changes which *waiting* request runs next; it does not interrupt work already running. Switching folders or photos cancels work that is no longer useful, and late results are ignored. See [Background work](../01-features/04-background-work.md) for the visible behavior.
+
+Once the open photo's HD preview is ready, the viewer prepares and decodes the next three photos in display order. Video entries are skipped. [The HD preloader](../../src/services/images/hd-image-preloader.ts) loads one preview at a time at background priority, cancels obsolete requests when navigating away or closing the viewer, and shares in-flight requests with the canvas. Opening a photo that is still preloading promotes that request to urgent priority.
 
 ## Caches and progress
 
 Caches avoid repeating work, while the task list reports its progress.
 
 Memory and disk caches reuse previews; changed sources invalidate affected results, which are rebuilt on demand. [The task manager](../../src/services/tasks/task-manager.ts) tracks active and recent work for the footer and details view; it shows status but does not schedule the native queues.
+
+The decoded HD cache holds at least five previews to accommodate the open photo, three upcoming photos, and a recent photo. The open photo remains protected from eviction while its viewer is connected. The lookahead count is set by `HD_PRELOAD_COUNT` in [the HD cache](../../src/services/images/hd-image-cache.ts).

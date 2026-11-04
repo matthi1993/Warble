@@ -77,7 +77,16 @@ function recentSnapshot(active: readonly TaskRecord[]): TaskRecord[] {
   return [...newestActive, ...finishedTasks].slice(0, RECENT_TASK_LIMIT);
 }
 
+let notificationPending = false;
+
 function notify(): void {
+  if (notificationPending) return;
+  notificationPending = true;
+  queueMicrotask(publishTasks);
+}
+
+function publishTasks(): void {
+  notificationPending = false;
   const active = activeSnapshot();
   const recent = recentSnapshot(active);
   for (const listener of listeners) listener(active, recent);
@@ -94,8 +103,8 @@ export function cancelTaskRequest(id: number): void {
 }
 
 /** Raise queued work when it becomes visible or opens in the full viewer. */
-export function promoteTaskRequest(id: number, urgent: boolean): void {
-  void invoke("promote_image_request", { requestId: id, urgent }).catch(() => {});
+export function setTaskRequestPriority(id: number, priority: TaskPriority): void {
+  void invoke("set_image_request_priority", { requestId: id, priority }).catch(() => {});
 }
 
 /** Register one unit of active work and return an idempotent lifecycle handle. */

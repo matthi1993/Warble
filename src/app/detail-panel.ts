@@ -5,13 +5,15 @@ import { fileForSelection } from "@domain/photo";
 import { buildExifSections, type ExifMetadata } from "@domain/exif";
 import { COLOR_LABELS, LABEL_COLORS, LABEL_DISPLAY_NAMES } from "@domain/rating";
 import { fetchExif } from "@services/exif/exif-service";
-import { getPhotoRating, setPhotoLabel, setPhotoStars, subscribePhotoRatings } from "@services/rating/rating-store";
+import { getPhotoRating, setPhotosLabels, setPhotosStars, subscribePhotoRatings } from "@services/rating/rating-store";
 import {
   subscribeVariantOverrides,
 } from "@services/library/variant-store";
 import { currentSelection } from "./views/full-view/variant-selector";
 import "../ui/controls/pf-icon-button";
 import "@features/image-viewer/pf-image-canvas";
+import "@features/image-viewer/pf-video-view";
+import { isVideoPath } from "@services/images/video-source";
 
 function isIPad(): boolean {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent ?? "";
@@ -21,6 +23,10 @@ function isIPad(): boolean {
 
 @customElement("pf-detail-panel")
 export class PfDetailPanel extends LitElement {
+  toggleVideoPlayback(): boolean {
+    return this.renderRoot.querySelector("pf-video-view")?.togglePlayback() ?? false;
+  }
+
   static styles = css`
     :host {
       display: flex;
@@ -38,7 +44,7 @@ export class PfDetailPanel extends LitElement {
       min-height: 0;
       height: min(34vh, 260px);
     }
-    pf-image-canvas {
+    pf-image-canvas, pf-video-view {
       width: 100%;
       height: 100%;
       border-radius: var(--pf-radius-md);
@@ -139,6 +145,9 @@ export class PfDetailPanel extends LitElement {
   @property({ attribute: false })
   photo: Photo | null = null;
 
+  @property({ attribute: false })
+  selectionPaths: readonly string[] = [];
+
   @property({ type: Boolean, attribute: "fullviewopen", reflect: true })
   fullViewOpen = false;
 
@@ -177,7 +186,7 @@ export class PfDetailPanel extends LitElement {
   }
 
   protected updated(changed: Map<string, unknown>): void {
-    if (!changed.has("photo")) return;
+    if (!changed.has("photo") || (changed.get("photo") as Photo | null)?.path === this.photo?.path) return;
     this.refreshMetadata();
   }
 
@@ -240,15 +249,19 @@ export class PfDetailPanel extends LitElement {
       `;
     }
     const path = this.currentPath(photo);
-    const rating = getPhotoRating(photo.path);
+    const targets = !this.fullViewOpen && this.selectionPaths.includes(photo.path)
+      ? this.selectionPaths : [photo.path];
+    const ratings = targets.map(getPhotoRating);
+    const commonRating = ratings.every((rating) => rating.rating === ratings[0].rating) ? ratings[0].rating : null;
+    const commonLabel = ratings.every((rating) => rating.label === ratings[0].label) ? ratings[0].label : null;
     const sections = buildExifSections(this.exif);
     return html`
       <div class="image-wrap">
-        <pf-image-canvas
+        ${isVideoPath(path) ? html`<pf-video-view .path=${path}></pf-video-view>` : html`<pf-image-canvas
           .path=${path}
           fit="contain"
           background="transparent"
-        ></pf-image-canvas>
+        ></pf-image-canvas>`}
         ${this.fullViewOpen || isIPad()
           ? null
           : html`<pf-icon-button
@@ -276,11 +289,12 @@ export class PfDetailPanel extends LitElement {
           ${this.exif?.iso ? html`<span>ISO ${this.exif.iso}</span>` : null}
         </div>
         <div class="info-section">
+          ${targets.length > 1 ? html`<h3>${targets.length} photos selected</h3>` : null}
           <div class="info-row"><dt>Rating</dt><dd class="rating-controls" role="group" aria-label="Photo rating">
-            ${[1, 2, 3, 4, 5].map((star) => html`<button type="button" class=${star <= rating.rating ? "active" : ""} aria-label=${`${star} stars`} @click=${() => setPhotoStars(photo.path, rating.rating === star ? 0 : star)}>★</button>`)}
+            ${[1, 2, 3, 4, 5].map((star) => html`<button type="button" class=${commonRating !== null && star <= commonRating ? "active" : ""} aria-label=${`${star} stars`} @click=${() => setPhotosStars(targets, commonRating === star ? 0 : star)}>★</button>`)}
           </dd></div>
           <div class="info-row"><dt>Labels</dt><dd class="label-controls" role="group" aria-label="Photo label">
-            ${COLOR_LABELS.map((label) => html`<button type="button" style=${`background: ${LABEL_COLORS[label]}`} aria-label=${LABEL_DISPLAY_NAMES[label]} aria-pressed=${rating.label === label} @click=${() => setPhotoLabel(photo.path, rating.label === label ? "" : label)}></button>`)}
+            ${COLOR_LABELS.map((label) => html`<button type="button" style=${`background: ${LABEL_COLORS[label]}`} aria-label=${LABEL_DISPLAY_NAMES[label]} aria-pressed=${commonLabel === label} @click=${() => setPhotosLabels(targets, commonLabel === label ? "" : label)}></button>`)}
           </dd></div>
         </div>
         ${sections.map((section) => html`<section class="info-section">

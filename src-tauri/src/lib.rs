@@ -34,6 +34,12 @@ pub fn run() {
     let builder = builder.on_menu_event(|app, event| menu::handle_event(app, event));
     builder
         .invoke_handler(tauri::generate_handler![
+            commands::list_albums,
+            commands::create_album,
+            commands::update_album,
+            commands::delete_album,
+            commands::get_album_photos,
+            commands::add_photos_to_album,
             commands::select_folders_dialog,
             commands::import_folders,
             commands::bind_media_root,
@@ -48,10 +54,11 @@ pub fn run() {
             commands::get_folder_photo_counts,
             commands::get_all_photos,
             commands::get_thumbnail,
+            commands::get_video_source,
             commands::get_full_image_bytes,
             commands::get_hd_image_bytes,
             commands::cancel_image_request,
-            commands::promote_image_request,
+            commands::set_image_request_priority,
             commands::get_exif_metadata,
             commands::set_photo_metadata,
             commands::get_cached_photo_filter_metadata,

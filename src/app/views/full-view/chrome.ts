@@ -58,7 +58,6 @@ export interface ToolbarOptions {
   openingRaw: boolean;
   showFullscreenToggle: boolean;
   onToggleFullscreen: () => void;
-  onClose: () => void;
 }
 
 export function renderToolbar(opts: ToolbarOptions): TemplateResult {
@@ -138,16 +137,7 @@ export function renderToolbar(opts: ToolbarOptions): TemplateResult {
               @click=${opts.onToggleFullscreen}
             ></pf-icon-button>`
           : null}
-        <button
-          class="close-btn"
-          type="button"
-          aria-label="Back to grid"
-          title="Back to grid (Esc)"
-          @click=${opts.onClose}
-          @pointerdown=${(e: Event) => e.stopPropagation()}
-        >
-          <pf-icon name="grid"></pf-icon>
-        </button>
+
       </div>
     </div>
   `;
@@ -161,6 +151,7 @@ export interface BottombarOptions {
   frameColor: BgColor;
   frameRadius: FrameRadius;
   sizing: ImageSizing;
+  autoRotate: boolean;
   smoothing: ImageSmoothingQuality;
   openMenu: FullViewMenu | null;
   bgCss: (bg: BgColor) => string;
@@ -172,8 +163,10 @@ export interface BottombarOptions {
   onSetFrameColor: (color: BgColor) => void;
   onSetFrameRadius: (radius: FrameRadius) => void;
   onSetSizing: (s: ImageSizing) => void;
+  onToggleAutoRotate: () => void;
   onSetSmoothing: (q: ImageSmoothingQuality) => void;
   postProcessEnabled: boolean;
+  videoActive: boolean;
   onTogglePostProcess: () => void;
   onToggleImmersive: () => void;
   onPlaySlideshow: () => void;
@@ -298,9 +291,19 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
                 type="button"
                 aria-pressed=${sizing === "hybrid"}
                 @click=${() => opts.onSetSizing("hybrid")}
-                title="Cover for wide landscape (≥3:2), contain otherwise"
+                title="Cover when cropping is modest; contain otherwise"
               >
                 Hybrid
+              </button>
+            </div>
+          </div>
+          <div class="settings-section" role="group" aria-label="Orientation">
+            <span class="settings-section-label">Orientation</span>
+            <div class="settings-options">
+              <button class="menu-item" type="button" aria-pressed=${opts.autoRotate}
+                @click=${opts.onToggleAutoRotate}
+                title="Rotate photos to match the screen orientation; turn the iPad to view upright">
+                Auto rotate
               </button>
             </div>
           </div>
@@ -313,15 +316,15 @@ export function renderBottombar(opts: BottombarOptions): TemplateResult {
               >${q.charAt(0).toUpperCase() + q.slice(1)}</button>`)}
             </div>
           </div>
-          <div class="settings-section" role="group" aria-label="Post-Processing">
+          ${!opts.videoActive ? html`<div class="settings-section" role="group" aria-label="Post-Processing">
             <span class="settings-section-label">Post-Processing</span>
             <div class="settings-options">
               <button class="menu-item" type="button" aria-pressed=${opts.postProcessEnabled}
-                title="Toggle post-processing (grain, dust, post curve)"
+                title="Toggle post-processing"
                 @click=${opts.onTogglePostProcess}
               >${opts.postProcessEnabled ? "On" : "Off"}</button>
             </div>
-          </div>
+          </div>` : null}
         </div>` : null}
       </span>
       <button class="menu-trigger" type="button" aria-pressed=${opts.immersive}

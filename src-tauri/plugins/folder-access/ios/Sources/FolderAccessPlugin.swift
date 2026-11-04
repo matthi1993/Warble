@@ -210,70 +210,8 @@ final class FolderAccessPlugin: Plugin, UIDocumentPickerDelegate {
     return entries
   }
 
-  /// NSFileCoordinator gives SMB/File Provider extensions time to fetch each
-  /// directory listing. Walking the enumerator here warms those listings for
-  /// the portable Rust catalog scan that follows.
   private func prepareFolderEnumeration(at url: URL) throws -> Int {
-    let emptyRetryDelays: [TimeInterval] = [0.2, 0.5, 1.0, 2.0]
-    for attempt in 0...emptyRetryDelays.count {
-      let entryCount = try coordinateFolderEnumeration(at: url)
-      if entryCount > 0 || attempt == emptyRetryDelays.count {
-        return entryCount
-      }
-      // Some SMB File Providers report an empty successful listing while
-      // asynchronously fetching the real directory. Re-coordinate after a
-      // short delay instead of accepting a permanently blank library root.
-      Thread.sleep(forTimeInterval: emptyRetryDelays[attempt])
-    }
-    return 0
-  }
-
-  private func coordinateFolderEnumeration(at url: URL) throws -> Int {
-    let coordinator = NSFileCoordinator()
-    var coordinationError: NSError?
-    var enumerationError: Error?
-    var entryCount = 0
-    coordinator.coordinate(
-      readingItemAt: url,
-      options: .withoutChanges,
-      error: &coordinationError
-    ) { coordinatedURL in
-      let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
-      var providerError: Error?
-      guard let enumerator = FileManager.default.enumerator(
-        at: coordinatedURL,
-        includingPropertiesForKeys: keys,
-        options: [.skipsHiddenFiles],
-        errorHandler: { _, error in
-          providerError = error
-          return false
-        }
-      ) else {
-        enumerationError = NSError(
-          domain: "FolderAccess",
-          code: 2,
-          userInfo: [NSLocalizedDescriptionKey: "The folder could not be enumerated"]
-        )
-        return
-      }
-
-      do {
-        for case let itemURL as URL in enumerator {
-          _ = try itemURL.resourceValues(forKeys: Set(keys))
-          entryCount += 1
-        }
-        if let providerError = providerError {
-          throw providerError
-        }
-      } catch {
-        enumerationError = error
-      }
-    }
-
-    if let error = coordinationError ?? enumerationError as NSError? {
-      throw error
-    }
-    return entryCount
+    try coordinateFolderEntries(at: url, relativeTo: url, recursive: false).count
   }
 
   @objc func trashFiles(_ invoke: Invoke) throws {

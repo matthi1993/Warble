@@ -21,6 +21,8 @@ export interface PhotoFilterInfo {
   focalLengthMm?: number | null;
   /** Normalized EXIF capture day in YYYY-MM-DD form. */
   dateTaken?: string | null;
+  /** Normalized capture timestamp in YYYY-MM-DD HH:MM:SS form. */
+  captureTime?: string | null;
 }
 
 export interface Photo {

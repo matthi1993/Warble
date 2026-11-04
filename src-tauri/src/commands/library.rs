@@ -377,7 +377,7 @@ fn list_imported_folders_inner(state: &AppState) -> Result<Vec<Folder>, String> 
 pub async fn refresh_imported_folders(app: AppHandle) -> Result<Vec<Folder>, String> {
     let state = app.state::<AppState>();
     let repo = state.repository()?;
-    crate::library::enqueue_media_root_scans(&app, repo.as_ref(), &state, true);
+    crate::library::enqueue_media_root_scans(&app, repo.as_ref(), &state);
     list_imported_folders_inner(&state)
 }
 
@@ -401,13 +401,13 @@ pub async fn index_folder_images(
     recursive: bool,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    if state
-        .catalog
-        .lock()
-        .map_err(|error| error.to_string())?
-        .folder_images_indexed(&folder_path, recursive)
     {
-        return Ok(());
+        let catalog = state.catalog.lock().map_err(|error| error.to_string())?;
+        if !catalog.folder_available(&folder_path)
+            || catalog.folder_images_indexed(&folder_path, recursive)
+        {
+            return Ok(());
+        }
     }
     let (root_id, _) = crate::library::split_portable_key(&folder_path)?;
     let root_id = root_id.to_string();
@@ -437,6 +437,23 @@ fn refresh_folder_blocking(
         .bindings_for(&library_id)
         .remove(root_id)
         .ok_or_else(|| "media root needs reconnecting on this device".to_string())?;
+    #[cfg(target_os = "ios")]
+    let root_path = {
+        let bookmark = state
+            .device_storage
+            .bookmark_for(&library_id, root_id, &root_path)
+            .ok_or_else(|| "folder needs reconnecting in Files".to_string())?;
+        let prepared = tauri_plugin_folder_access::prepare_folder(app, &bookmark)?;
+        let path = PathBuf::from(prepared.path);
+        state.device_storage.refresh_root_grant(
+            &library_id,
+            root_id,
+            &bookmark,
+            &path,
+            &prepared.bookmark,
+        )?;
+        path
+    };
     let name = folder_path
         .rsplit('/')
         .next()
@@ -481,7 +498,10 @@ fn refresh_photo_parent_blocking(photo_path: String, state: &AppState) -> Result
         .remove(root_id)
         .ok_or_else(|| "media root needs reconnecting on this device".to_string())?;
     let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
-    catalog.refresh_photo_parent(&photo_path, &root_path)
+    catalog.refresh_photo_parent(&photo_path, &root_path)?;
+    let snapshot = catalog.root_snapshot(root_id);
+    drop(catalog);
+    repo.save_catalog_root(root_id, &snapshot)
 }
 
 /// Remove a top-level imported folder from the library without deleting any

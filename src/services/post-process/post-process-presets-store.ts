@@ -4,7 +4,7 @@ import {
   defaultPostProcess,
   type PostProcessSettings,
 } from "./post-process-store";
-import { defaultTone, normalizeColor } from "@domain/edits";
+import { defaultTone, normalizeColor, normalizeClarity, normalizeAnalog } from "@domain/edits";
 
 export type PostProcessPresetValues = Omit<PostProcessSettings, "enabled">;
 
@@ -25,11 +25,13 @@ const listeners = new Set<(presets: readonly PostProcessPreset[]) => void>();
 function snapshot(settings: PostProcessSettings): PostProcessPresetValues {
   return structuredClone({
     tone: settings.tone,
+    clarity: settings.clarity,
     color: settings.color,
     curve: settings.curve,
     sharpen: settings.sharpen,
     grain: settings.grain,
     bloom: settings.bloom,
+    analog: settings.analog,
   });
 }
 
@@ -51,11 +53,13 @@ function parse(raw: string): PostProcessPreset[] {
           tone: values.tone
             ? { ...defaultTone(), ...values.tone }
             : defaults.tone,
+          clarity: normalizeClarity(values.clarity),
           color: values.color ? normalizeColor(values.color) : defaults.color,
           curve: values.curve ?? defaults.curve,
           sharpen: values.sharpen ?? defaults.sharpen,
           grain: values.grain ?? defaults.grain,
           bloom: values.bloom ?? defaults.bloom,
+          analog: normalizeAnalog(values.analog),
         }),
       }];
     });

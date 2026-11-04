@@ -1,12 +1,13 @@
 //! Full-resolution image loader for the canvas viewer.
 //!
-//! Returns *encoded* image bytes (JPEG/PNG) so the frontend can decode via
+//! Returns *encoded* image bytes so the frontend can decode via
 //! the browser's native, multi-threaded `createImageBitmap`. Avoids the
 //! ~33 % base64 inflation and the ~96 MB RGBA round-trip per 24 MP image.
 //!
 //! * RAW files yield their largest embedded JPEG preview.
-//! * TIFF is transcoded to JPEG once and cached.
-//! * JPEG/PNG are passed through untouched.
+//! * TIFF and formats unsupported by the browser are transcoded to JPEG once
+//!   and cached.
+//! * Browser-native formats are passed through untouched.
 
 mod transcode;
 
@@ -29,9 +30,19 @@ pub fn load_bytes(path: &str, cancel: &CancelToken) -> Result<Vec<u8>, String> {
     cancel.check()?;
 
     let ext = lowercase_extension(p);
-    let bytes = if raw_preview::is_raw_extension(&ext) {
+    let bytes = if matches!(ext.as_str(), "heic" | "heif") {
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            super::apple_heif::to_jpeg(p, 32768)?
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        return Err("HEIF decoding requires Apple ImageIO".into());
+    } else if raw_preview::is_raw_extension(&ext) {
         raw_preview::extract_preview(p)?.jpeg_bytes
-    } else if matches!(ext.as_str(), "tif" | "tiff") {
+    } else if matches!(
+        ext.as_str(),
+        "tif" | "tiff" | "bmp" | "gif" | "ico" | "tga" | "pnm" | "ppm" | "pgm" | "pbm"
+    ) {
         let raw = fs::read(p).map_err(|e| e.to_string())?;
         cancel.check()?;
         transcode::to_jpeg(&raw)?

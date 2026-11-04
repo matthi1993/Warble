@@ -8,36 +8,61 @@
 //! to hand the canvas encoded image bytes (or the embedded preview).
 //!
 //! Image reads use a small worker queue. The active photo is urgent;
-//! visible thumbnails use normal priority; bulk filter metadata runs behind
+//! visible thumbnails use high priority; bulk filter metadata runs behind
 //! interactive image work. The frontend
 //! can cancel stale image requests during rapid navigation.
 
 use serde::Serialize;
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::app_state::AppState;
 use crate::imaging::{exif_cache, full_image, hd_image, thumbnails};
+use crate::library::is_video_extension;
 use crate::sidecar::MetadataOverrides;
 use crate::tasks::{self, Priority};
+
+#[tauri::command]
+pub fn get_video_source(
+    photo_path: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    if !is_video_extension(
+        std::path::Path::new(&photo_path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default(),
+    ) {
+        return Err("Not a supported video".into());
+    }
+    let path = state.resolve_library_path(&photo_path)?;
+    if !path.is_file() {
+        return Err("Video file is unavailable".into());
+    }
+    app.asset_protocol_scope()
+        .allow_file(&path)
+        .map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
 
 #[tauri::command]
 pub async fn get_thumbnail(
     photo_path: String,
     request_id: Option<u64>,
-    urgent: Option<bool>,
-    background: Option<bool>,
+    priority: Option<Priority>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    let priority = if urgent.unwrap_or(false) {
-        Priority::Urgent
-    } else if background.unwrap_or(false) {
-        Priority::Background
-    } else {
-        Priority::Normal
-    };
+    let cache_path = resolved.clone();
+    if let Some(bytes) = tauri::async_runtime::spawn_blocking(move || thumbnails::cached(&cache_path))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(Response::new(bytes));
+    }
+    let priority = priority.unwrap_or(Priority::High);
     let bytes = tasks::run(priority, request_id, move |cancel| {
         thumbnails::render(&resolved, &photo_path, cancel)
     })
@@ -64,11 +89,12 @@ pub async fn get_full_image_bytes(
 pub async fn get_hd_image_bytes(
     photo_path: String,
     request_id: Option<u64>,
+    priority: Option<Priority>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let resolved = state.resolve_library_path(&photo_path)?;
     let resolved = resolved.to_string_lossy().into_owned();
-    let bytes = tasks::run(Priority::Urgent, request_id, move |cancel| {
+    let bytes = tasks::run(priority.unwrap_or(Priority::Urgent), request_id, move |cancel| {
         hd_image::load_bytes(&resolved, &photo_path, cancel)
     })
     .await?;
@@ -83,15 +109,9 @@ pub fn cancel_image_request(request_id: u64) {
     tasks::pool().cancel(request_id);
 }
 
-/// Raise a queued background request when it becomes visible or urgent.
 #[tauri::command]
-pub fn promote_image_request(request_id: u64, urgent: bool) {
-    let priority = if urgent {
-        Priority::Urgent
-    } else {
-        Priority::Normal
-    };
-    tasks::pool().promote(request_id, priority);
+pub fn set_image_request_priority(request_id: u64, priority: Priority) {
+    tasks::pool().set_priority(request_id, priority);
 }
 
 /// Read EXIF metadata for the photo at `photo_path`. Returns an
@@ -168,6 +188,7 @@ pub struct PhotoFilterInfo {
     pub lens: Option<String>,
     pub focal_length_mm: Option<f64>,
     pub date_taken: Option<String>,
+    pub capture_time: Option<String>,
 }
 
 fn filter_info(path: String, metadata: &crate::imaging::exif::ExifMetadata) -> PhotoFilterInfo {
@@ -186,12 +207,14 @@ fn filter_info(path: String, metadata: &crate::imaging::exif::ExifMetadata) -> P
             .and_then(parse_focal_length_mm)
     });
     let date_taken = metadata.date_taken.as_deref().and_then(normalize_date);
+    let capture_time = metadata.date_taken.as_deref().and_then(normalize_capture_time);
     PhotoFilterInfo {
         path,
         camera,
         lens,
         focal_length_mm,
         date_taken,
+        capture_time,
     }
 }
 
@@ -209,7 +232,7 @@ pub async fn get_cached_photo_filter_metadata(
         }
     }
 
-    tasks::run(Priority::Background, None, move |cancel| {
+    tasks::run(Priority::Normal, None, move |cancel| {
         let mut result = Vec::new();
         for (path, resolved) in requests {
             cancel.check()?;
@@ -236,16 +259,21 @@ pub async fn get_photo_filter_metadata(
         requests.push((key, resolved));
     }
 
-    tasks::run(Priority::Background, request_id, move |cancel| {
-        let mut result = Vec::with_capacity(requests.len());
-        for (path, resolved) in requests {
+    let request = tasks::request_guard(request_id);
+    let mut result = Vec::with_capacity(requests.len());
+    for (path, resolved) in requests {
+        let cancel = request.token();
+        cancel.check()?;
+        let info = tasks::run(Priority::Background, None, move |_| {
             cancel.check()?;
             let metadata = exif_cache::get_or_compute(&path, &resolved);
-            result.push(filter_info(path, &metadata));
-        }
-        Ok(result)
-    })
-    .await
+            cancel.check()?;
+            Ok(filter_info(path, &metadata))
+        })
+        .await?;
+        result.push(info);
+    }
+    Ok(result)
 }
 
 fn parse_focal_length_mm(value: &str) -> Option<f64> {
@@ -284,4 +312,12 @@ fn normalize_date(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn normalize_capture_time(value: &str) -> Option<String> {
+    let mut parts = value.trim().split([' ', 'T']);
+    let day = normalize_date(parts.next()?)?;
+    let time = parts.next()?.get(..8)?;
+    let timestamp = format!("{day} {time}");
+    valid_capture_date(&timestamp).then_some(timestamp)
 }

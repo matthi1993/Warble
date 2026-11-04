@@ -3,6 +3,7 @@ export interface ToolShaderModule {
   readonly id: string;
   readonly declarations: string;
   readonly functions: string;
+  readonly sourceApply?: string;
   readonly photoApply: string;
   readonly postApply: string;
   isActive(value: unknown): boolean;

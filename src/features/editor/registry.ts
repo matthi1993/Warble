@@ -1,4 +1,7 @@
+import { AnalogTool, readAnalogToolValue } from "./tools/analog/analog.logic";
+import { analogShader } from "./tools/analog/analog.shader";
 import { ColorTool, readColorToolValue } from "./tools/color/color.logic";
+import { ClarityTool, readClarityToolValue } from "./tools/clarity/clarity.logic";
 import { CropTool } from "./tools/crop/crop.logic";
 import { CurveTool, readCurveToolValue } from "./tools/curve/curve.logic";
 import { GrainTool, readGrainToolValue } from "./tools/grain/grain.logic";
@@ -9,6 +12,7 @@ import type { ToolShaderModule } from "./rendering/shader-types";
 import type { EditorState } from "./editor-state";
 import type { EditTool, ToolScope } from "./tool";
 import { colorShader } from "./tools/color/color.shader";
+import { clarityShader } from "./tools/clarity/clarity.shader";
 import { curveShader } from "./tools/curve/curve.shader";
 import { grainShader } from "./tools/grain/grain.shader";
 import { sharpenShader } from "./tools/sharpen/sharpen.shader";
@@ -43,6 +47,15 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     shader: toneShader,
     readValue: readToneToolValue,
     create: (scope, state) => new ToneTool(scope, state),
+  },
+  {
+    id: "clarity",
+    title: "Clarity / Structure",
+    order: 25,
+    scopes: ["photo", "post"],
+    shader: clarityShader,
+    readValue: readClarityToolValue,
+    create: (scope, state) => new ClarityTool(scope, state),
   },
   {
     id: "color",
@@ -88,6 +101,15 @@ export const EDITOR_TOOLS: readonly EditorToolRegistration[] = [
     shader: grainShader,
     readValue: readGrainToolValue,
     create: (scope, state) => new GrainTool(scope, state),
+  },
+  {
+    id: "analog",
+    title: "Analog Effects",
+    order: 70,
+    scopes: ["photo", "post"],
+    shader: analogShader,
+    readValue: readAnalogToolValue,
+    create: (scope, state) => new AnalogTool(scope, state),
   },
 ];
 

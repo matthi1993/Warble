@@ -79,8 +79,7 @@ pub fn resolve_bookmark<R: Runtime>(
 }
 
 /// Resolve a folder bookmark, retain its security scope, and ask the native
-/// file coordinator to enumerate the subtree. This materializes directory
-/// listings exposed by remote iOS File Providers before Rust scans them.
+/// file coordinator to read its immediate directory listing.
 pub fn prepare_folder<R: Runtime>(
     app: &AppHandle<R>,
     bookmark: &str,

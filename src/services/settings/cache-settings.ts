@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export interface CacheSettings {
+  parallel_workers: number;
   thumbnail_disk_max_entries: number;
   hd_image_disk_max_entries: number;
   full_image_memory_max_entries: number;
@@ -10,6 +11,7 @@ export interface CacheSettings {
 }
 
 export const SAFE_CACHE_DEFAULTS: CacheSettings = {
+  parallel_workers: 1,
   thumbnail_disk_max_entries: 0,
   hd_image_disk_max_entries: 0,
   full_image_memory_max_entries: 0,

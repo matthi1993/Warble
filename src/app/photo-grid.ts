@@ -1,7 +1,8 @@
 import { LitElement, css, html, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { Photo } from "@domain/photo";
+import { RAW_EXTS, type Photo } from "@domain/photo";
+import { VIDEO_EXTENSIONS } from "@services/images/video-source";
 import {
   COLOR_LABELS,
   LABEL_COLORS,
@@ -16,6 +17,22 @@ import "@features/image-viewer/pf-thumbnail-card";
 import "../ui/controls/pf-slider";
 import "../ui/icons/pf-icon";
 
+type MediaType = "image" | "raw" | "movie";
+
+function photoMediaTypes(photo: Photo): Set<MediaType> {
+  const extensions = [
+    ...(photo.extensions ?? []),
+    ...(photo.files ?? []).map((file) => file.extension),
+    photo.path.split(".").pop() ?? "",
+  ];
+  return new Set(extensions.map((extension): MediaType => {
+    const normalized = extension.toLowerCase();
+    if (RAW_EXTS.includes(normalized)) return "raw";
+    if (VIDEO_EXTENSIONS.some((movieExtension) => movieExtension === normalized)) return "movie";
+    return "image";
+  }));
+}
+
 function variantCount(photo: Photo): number {
   const files = photo.files ?? [];
   if (files.length === 0) return 1;
@@ -29,6 +46,7 @@ const MIN_COLUMNS = 1;
 const MAX_COLUMNS = 8;
 const DEFAULT_COLUMNS = 6;
 const GROUP_PAGE_SIZE = 48;
+const VISIBLE_GROUP_PAGE_SIZE = 8;
 
 interface PhotoDayGroup {
   date: string | null;
@@ -154,6 +172,32 @@ export class PfPhotoGrid extends LitElement {
       background: var(--pf-surface, var(--pf-bg));
       box-shadow: none;
     }
+    .filter-toggle {
+      display: flex;
+      align-items: center;
+      gap: var(--pf-space-2);
+      width: 100%;
+      min-height: 36px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--pf-text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .filter-toggle pf-icon { margin-left: auto; }
+    .filter-toggle[aria-expanded="false"] pf-icon { transform: rotate(-90deg); }
+    .filter-status {
+      font-size: var(--pf-text-xs);
+      color: var(--pf-text-muted);
+    }
+    .filter-content {
+      display: flex;
+      flex-direction: column;
+      gap: var(--pf-space-2);
+    }
+    .filter-content[hidden] { display: none; }
     .filter-controls {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -167,17 +211,12 @@ export class PfPhotoGrid extends LitElement {
       flex-direction: column;
       gap: 5px;
     }
-    .focal-range-label {
-      color: var(--pf-text-muted);
-      font-size: var(--pf-text-xs);
-      font-weight: 600;
-      letter-spacing: 0.02em;
-    }
     .filter-control select,
-    .focal-inputs input,
     .date-inputs input {
       box-sizing: border-box;
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       min-height: 34px;
       padding: 5px 9px;
       border: 1px solid var(--pf-border);
@@ -219,34 +258,29 @@ export class PfPhotoGrid extends LitElement {
       pointer-events: none;
       transform: translateY(-50%);
     }
-    .date-inputs input::placeholder {
-      color: var(--pf-text-muted);
-    }
-    .focal-range {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
     .date-range {
       display: flex;
       flex-direction: column;
       gap: 5px;
+      min-width: 0;
+      grid-column: span 2;
     }
     .date-inputs {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
       gap: var(--pf-space-2);
     }
     .date-inputs input {
+      appearance: none;
+      overflow: hidden;
+    }
+    .date-inputs input::-webkit-date-and-time-value {
       min-width: 0;
+      text-align: left;
     }
-    .focal-inputs {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--pf-space-2);
-    }
-    .focal-inputs input::placeholder {
-      color: var(--pf-text-subtle);
+    .date-inputs input::-webkit-datetime-edit {
+      min-width: 0;
+      padding: 0;
     }
     .filter-options {
       display: flex;
@@ -263,6 +297,23 @@ export class PfPhotoGrid extends LitElement {
       color: var(--pf-text-muted);
       font-size: var(--pf-text-xs);
     }
+    .type-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+    .type-filters button {
+      padding: 6px 10px;
+      min-height: 34px;
+      border: 1px solid var(--pf-border);
+      border-radius: var(--pf-radius-md);
+      background: var(--pf-surface-2);
+      color: var(--pf-text-muted);
+      font: inherit;
+      cursor: pointer;
+    }
+    .type-filters button[aria-pressed="true"] {
+      background: var(--pf-accent-soft);
+      border-color: var(--pf-accent);
+      color: var(--pf-accent-hover);
+    }
+    .type-filters button:focus-visible { outline: 2px solid var(--pf-accent); outline-offset: 2px; }
     .stars-filter {
       display: inline-flex;
       gap: 2px;
@@ -387,7 +438,19 @@ export class PfPhotoGrid extends LitElement {
     .day-heading[aria-expanded="false"] .day-chevron {
       transform: rotate(-90deg);
     }
-    @container (max-width: 650px) {
+    @media (pointer: coarse) {
+      .filter-toggle { min-height: 44px; }
+      .filter-control select,
+      .date-inputs input {
+        min-height: 44px;
+        font-size: 16px;
+      }
+      .stars-filter button { min-width: 32px; min-height: 44px; }
+      .label-chips { gap: 8px; }
+      .label-chips button { width: 28px; height: 36px; }
+      .filter-clear, .type-filters button { min-height: 44px; }
+    }
+    @container (max-width: 800px) {
       .filter-controls {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -396,6 +459,8 @@ export class PfPhotoGrid extends LitElement {
       .filter-controls {
         grid-template-columns: 1fr;
       }
+      .date-range { grid-column: auto; }
+      .filter-group { max-width: 100%; flex-wrap: wrap; }
       .size-controls { width: 100%; margin-left: 0; }
       .subfolder-toggle { order: 2; }
       .grid-header { max-height: 55vh; overflow-y: auto; }
@@ -413,6 +478,10 @@ export class PfPhotoGrid extends LitElement {
   private selectedPaths = new Set<string>();
 
   private selectionAnchor: string | null = null;
+  private publishedSelection: string[] = [];
+  private publishedSelectionPhotos: Photo[] | null = null;
+  private publishedSelectedPaths: ReadonlySet<string> | null = null;
+  private touchSelectionMode = false;
 
   getSelectionPaths(): string[] {
     return this.getDayGroups(this.filteredPhotos)
@@ -429,15 +498,15 @@ export class PfPhotoGrid extends LitElement {
     if (!this.selectedPath) this.selectPrimary(paths[0]);
   }
 
-  private selectPrimary(photo: Photo): void {
+  private selectPrimary(photo: Photo | null): void {
     this.dispatchEvent(new CustomEvent("photo-selected", {
-      detail: { path: photo.path, filename: photo.filename },
+      detail: { path: photo?.path ?? null, filename: photo?.filename ?? "" },
       bubbles: true,
       composed: true,
     }));
   }
 
-  private onCardSelected(e: CustomEvent<{ path: string; shiftKey?: boolean; toggle?: boolean }>): void {
+  private onCardSelected(e: CustomEvent<{ path: string; shiftKey?: boolean; toggle?: boolean; touch?: boolean }>): void {
     e.stopPropagation();
     const photos = this.getDayGroups(this.filteredPhotos).flatMap((group) => group.photos);
     const index = photos.findIndex((photo) => photo.path === e.detail.path);
@@ -450,7 +519,7 @@ export class PfPhotoGrid extends LitElement {
         this.selectedPaths = new Set([e.detail.path]);
         this.selectionAnchor = e.detail.path;
       }
-    } else if (e.detail.toggle) {
+    } else if (e.detail.toggle || (e.detail.touch && this.touchSelectionMode)) {
       const next = new Set(this.selectedPaths);
       if (next.has(e.detail.path)) next.delete(e.detail.path);
       else next.add(e.detail.path);
@@ -460,11 +529,16 @@ export class PfPhotoGrid extends LitElement {
       this.selectedPaths = new Set([e.detail.path]);
       this.selectionAnchor = e.detail.path;
     }
-    this.selectionFromClick = this.selectedPath !== e.detail.path;
-    this.selectPrimary(photos[index]);
+    const primary = this.selectedPaths.has(e.detail.path)
+      ? photos[index]
+      : photos.find((photo) => this.selectedPaths.has(photo.path)) ?? null;
+    if (this.selectedPaths.size === 0) this.touchSelectionMode = false;
+    this.selectionFromClick = this.selectedPath !== primary?.path;
+    this.selectPrimary(primary);
   }
 
-  private onCardContextMenu(e: CustomEvent<{ path: string }>): void {
+  private onCardContextMenu(e: CustomEvent<{ path: string; longPress?: boolean }>): void {
+    if (e.detail.longPress) this.touchSelectionMode = true;
     if (this.selectedPaths.has(e.detail.path)) return;
     const photo = this.photos.find((item) => item.path === e.detail.path);
     if (!photo) return;
@@ -472,6 +546,16 @@ export class PfPhotoGrid extends LitElement {
     this.selectionAnchor = photo.path;
     this.selectionFromClick = this.selectedPath !== photo.path;
     this.selectPrimary(photo);
+  }
+
+  private onCardPointerDragStart(e: CustomEvent<{ path: string; pointerId: number; x: number; y: number }>): void {
+    e.stopPropagation();
+    const paths = this.selectedPaths.has(e.detail.path) ? this.getSelectionPaths() : [e.detail.path];
+    this.dispatchEvent(new CustomEvent("photo-grid-pointer-drag-start", {
+      detail: { paths, pointerId: e.detail.pointerId, x: e.detail.x, y: e.detail.y },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   @property({ type: String })
@@ -495,6 +579,9 @@ export class PfPhotoGrid extends LitElement {
   @state()
   private columns: number = readStoredColumns();
 
+  @state()
+  private filtersExpanded = false;
+
   /** Minimum star rating to include in the visible grid. `0` means
    *  "no minimum" (all photos pass). */
   @state()
@@ -505,6 +592,9 @@ export class PfPhotoGrid extends LitElement {
    *  whose label is in this set are shown. */
   @state()
   private activeLabels: Set<Exclude<ColorLabel, "">> = new Set();
+
+  @state()
+  private activeTypes = new Set<MediaType>();
 
   @state()
   private cameraFilter = "";
@@ -535,10 +625,17 @@ export class PfPhotoGrid extends LitElement {
 
   private unsubscribeRatings: (() => void) | null = null;
   private moreObserver: IntersectionObserver | null = null;
-  private renderedPhotoSet = "";
+  private renderedPhotoSet = new Set<string>();
+  private filterInputs: readonly unknown[] = [];
+  private filteredPhotoCache: Photo[] = [];
+  private groupedPhotos: Photo[] | null = null;
+  private dayGroupCache: PhotoDayGroup[] = [];
 
   @state()
   private visibleCountByDay = new Map<string, number>();
+
+  @state()
+  private visibleGroupCount = VISIBLE_GROUP_PAGE_SIZE;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -575,11 +672,14 @@ export class PfPhotoGrid extends LitElement {
 
   protected updated(changed: Map<string, unknown>): void {
     if (changed.has("photos")) {
-      const photoSet = this.photos.map((photo) => photo.path).join("\u0000");
-      if (photoSet !== this.renderedPhotoSet) {
+      const photoSet = new Set(this.photos.map((photo) => photo.path));
+      if (photoSet.size !== this.renderedPhotoSet.size ||
+        [...photoSet].some((path) => !this.renderedPhotoSet.has(path))) {
         this.renderedPhotoSet = photoSet;
+        this.touchSelectionMode = false;
         this.collapsedDays = new Set();
         this.resetVisiblePhotoPages();
+        this.visibleGroupCount = VISIBLE_GROUP_PAGE_SIZE;
         this.selectedPaths = new Set(this.selectedPath ? [this.selectedPath] : []);
         this.selectionAnchor = this.selectedPath;
       }
@@ -609,6 +709,18 @@ export class PfPhotoGrid extends LitElement {
       this.selectionFromClick = false;
     }
     this.observeLoadMoreControls();
+    const filtered = this.filteredPhotos;
+    if (filtered === this.publishedSelectionPhotos && this.selectedPaths === this.publishedSelectedPaths) return;
+    this.publishedSelectionPhotos = filtered;
+    this.publishedSelectedPaths = this.selectedPaths;
+    const paths = this.getSelectionPaths();
+    if (paths.length !== this.publishedSelection.length ||
+      paths.some((path, index) => path !== this.publishedSelection[index])) {
+      this.publishedSelection = paths;
+      this.dispatchEvent(new CustomEvent("photo-selection-change", {
+        detail: { paths }, bubbles: true, composed: true,
+      }));
+    }
   }
 
   protected firstUpdated(): void {
@@ -618,9 +730,17 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private get filteredPhotos(): Photo[] {
-    // Keep a reactive dependency on `ratingsTick` so Lit re-renders
-    // when ratings change.
-    void this.ratingsTick;
+    const inputs = [this.photos, this.ratingsTick, this.minStars, this.activeLabels,
+      this.activeTypes, this.cameraFilter, this.lensFilter, this.minFocalLength,
+      this.maxFocalLength, this.startDate, this.endDate, this.filterMetadataLoading];
+    if (inputs.some((input, index) => input !== this.filterInputs[index])) {
+      this.filterInputs = inputs;
+      this.filteredPhotoCache = this.filterPhotos();
+    }
+    return this.filteredPhotoCache;
+  }
+
+  private filterPhotos(): Photo[] {
     if (!this.filtersActive) {
       return this.photos;
     }
@@ -632,6 +752,7 @@ export class PfPhotoGrid extends LitElement {
       this.startDate !== "" ||
       this.endDate !== "";
     return this.photos.filter((p) => {
+      if (this.activeTypes.size > 0 && ![...photoMediaTypes(p)].some((type) => this.activeTypes.has(type))) return false;
       const r = getPhotoRating(p.path);
       if (this.minStars > 0 && r.rating < this.minStars) return false;
       if (this.activeLabels.size > 0) {
@@ -683,6 +804,7 @@ export class PfPhotoGrid extends LitElement {
 
   private get filtersActive(): boolean {
     return (
+      this.activeTypes.size > 0 ||
       this.minStars > 0 ||
       this.activeLabels.size > 0 ||
       this.cameraFilter !== "" ||
@@ -695,6 +817,7 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private getDayGroups(photos: Photo[]): PhotoDayGroup[] {
+    if (photos === this.groupedPhotos) return this.dayGroupCache;
     const groups = new Map<string, Photo[]>();
     for (const photo of photos) {
       const date = photo.filterInfo?.dateTaken ?? null;
@@ -704,7 +827,8 @@ export class PfPhotoGrid extends LitElement {
       else groups.set(key, [photo]);
     }
 
-    return [...groups.entries()]
+    this.groupedPhotos = photos;
+    return this.dayGroupCache = [...groups.entries()]
       .map(([key, photos]) => ({ date: key === "undated" ? null : key, photos }))
       .sort((a, b) => {
         if (a.date === null) return 1;
@@ -746,14 +870,6 @@ export class PfPhotoGrid extends LitElement {
         .map((photo) => photo.filterInfo?.lens)
         .filter((value): value is string => Boolean(value))
     )].sort((a, b) => a.localeCompare(b));
-  }
-
-  private get focalBounds(): { min: number; max: number } | null {
-    const values = this.photos
-      .map((photo) => photo.filterInfo?.focalLengthMm)
-      .filter((value): value is number => value != null && Number.isFinite(value));
-    if (values.length === 0) return null;
-    return { min: Math.min(...values), max: Math.max(...values) };
   }
 
   /**
@@ -857,15 +973,6 @@ export class PfPhotoGrid extends LitElement {
     else this.lensFilter = value;
   }
 
-  private setFocalLength(bound: "min" | "max", event: Event): void {
-    const raw = (event.target as HTMLInputElement).value;
-    const value = raw === "" ? null : Number(raw);
-    const next = Number.isFinite(value) && value !== null && value >= 0 ? value : null;
-    this.resetVisiblePhotoPages();
-    if (bound === "min") this.minFocalLength = next;
-    else this.maxFocalLength = next;
-  }
-
   private setDate(bound: "start" | "end", event: Event): void {
     const value = (event.target as HTMLInputElement).value;
     this.resetVisiblePhotoPages();
@@ -890,10 +997,19 @@ export class PfPhotoGrid extends LitElement {
     );
   };
 
+  private toggleType(type: MediaType): void {
+    const next = new Set(this.activeTypes);
+    if (next.has(type)) next.delete(type);
+    else next.add(type);
+    this.activeTypes = next;
+    this.resetVisiblePhotoPages();
+  }
+
   private clearFilters = () => {
     this.resetVisiblePhotoPages();
     this.minStars = 0;
     this.activeLabels = new Set();
+    this.activeTypes = new Set();
     this.cameraFilter = "";
     this.lensFilter = "";
     this.minFocalLength = null;
@@ -919,9 +1035,10 @@ export class PfPhotoGrid extends LitElement {
   }
 
   private ensurePhotoIsRendered(path: string): void {
-    for (const group of this.getDayGroups(this.filteredPhotos)) {
+    for (const [groupIndex, group] of this.getDayGroups(this.filteredPhotos).entries()) {
       const index = group.photos.findIndex((photo) => photo.path === path);
       if (index < 0) continue;
+      if (groupIndex >= this.visibleGroupCount) this.visibleGroupCount = groupIndex + VISIBLE_GROUP_PAGE_SIZE;
       const day = group.date ?? "undated";
       const current = this.visiblePhotoCount(day, group.photos.length);
       if (index >= current) {
@@ -942,6 +1059,10 @@ export class PfPhotoGrid extends LitElement {
       (entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
+          if ((entry.target as HTMLElement).classList.contains("groups-load-more")) {
+            this.visibleGroupCount += VISIBLE_GROUP_PAGE_SIZE;
+            continue;
+          }
           const day = (entry.target as HTMLElement).dataset.day;
           if (day) this.showMoreForDay(day);
         }
@@ -949,7 +1070,7 @@ export class PfPhotoGrid extends LitElement {
       { root, rootMargin: "400px 0px" }
     );
     this.renderRoot
-      .querySelectorAll<HTMLElement>(".group-load-more")
+      .querySelectorAll<HTMLElement>(".group-load-more, .groups-load-more")
       .forEach((control) => this.moreObserver?.observe(control));
   }
 
@@ -959,6 +1080,7 @@ export class PfPhotoGrid extends LitElement {
       style=${`--pf-grid-cols: ${this.columns}`}
       @photo-selected=${this.onCardSelected}
       @photo-context-menu=${this.onCardContextMenu}
+      @photo-pointer-drag-start=${this.onCardPointerDragStart}
     >
       ${repeat(
         photos,
@@ -987,7 +1109,6 @@ export class PfPhotoGrid extends LitElement {
     const visible = this.filteredPhotos;
     const filtersActive = this.filtersActive;
     const metadataLoading = this.filterMetadataLoading;
-    const focalBounds = this.focalBounds;
     const groups = this.getDayGroups(visible);
     return html`
       <div class="grid-header">
@@ -1012,10 +1133,21 @@ export class PfPhotoGrid extends LitElement {
             @change=${(e: CustomEvent<number>) =>
               this.setColumns(MIN_COLUMNS + MAX_COLUMNS - e.detail)}
             ></pf-slider>
-            <span class="count">${this.columns} / row</span>
           </div>
         </div>
         <div class="filter-panel">
+          <button
+            type="button"
+            class="filter-toggle"
+            aria-expanded=${this.filtersExpanded}
+            aria-controls="filter-content"
+            @click=${() => { this.filtersExpanded = !this.filtersExpanded; }}
+          >
+            Filters
+            ${filtersActive ? html`<span class="filter-status">Active</span>` : null}
+            <pf-icon name="chevron-down"></pf-icon>
+          </button>
+          <div id="filter-content" class="filter-content" ?hidden=${!this.filtersExpanded}>
           <div class="filter-controls">
             <label class="filter-control">
               <span class="filter-label">Camera</span>
@@ -1049,31 +1181,8 @@ export class PfPhotoGrid extends LitElement {
                 <pf-icon name="chevron-down"></pf-icon>
               </span>
             </label>
-            <div class="focal-range">
-              <span class="focal-range-label">Focal length (mm)</span>
-              <div class="focal-inputs">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  placeholder=${focalBounds ? `From ${focalBounds.min}` : "Min"}
-                  .value=${this.minFocalLength?.toString() ?? ""}
-                  aria-label="Minimum focal length"
-                  @input=${(e: Event) => this.setFocalLength("min", e)}
-                />
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  placeholder=${focalBounds ? `To ${focalBounds.max}` : "Max"}
-                  .value=${this.maxFocalLength?.toString() ?? ""}
-                  aria-label="Maximum focal length"
-                  @input=${(e: Event) => this.setFocalLength("max", e)}
-                />
-              </div>
-            </div>
             <div class="date-range">
-              <span class="focal-range-label">Date taken</span>
+              <span class="filter-label">Date taken</span>
               <div class="date-inputs">
                 <input
                   type="date"
@@ -1091,6 +1200,15 @@ export class PfPhotoGrid extends LitElement {
             </div>
           </div>
           <div class="filter-options">
+          <span class="filter-group">
+            <span class="label">Type</span>
+            <span class="type-filters" role="group" aria-label="Filter by file type">
+              ${(["image", "raw", "movie"] as MediaType[]).map((type) => html`<button
+                type="button" aria-pressed=${this.activeTypes.has(type)}
+                @click=${() => this.toggleType(type)}
+              >${type === "raw" ? "RAW" : type === "image" ? "Image" : "Movie"}</button>`)}
+            </span>
+          </span>
           <span class="filter-group">
             <span class="label">Stars</span>
             <span class="stars-filter" role="radiogroup" aria-label="Filter by minimum rating">
@@ -1135,6 +1253,7 @@ export class PfPhotoGrid extends LitElement {
             @click=${this.clearFilters}
           >Clear filters</button>
           </div>
+          </div>
         </div>
       </div>
       <div class="grid-scroll">
@@ -1142,7 +1261,7 @@ export class PfPhotoGrid extends LitElement {
           ? html`<div class="empty-filter">
               No photos match the current filters.
             </div>`
-          : groups.map((group) => {
+          : groups.slice(0, this.visibleGroupCount).map((group) => {
               const key = group.date ?? "undated";
               const expanded = !this.collapsedDays.has(key);
               return html`<section class="day-group">
@@ -1178,6 +1297,9 @@ export class PfPhotoGrid extends LitElement {
                   : null}
               </section>`;
             })}
+        ${groups.length > this.visibleGroupCount ? html`<div class="groups-load-more">
+          <button type="button" @click=${() => { this.visibleGroupCount += VISIBLE_GROUP_PAGE_SIZE; }}>Show more days</button>
+        </div>` : null}
       </div>
     `;
   }

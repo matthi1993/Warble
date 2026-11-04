@@ -17,6 +17,7 @@ use crate::library::{Folder, Photo};
 enum ScanKind {
     FolderTree,
     FolderImages,
+    FolderCheck,
 }
 
 #[derive(Clone, Serialize)]
@@ -85,6 +86,25 @@ pub struct ScanCoordinator {
 }
 
 impl ScanCoordinator {
+    pub fn enqueue_check(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        root_id: String,
+        name: String,
+        root_path: PathBuf,
+    ) {
+        self.enqueue_job(
+            app,
+            ScanKind::FolderCheck,
+            root_id.clone(),
+            root_id,
+            name,
+            root_path,
+            false,
+            false,
+        );
+    }
+
     pub fn enqueue_root(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -264,7 +284,9 @@ impl ScanCoordinator {
             }
             start_worker
         };
-        self.mark_folder_scanning(app, &job.folder_key, true);
+        if job.kind != ScanKind::FolderCheck {
+            self.mark_folder_scanning(app, &job.folder_key, true);
+        }
         emit_progress(app, progress(&job, "queued", None));
         if start_worker {
             let coordinator = Arc::clone(self);
@@ -387,7 +409,15 @@ impl ScanCoordinator {
             return ScanOutcome::Error(message);
         }
         catalog.set_folder_scanning(&job.folder_key, still_queued);
-        emit_folders(app, catalog.roots(), job, true);
+        let snapshot = catalog.root_snapshot(&job.root_id);
+        let folders = catalog.roots();
+        drop(catalog);
+        if let Ok(repo) = state.repository() {
+            if let Err(error) = repo.save_catalog_root(&job.root_id, &snapshot) {
+                return ScanOutcome::Error(error);
+            }
+        }
+        emit_folders(app, folders, job, true);
         ScanOutcome::Done
     }
 
@@ -397,6 +427,12 @@ impl ScanCoordinator {
         job: &ScanJob,
         photos: HashMap<String, Photo>,
     ) -> ScanOutcome {
+        let state = app.state::<AppState>();
+        let mut snapshot = match state.catalog.lock() {
+            Ok(catalog) => catalog.root_snapshot(&job.root_id),
+            Err(error) => return ScanOutcome::Error(error.to_string()),
+        };
+        snapshot.record_fingerprints(&job.folder_key, &job.root_path, job.recursive);
         let queue = match self.queue.lock() {
             Ok(queue) => queue,
             Err(error) => return ScanOutcome::Error(error.to_string()),
@@ -410,6 +446,17 @@ impl ScanCoordinator {
             Err(error) => return ScanOutcome::Error(error.to_string()),
         };
         catalog.merge_folder_images(&job.folder_key, photos, job.recursive);
+        catalog.set_folder_available(&job.folder_key, true);
+        catalog.update_fingerprints(snapshot);
+        let snapshot = catalog.root_snapshot(&job.root_id);
+        let folders = catalog.roots();
+        drop(catalog);
+        if let Ok(repo) = state.repository() {
+            if let Err(error) = repo.save_catalog_root(&job.root_id, &snapshot) {
+                return ScanOutcome::Error(error);
+            }
+        }
+        emit_folders(app, folders, job, false);
         let _ = app.emit(
             "folder-images-updated",
             ImageUpdate {
@@ -429,6 +476,66 @@ enum ScanOutcome {
 
 fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> ScanOutcome {
     match job.kind {
+        ScanKind::FolderCheck => {
+            let state = app.state::<AppState>();
+            let mut snapshot = match state.catalog.lock() {
+                Ok(catalog) => catalog.root_snapshot(&job.root_id),
+                Err(error) => return ScanOutcome::Error(error.to_string()),
+            };
+            #[cfg(target_os = "ios")]
+            let prepare = |folder_key: &str| {
+                let mut folder_job = job.clone();
+                folder_job.folder_key = folder_key.to_string();
+                coordinated_entries(app, &folder_job, false).map(|_| ())
+            };
+            #[cfg(not(target_os = "ios"))]
+            let prepare = |_folder_key: &str| Ok(());
+            let changed = match snapshot.check_root(&job.root_id, &job.root_path, &prepare) {
+                Ok(changed) => changed,
+                Err(error) => return ScanOutcome::Error(error),
+            };
+            let queue = match coordinator.queue.lock() {
+                Ok(queue) => queue,
+                Err(error) => return ScanOutcome::Error(error.to_string()),
+            };
+            if !is_current_in_queue(&queue, job) {
+                return ScanOutcome::Stale;
+            }
+            let mut catalog = match state.catalog.lock() {
+                Ok(catalog) => catalog,
+                Err(error) => return ScanOutcome::Error(error.to_string()),
+            };
+            catalog.remove_root(&job.root_id);
+            catalog.restore(snapshot);
+            let snapshot = catalog.root_snapshot(&job.root_id);
+            let folders = catalog.roots();
+            drop(catalog);
+            if let Ok(repo) = state.repository() {
+                if let Err(error) = repo.save_catalog_root(&job.root_id, &snapshot) {
+                    return ScanOutcome::Error(error);
+                }
+            }
+            emit_folders(app, folders, job, !changed.is_empty());
+            if !changed.is_empty() {
+                let _ = app.emit(
+                    "folder-images-updated",
+                    ImageUpdate {
+                        root_id: job.root_id.clone(),
+                        folder_key: job.root_id.clone(),
+                    },
+                );
+            }
+            drop(queue);
+            sync_image_batches(
+                app,
+                job,
+                changed
+                    .into_iter()
+                    .map(|(key, photos, recursive)| (key, photos, recursive, true))
+                    .collect(),
+            );
+            ScanOutcome::Done
+        }
         ScanKind::FolderTree => {
             #[cfg(target_os = "ios")]
             let folder = coordinated_entries(app, job, true)
@@ -441,7 +548,13 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
             };
             match folder {
                 Ok(folder) => coordinator.merge_tree(app, job, folder),
-                Err(message) => ScanOutcome::Error(message),
+                Err(message) => {
+                    if let Ok(mut catalog) = app.state::<AppState>().catalog.lock() {
+                        catalog.set_folder_available(&job.folder_key, false);
+                        emit_folders(app, catalog.roots(), job, false);
+                    }
+                    ScanOutcome::Error(message)
+                }
             }
         }
         ScanKind::FolderImages => {
@@ -453,7 +566,13 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
             let scanned = scan_folder_images(&job.folder_key, &job.root_path, job.recursive);
             let photos = match scanned {
                 Ok(photos) => photos,
-                Err(message) => return ScanOutcome::Error(message),
+                Err(message) => {
+                    if let Ok(mut catalog) = app.state::<AppState>().catalog.lock() {
+                        catalog.set_folder_available(&job.folder_key, false);
+                        emit_folders(app, catalog.roots(), job, false);
+                    }
+                    return ScanOutcome::Error(message);
+                }
             };
             if !coordinator.is_current(job) {
                 return ScanOutcome::Stale;
@@ -464,42 +583,70 @@ fn execute(app: &AppHandle, coordinator: &ScanCoordinator, job: &ScanJob) -> Sca
                 outcome => return outcome,
             }
 
-            // The UI can browse the discovered images now. Portable sidecar
-            // hydration runs independently so switching folders never waits
-            // behind metadata work from the previous folder.
-            let sidecar_app = app.clone();
-            let job_folder_key = job.folder_key.clone();
-            let job_recursive = job.recursive;
-            let job_prune_missing = job.prune_missing;
-            let job_root_path = job.root_path.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let state = sidecar_app.state::<AppState>();
-                if let Ok(repo) = state.repository() {
-                    if let Some(changes) = crate::library::sync_portable_photo_keys(
-                        repo.as_ref(),
-                        &state,
-                        keys,
-                        &job_folder_key,
-                        &job_root_path,
-                        job_recursive,
-                        job_prune_missing,
-                    ) {
-                        if changes.metadata_changed || !changes.changed_images.is_empty() {
-                            let _ = sidecar_app.emit(
-                                "photo-index-synced",
-                                PhotoIndexUpdate {
-                                    folder_key: job_folder_key,
-                                    changed_images: changes.changed_images,
-                                    metadata_changed: changes.metadata_changed,
-                                },
-                            );
-                        }
-                    }
-                }
-            });
+            sync_image_batches(
+                app,
+                job,
+                vec![(
+                    job.folder_key.clone(),
+                    keys,
+                    job.recursive,
+                    job.prune_missing,
+                )],
+            );
             ScanOutcome::Done
         }
     }
+}
+
+fn sync_image_batches(
+    app: &AppHandle,
+    job: &ScanJob,
+    batches: Vec<(String, Vec<String>, bool, bool)>,
+) {
+    if batches.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    let root_path = job.root_path.clone();
+    let folder_key = job.folder_key.clone();
+    let library_id = app.state::<AppState>().active_library_id().ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if state.active_library_id().ok() != library_id {
+            return;
+        }
+        if let Ok(repo) = state.repository() {
+            let mut metadata_changed = false;
+            let mut changed_images = Vec::new();
+            for (key, photos, recursive, prune_missing) in batches {
+                if state.active_library_id().ok() != library_id {
+                    return;
+                }
+                if let Some(changes) = crate::library::sync_portable_photo_keys(
+                    repo.as_ref(),
+                    &state,
+                    photos,
+                    &key,
+                    &root_path,
+                    recursive,
+                    prune_missing,
+                ) {
+                    metadata_changed |= changes.metadata_changed;
+                    changed_images.extend(changes.changed_images);
+                }
+            }
+            if metadata_changed || !changed_images.is_empty() {
+                let _ = app.emit(
+                    "photo-index-synced",
+                    PhotoIndexUpdate {
+                        folder_key,
+                        changed_images,
+                        metadata_changed,
+                    },
+                );
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "ios")]
@@ -556,6 +703,7 @@ fn generation_key(kind: ScanKind, folder_key: &str) -> String {
     let prefix = match kind {
         ScanKind::FolderTree => "tree",
         ScanKind::FolderImages => "images",
+        ScanKind::FolderCheck => "check",
     };
     format!("{prefix}:{folder_key}")
 }

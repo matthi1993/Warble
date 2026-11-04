@@ -17,8 +17,8 @@ import "@ui/controls/pf-effect-toggle";
 export class PfPostProcessCard extends LitElement {
   static styles = css`
     :host, .stack {
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      align-content: start;
       gap: var(--pf-space-2);
     }
     .enable-row {

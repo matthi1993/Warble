@@ -12,8 +12,8 @@ export function composeToolFunctions(): string {
   return TOOL_SHADER_MODULES.map((module) => module.functions).join("\n");
 }
 
-export function composeToolStage(scope: "photo" | "post"): string {
+export function composeToolStage(stage: "source" | "photo" | "post"): string {
   return TOOL_SHADER_MODULES
-    .map((module) => scope === "photo" ? module.photoApply : module.postApply)
+    .map((module) => module[`${stage}Apply`] ?? "")
     .join("\n");
 }

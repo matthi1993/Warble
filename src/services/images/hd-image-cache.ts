@@ -4,11 +4,9 @@
  *
  * Mirrors `full-image-cache.ts` — same lifecycle and dedupe — but pulls bytes from the backend's HD pipeline
  * (`get_hd_image_bytes`) instead of the full-resolution one. The HD
- * JPEG is what the canvas actually displays today; full-resolution
- * decoding is left in place for a future zoom-to-100 % path.
+ * JPEG provides a quick preview before the full-resolution image loads.
  *
- * Cache size follows `full_image_bitmap_max_entries`, with a floor of two
- * lightweight HD bitmaps for recently viewed photos.
+ * Cache size includes room for the next few photos and recently viewed ones.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -19,19 +17,25 @@ import {
   cancelTaskRequest,
   isTaskCancellation,
   nextRequestId,
+  setTaskRequestPriority,
+  type TaskHandle,
+  type TaskPriority,
 } from "@services/tasks/task-manager";
 
-// Keep a couple of lightweight HD bitmaps independently from expensive
-// full-resolution bitmaps.
-const MIN_HD_ENTRIES = 2;
+export const HD_PRELOAD_COUNT = 3;
+const MIN_HD_ENTRIES = HD_PRELOAD_COUNT + 2;
 const DEFAULT_MAX_ENTRIES = MIN_HD_ENTRIES;
 
 const cache = new Map<string, ImageBitmap>();
+const retained = new Map<string, number>();
+const priorityRank: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, background: 3 };
 
 interface PendingEntry {
   promise: Promise<ImageBitmap>;
   requestId: number;
-  refcount: number;
+  consumers: Map<symbol, TaskPriority>;
+  priority: TaskPriority;
+  task: TaskHandle;
   cancelled: boolean;
   cancel(): void;
 }
@@ -44,13 +48,29 @@ let decodeBytes: ((buf: ArrayBuffer) => Promise<ImageBitmap>) | null = null;
 function setMaxEntries(n: number): void {
   if (!Number.isFinite(n) || n < 1) return;
   maxEntries = Math.max(MIN_HD_ENTRIES, Math.floor(n));
+  evictOldImages();
+}
+
+function evictOldImages(): void {
   while (cache.size > maxEntries) {
-    const oldestKey = cache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    const oldest = cache.get(oldestKey);
+    const oldestKey = [...cache.keys()].find((path) => !retained.has(path));
+    if (oldestKey === undefined) break;
+    cache.get(oldestKey)?.close?.();
     cache.delete(oldestKey);
-    oldest?.close?.();
   }
+}
+
+export function retainHdImage(path: string): () => void {
+  retained.set(path, (retained.get(path) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (retained.get(path) ?? 1) - 1;
+    if (remaining > 0) retained.set(path, remaining);
+    else retained.delete(path);
+    evictOldImages();
+  };
 }
 
 let configured = false;
@@ -89,6 +109,7 @@ export function getHdImage(path: string): ImageBitmap | null {
 
 export interface LoadOptions {
   signal?: AbortSignal;
+  priority?: TaskPriority;
 }
 
 export function loadHdImage(
@@ -96,34 +117,28 @@ export function loadHdImage(
   options: LoadOptions = {}
 ): Promise<ImageBitmap> {
   const signal = options.signal;
+  const priority = options.priority ?? "urgent";
 
   if (signal?.aborted) {
     return Promise.reject(new DOMException("aborted", "AbortError"));
-  }
-
-  // The HD preview represents the current photo. Once another path is
-  // requested, no caller should keep older HD work alive.
-  for (const [pendingPath, entry] of [...pending]) {
-    if (pendingPath !== path) entry.cancel();
   }
 
   const cached = getHdImage(path);
   if (cached) return Promise.resolve(cached);
 
   let entry = pending.get(path);
-  if (entry) {
-    entry.refcount += 1;
-  } else {
-    entry = startLoad(path);
-  }
+  if (!entry) entry = startLoad(path, priority);
 
   const captured = entry;
+  const consumer = Symbol();
+  captured.consumers.set(consumer, priority);
+  updatePriority(captured);
   return new Promise<ImageBitmap>((resolve, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
       settled = true;
-      releaseRef(captured);
+      releaseRef(captured, consumer);
       reject(new DOMException("aborted", "AbortError"));
     };
     if (signal) {
@@ -133,12 +148,14 @@ export function loadHdImage(
       (bm) => {
         if (settled) return;
         settled = true;
+        captured.consumers.delete(consumer);
         signal?.removeEventListener("abort", onAbort);
         resolve(bm);
       },
       (err) => {
         if (settled) return;
         settled = true;
+        captured.consumers.delete(consumer);
         signal?.removeEventListener("abort", onAbort);
         reject(err);
       }
@@ -146,7 +163,15 @@ export function loadHdImage(
   });
 }
 
-function startLoad(path: string): PendingEntry {
+function updatePriority(entry: PendingEntry): void {
+  const next = [...entry.consumers.values()].sort((a, b) => priorityRank[a] - priorityRank[b])[0];
+  if (!next || next === entry.priority || entry.cancelled) return;
+  entry.priority = next;
+  entry.task.update({ priority: next, label: next === "background" ? "Preloading HD preview" : "Opening HD image" });
+  setTaskRequestPriority(entry.requestId, next);
+}
+
+function startLoad(path: string, priority: TaskPriority): PendingEntry {
   const decode = decodeBytes;
   if (!decode) {
     throw new Error("hd-image decoder not configured");
@@ -155,15 +180,17 @@ function startLoad(path: string): PendingEntry {
   const requestId = nextRequestId();
   const task = beginTask({
     kind: "hd-image",
-    label: "Opening HD image",
-    priority: "urgent",
+    label: priority === "background" ? "Preloading HD preview" : "Opening HD image",
+    priority,
     target: path,
   });
   let rejectCancellation!: (reason: DOMException) => void;
   const entry: PendingEntry = {
     promise: undefined as unknown as Promise<ImageBitmap>,
     requestId,
-    refcount: 1,
+    consumers: new Map(),
+    priority,
+    task,
     cancelled: false,
     cancel(): void {},
   };
@@ -184,6 +211,7 @@ function startLoad(path: string): PendingEntry {
     const buf = await invoke<ArrayBuffer>("get_hd_image_bytes", {
       photoPath: path,
       requestId,
+      priority,
     });
     if (entry.cancelled) throw new DOMException("aborted", "AbortError");
     const bm = await decode(buf);
@@ -209,23 +237,17 @@ function startLoad(path: string): PendingEntry {
   return entry;
 }
 
-function releaseRef(entry: PendingEntry): void {
+function releaseRef(entry: PendingEntry, consumer: symbol): void {
   if (entry.cancelled) return;
-  entry.refcount -= 1;
-  if (entry.refcount > 0) return;
-  entry.cancel();
+  entry.consumers.delete(consumer);
+  if (entry.consumers.size === 0) entry.cancel();
+  else updatePriority(entry);
 }
 
 function store(path: string, bm: ImageBitmap): void {
   if (cache.has(path)) cache.delete(path);
   cache.set(path, bm);
-  while (cache.size > maxEntries) {
-    const oldestKey = cache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    const oldest = cache.get(oldestKey);
-    cache.delete(oldestKey);
-    oldest?.close?.();
-  }
+  evictOldImages();
 }
 
 export function clearHdImageCache(): void {

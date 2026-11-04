@@ -20,9 +20,18 @@ pub const DEFAULT_FULL_MEM_CACHE_MAX: usize = 0;
 /// bitmap pins ~96 MB, so keep this small.
 pub const DEFAULT_FULL_BITMAP_CACHE_MAX: usize = 1;
 
+pub fn default_parallel_workers() -> usize {
+    if cfg!(target_os = "ios") {
+        1
+    } else {
+        2
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CacheSettings {
+    pub parallel_workers: usize,
     pub thumbnail_disk_max_entries: usize,
     pub hd_image_disk_max_entries: usize,
     pub full_image_memory_max_entries: usize,
@@ -35,6 +44,7 @@ pub struct CacheSettings {
 impl Default for CacheSettings {
     fn default() -> Self {
         Self {
+            parallel_workers: default_parallel_workers(),
             thumbnail_disk_max_entries: DEFAULT_THUMB_CACHE_MAX,
             hd_image_disk_max_entries: DEFAULT_HD_CACHE_MAX,
             full_image_memory_max_entries: DEFAULT_FULL_MEM_CACHE_MAX,
@@ -53,7 +63,8 @@ impl SettingsStore {
     /// Hydrate the in-memory snapshot from this device. Falls back to defaults
     /// on any read or parse error.
     pub fn load_from(&self, storage: &DeviceStorage) {
-        let parsed = storage.cache_settings().unwrap_or_default();
+        let mut parsed = storage.cache_settings().unwrap_or_default();
+        parsed.parallel_workers = parsed.parallel_workers.clamp(1, 16);
         if let Ok(mut c) = self.current.lock() {
             *c = parsed;
         }
