@@ -1,0 +1,28 @@
+{
+  "name": "@warble/app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "@warble/core": "workspace:*",
+    "@warble/editing": "workspace:*",
+    "@warble/library": "workspace:*",
+    "@warble/media": "workspace:*",
+    "@warble/render": "workspace:*",
+    "lit": "^3.2.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.3"
+  }
+}

@@ -19,6 +19,19 @@ pnpm install
 pnpm dev
 ```
 
+## Structure
+
+- `app/` — the Lit and Tauri frontend.
+- `packages/` — reusable TypeScript modules: `core`, `render`, `editing`, `media`, `library`.
+- `src-tauri/` — the Rust backend.
+
+## Checks
+
+```sh
+pnpm check   # types for every package and the app, plus the structure rules
+pnpm test    # unit tests
+```
+
 ## Build
 
 To build the Tauri desktop app:
