@@ -6,6 +6,7 @@ export type PostProcessPresetValues = Omit<PostProcessSettings, "enabled">;
 export interface PostProcessPreset {
   id: string;
   name: string;
+  group: string;
   values: PostProcessPresetValues;
 }
 

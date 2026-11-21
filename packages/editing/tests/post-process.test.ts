@@ -1,5 +1,5 @@
 import { defaultAnalog, defaultClarity, defaultGrain, defaultSharpen } from "@warble/render";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EffectCatalog, PostProcessStore, PresetStore, type PostProcessPreset, type PostProcessSettings } from "../src";
 import { FakeEditRepository, MemoryStorage, settle } from "./support/fakes";
 
@@ -103,9 +103,107 @@ describe("PostProcessStore and PresetStore", () => {
 
     presets.remove(first.id);
     await settle();
-    const stored = JSON.parse(repository.presetsJson!) as PostProcessPreset[];
+    const stored = JSON.parse(repository.presetsJson!).presets as PostProcessPreset[];
     expect(stored.map((preset) => preset.name)).toEqual(["film (2)"]);
     expect(stored[0].values.grain.amount).toBe(30);
+  });
+
+  it("persists empty groups and preset order without changing saved effect values", async () => {
+    const repository = new FakeEditRepository();
+    const post = new PostProcessStore(null, catalog);
+    const presets = new PresetStore(repository, catalog);
+    await presets.load();
+    presets.createGroup(" Film ");
+    presets.createGroup("Empty");
+    post.setEffect("grain", { ...defaultGrain(), amount: 30 });
+    const first = presets.save("First", post.settings)!;
+    post.resetEffect("grain");
+    const second = presets.save("Second", post.settings)!;
+
+    presets.move(first.id, "Film", null);
+    presets.move(second.id, "Film", first.id);
+    await settle();
+
+    const reloaded = new PresetStore(repository, catalog);
+    await reloaded.load();
+    expect(reloaded.groups).toEqual(["Film", "Empty"]);
+    expect(reloaded.presets).toEqual([
+      { ...second, group: "Film" },
+      { ...first, group: "Film" },
+    ]);
+
+    reloaded.move(second.id, "Film", null);
+    expect(reloaded.presets.map(({ id }) => id)).toEqual([first.id, second.id]);
+    reloaded.move(first.id, "", null);
+    expect(reloaded.presets.find(({ id }) => id === first.id)?.group).toBe("");
+  });
+
+  it("renames a preset in place and rejects duplicate names", async () => {
+    const repository = new FakeEditRepository();
+    const post = new PostProcessStore(null, catalog);
+    const presets = new PresetStore(repository, catalog);
+    await presets.load();
+    const first = presets.save("First", post.settings, "Film")!;
+    const second = presets.save("Second", post.settings, "Film")!;
+
+    expect(presets.rename(first.id, " second ")).toBe(false);
+    expect(presets.rename(first.id, "  ")).toBe(false);
+    expect(presets.rename(first.id, " Renamed ")).toBe(true);
+    await settle();
+
+    const reloaded = new PresetStore(repository, catalog);
+    await reloaded.load();
+    expect(reloaded.presets).toEqual([{ ...first, name: "Renamed" }, second]);
+  });
+
+  it("renames groups and keeps their presets when the group is deleted", async () => {
+    const repository = new FakeEditRepository();
+    const post = new PostProcessStore(null, catalog);
+    const presets = new PresetStore(repository, catalog);
+    await presets.load();
+    presets.createGroup("Empty");
+    const first = presets.save("First", post.settings, "Film")!;
+    const second = presets.save("Second", post.settings, "Film")!;
+
+    expect(presets.renameGroup("Film", "empty")).toBe(false);
+    expect(presets.renameGroup("Film", " Cinema ")).toBe(true);
+    expect(presets.groups).toEqual(["Empty", "Cinema"]);
+    expect(presets.presets).toEqual([{ ...first, group: "Cinema" }, { ...second, group: "Cinema" }]);
+
+    presets.deleteGroup("Cinema");
+    await settle();
+    const reloaded = new PresetStore(repository, catalog);
+    await reloaded.load();
+    expect(reloaded.groups).toEqual(["Empty"]);
+    expect(reloaded.presets).toEqual([{ ...first, group: "" }, { ...second, group: "" }]);
+  });
+
+  it("persists group nesting and sibling order and prevents cycles", async () => {
+    const repository = new FakeEditRepository();
+    const presets = new PresetStore(repository, catalog);
+    await presets.load();
+    for (const group of ["Film", "Clean", "Color", "Grain"]) presets.createGroup(group);
+    presets.moveGroup("Clean", "", "Film");
+    presets.moveGroup("Color", "Film", null);
+    presets.moveGroup("Grain", "Film", "Color");
+    presets.moveGroup("Film", "Grain", null);
+
+    await vi.waitFor(() => {
+      const stored = JSON.parse(repository.presetsJson!);
+      expect(stored.parents).toEqual({ Color: "Film", Grain: "Film" });
+      expect(stored.groups).toEqual(["Clean", "Film", "Grain", "Color"]);
+    });
+    const reloaded = new PresetStore(repository, catalog);
+    await reloaded.load();
+    const groupsIn = (parent: string) => reloaded.groups.filter((group) => reloaded.parentGroup(group) === parent);
+    expect(groupsIn("")).toEqual(["Clean", "Film"]);
+    expect(groupsIn("Film")).toEqual(["Grain", "Color"]);
+    reloaded.renameGroup("Film", "Cinema");
+    expect(groupsIn("Cinema")).toEqual(["Grain", "Color"]);
+    reloaded.moveGroup("Color", "", "Cinema");
+    expect(groupsIn("")).toEqual(["Clean", "Color", "Cinema"]);
+    reloaded.deleteGroup("Cinema");
+    expect(groupsIn("")).toEqual(["Clean", "Color", "Grain"]);
   });
 
   it("moves presets from the old browser storage into the library once", async () => {
@@ -115,7 +213,7 @@ describe("PostProcessStore and PresetStore", () => {
     const presets = new PresetStore(repository, catalog, storage);
     await presets.load();
     expect(presets.presets.map((preset) => preset.name)).toEqual(["Old"]);
-    expect(JSON.parse(repository.presetsJson!)).toHaveLength(1);
+    expect(JSON.parse(repository.presetsJson!).presets).toHaveLength(1);
     expect(storage.getItem(legacyKey)).toBeNull();
   });
 });

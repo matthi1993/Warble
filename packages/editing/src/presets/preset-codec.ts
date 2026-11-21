@@ -20,7 +20,7 @@ export class PresetCodec {
       const stored = JSON.parse(raw) as Array<Partial<PostProcessPreset>>;
       return stored.flatMap((item) => {
         if (!item.id || !item.name || !item.values) return [];
-        return [{ id: item.id, name: item.name, values: this.valuesOf(item.values) }];
+        return [{ id: item.id, name: item.name, group: item.group ?? "", values: this.valuesOf(item.values) }];
       });
     } catch (error) {
       console.warn("post-process presets: invalid persisted data", error);
@@ -31,7 +31,7 @@ export class PresetCodec {
   exportFile(presets: readonly PostProcessPreset[]): string {
     const file: PresetExportFile = {
       version: 1,
-      postProcess: presets.map(({ name, values }) => ({ name, values: structuredClone(values) })),
+      postProcess: presets.map(({ name, group, values }) => ({ name, group, values: structuredClone(values) })),
     };
     return JSON.stringify(file, null, 2);
   }

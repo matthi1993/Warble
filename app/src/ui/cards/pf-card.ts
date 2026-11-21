@@ -85,6 +85,9 @@ export class PfCard extends LitElement {
   @property({ type: Boolean, attribute: "effect-disabled", reflect: true })
   effectDisabled = false;
 
+  @property({ type: Boolean })
+  allowDisable = true;
+
   private toggle = () => {
     this.dispatchEvent(
       new CustomEvent("toggle", {
@@ -107,7 +110,7 @@ export class PfCard extends LitElement {
           <pf-icon class="chevron" name="chevron-down"></pf-icon>
           <span>${this.title}</span>
         </button>
-        <pf-effect-toggle .disabled=${this.effectDisabled} .label=${this.title}></pf-effect-toggle>
+        ${this.allowDisable ? html`<pf-effect-toggle .disabled=${this.effectDisabled} .label=${this.title}></pf-effect-toggle>` : html``}
         <slot name="revert"></slot>
       </div>
       <div class="body">
