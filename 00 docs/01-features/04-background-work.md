@@ -6,7 +6,7 @@ Warble prepares a photo when you need it rather than loading the whole library a
 
 The folder tree appears before its photos are fully processed. When you open a folder, the grid can show photos while metadata and thumbnails are still arriving. Opening a photo asks for a larger preview; you do not have to wait for the rest of the folder.
 
-Start in [the app shell](../../src/app/app-shell.ts) for folder loading and [the image canvas](../../src/features/image-viewer/pf-image-canvas.ts) for the open photo.
+Start in [the library photos controller](../../app/src/shell/library-photos-controller.ts) for folder loading and [the image loader](../../app/src/viewer/image-loader.ts) for the open photo.
 
 ## What gets attention
 

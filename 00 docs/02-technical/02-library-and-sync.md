@@ -6,7 +6,7 @@ Warble discovers files in the background and keeps portable photo changes beside
 
 Startup restores the complete folder tree, photo list, and index readiness from SQLite before accessing drives. Background checks compare the immediate entries and file timestamps of each directory with its saved fingerprint; only changed directories need image and sidecar reconciliation. Libraries created before this index was introduced need one initial check to populate it. Adding or reconnecting a root scans its folder tree, then indexes its photos and videos recursively in the background. Opening a folder can still request its media before the initial scan finishes; manual Sync checks the chosen area, including nested folders, for external changes. The media list can appear before metadata is ready.
 
-Start in [the scan coordinator](../../src-tauri/src/library/scanner.rs) for discovery and [the app shell](../../src/app/app-shell.ts) for selection and Sync.
+Start in [the scan coordinator](../../src-tauri/src/library/scanner.rs) for discovery and [the folder selection controller](../../app/src/shell/folder-selection-controller.ts) for selection and Sync.
 
 ## Storage and reconciliation
 
@@ -18,4 +18,4 @@ Start in [the library repository](../../src-tauri/src/library/repository.rs) for
 
 A changed image may need fresh metadata and previews. Warble invalidates affected cached data and regenerates previews when they are requested, rather than rebuilding the whole library on every Sync. Pending in-app changes are saved before a manual Sync.
 
-Start in [the library loader](../../src-tauri/src/library/loader.rs) for reconciliation and [the photo processing pipeline](../../src/services/library/photo-processing-pipeline.ts) for selected-folder metadata. See [Images and background work](03-images-and-background-work.md) for preview loading.
+Start in [the library loader](../../src-tauri/src/library/loader.rs) for reconciliation and [the photo processing pipeline](../../packages/library/src/processing/photo-processing-pipeline.ts) for selected-folder metadata. See [Images and background work](03-images-and-background-work.md) for preview loading.

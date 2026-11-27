@@ -13,9 +13,15 @@ Start here to understand the app's main workflows.
 
 Start with the architecture page, then follow the area you need.
 
-1. [Architecture](02-technical/01-architecture.md) — layers and main entry points.
+1. [Architecture](02-technical/01-architecture.md) — packages, the app, and the rules that keep them apart.
 2. [Library and sync](02-technical/02-library-and-sync.md) — discovery and portable photo state.
 3. [Images and background work](02-technical/03-images-and-background-work.md) — loading, caches, and task priorities.
-4. [Image editing](02-technical/04-image-editing.md) — rendering, tool state, and adding a tool.
+4. [Image editing](02-technical/04-image-editing.md) — the rendering pipeline, edit state, and adding an effect or tool.
+
+## Design records
+
+Why the code is structured the way it is.
+
+1. [Frontend module structure](refactor/01-frontend-modules.md) — goals, decisions, conventions, and how the refactor was verified.
 
 For setup and packaging, see the [project README](../README.md).
